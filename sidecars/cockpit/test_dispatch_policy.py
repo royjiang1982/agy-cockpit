@@ -105,6 +105,9 @@ class DispatchPolicyTests(unittest.TestCase):
         for model in ("provider/model-v1:alpha", "Gemini 4 Pro (High)", "gpt-6.2-sol", "x" * 81):
             target["model"] = model
             dp.validate_policy(p)
+        for effort in ("low", "medium", "high", "xhigh", "max", "ultra"):
+            target["effort"] = effort
+            dp.validate_policy(p)
 
     def test_degraded_files_are_immutable_for_save_and_reset(self):
         missing = dp.load_policy(self.policy_path)

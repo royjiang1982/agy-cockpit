@@ -10,26 +10,68 @@
     droid: { label: 'Droid', brand: 'droid', channel: 'cli' }, grok: { label: 'Grok', brand: 'grok', channel: 'cli' },
     native: { label: '内置', brand: 'native', channel: 'invoke_subagent' }, swarm: { label: 'Swarm', brand: 'swarm', channel: 'swarm' },
   };
-  const EFF = { '': '', low: '低', medium: '中', high: '高', xhigh: '极高', same: '同档' };
+  const EFF = { '': '', low: '低', medium: '中', high: '高', xhigh: '极高', max: 'Max', ultra: 'Ultra', same: '同档' };
+  const SWARM_TIER = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh', max: 'Max' };
   const SKIP_WHY = { quota_low: '配额低', cli_unavailable: '未装', external_disabled: 'CLI已关', swarm_disabled: 'Swarm已关' };
   const ROLES = [['scout', '快搜侦察', true], ['standard', '常规制作', false], ['deep', '深度执行', false], ['expert', '专家验收', false]];
-  const ALL_EFF = ['low', 'medium', 'high', 'xhigh'];
+  const E3 = ['low', 'medium', 'high'], E4 = ['low', 'medium', 'high', 'xhigh'];
+  const E4M = ['low', 'medium', 'high', 'max'], E5 = ['low', 'medium', 'high', 'xhigh', 'max'], E6 = [...E5, 'ultra'];
+
+  const mkAgy = (id, label, prefix, efforts, brand = 'agy') => ({
+    id, label, brand, efforts,
+    toModel: e => `${prefix}-${e || efforts[efforts.length - 1]}`,
+    match: m => m === prefix || m.startsWith(prefix + '-'),
+  });
+  const mkSwarm = (id, label, base, efforts, brand = 'swarm') => ({
+    id, label, brand, efforts, swarmBase: base,
+    toModel: e => `${base} (${SWARM_TIER[e] || 'High'})`,
+    match: m => m.toLowerCase().startsWith(base.toLowerCase()),
+  });
+
   const CATALOG = {
     agy: [
-      { id: 'hydrogen', label: 'Hydrogen', brand: 'agy', efforts: ['high'], toModel: () => 'gemini-4-hydrogen-high', match: m => m.includes('hydrogen') },
-      { id: 'neon', label: 'Neon', brand: 'agy', efforts: ['medium', 'high', 'xhigh'], toModel: e => `gemini-4-neon-${e || 'medium'}`, match: m => m.includes('neon') },
-      { id: 'opus', label: 'Opus 5.5', brand: 'claude', efforts: ['high'], toModel: () => 'claude-opus-5-5-high', match: m => m.includes('opus') },
+      mkAgy('hydrogen', 'Hydrogen', 'gemini-4-hydrogen', E4),
+      mkAgy('neon', 'Neon', 'gemini-4-neon', E4),
+      mkAgy('argon', 'Argon', 'gemini-4-argon', E3),
+      mkAgy('carbon', 'Carbon', 'gemini-4-carbon', E3),
+      mkAgy('flash38', 'Flash 3.8', 'gemini-3.8-flash', E3),
+      mkAgy('opus55', 'Opus 5.5', 'claude-opus-5-5', E4M, 'claude'),
+      mkAgy('sonnet55', 'Sonnet 5.5', 'claude-sonnet-5-5', E4M, 'claude'),
     ],
-    codex: [{ id: 'gpt-6.2-sol', label: 'gpt-6.2-sol', efforts: ALL_EFF }, { id: 'gpt-6.2-astra', label: 'gpt-6.2-astra', efforts: ALL_EFF }],
+    codex: [
+      { id: 'gpt-6.2-sol', label: 'gpt-6.2-sol', efforts: E6 },
+      { id: 'gpt-6.2-astra', label: 'gpt-6.2-astra', efforts: E6 },
+      { id: 'gpt-6.1-terra', label: 'gpt-6.1-terra', efforts: E6 },
+      { id: 'gpt-6-luna', label: 'gpt-6-luna', efforts: E5 },
+    ],
+    grok: [
+      { id: 'grok-4.7', label: 'grok-4.7', efforts: E4 },
+      { id: 'grok-4.7-build-fast', label: 'grok-4.7-fast', efforts: E4 },
+      { id: 'grok-4.6', label: 'grok-4.6', efforts: E4 },
+      { id: 'grok-4.5', label: 'grok-4.5', efforts: E4 },
+    ],
+    // Droid lists only models mirrored from other engines (AGY + Codex), no extras.
     droid: [
-      { id: 'gemini-3.8-flash', label: 'Flash 3.8', efforts: ALL_EFF }, { id: 'gemini-4-argon', label: 'Argon', efforts: ALL_EFF },
-      { id: 'gpt-6.2-sol', label: 'gpt-6.2-sol', efforts: ALL_EFF }, { id: 'gpt-6.2-astra', label: 'gpt-6.2-astra', efforts: ALL_EFF },
-      { id: 'claude-opus-5-5', label: 'Opus 5.5', brand: 'claude', efforts: ALL_EFF },
+      { id: 'gemini-3.8-flash', label: 'Flash 3.8', brand: 'agy', efforts: E3 },
+      { id: 'gemini-4-argon', label: 'Argon', brand: 'agy', efforts: E3 },
+      { id: 'claude-opus-5-5', label: 'Opus 5.5', brand: 'claude', efforts: E4M },
+      { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', brand: 'claude', efforts: E4M },
+      { id: 'gpt-6.2-sol', label: 'gpt-6.2-sol', brand: 'codex', efforts: E6 },
+      { id: 'gpt-6.2-astra', label: 'gpt-6.2-astra', brand: 'codex', efforts: E6 },
+      { id: 'gpt-6.1-terra', label: 'gpt-6.1-terra', brand: 'codex', efforts: E6 },
+      { id: 'gpt-6-luna', label: 'gpt-6-luna', brand: 'codex', efforts: E5 },
     ],
-    grok: [{ id: 'grok-4.7', label: 'Grok 4.7', efforts: ALL_EFF }],
     native_ro: [{ id: 'flash', label: 'Flash', efforts: [] }],
     native_rw: [{ id: 'inherit', label: '继承主模型', efforts: [] }, { id: 'pro', label: 'Pro', efforts: [] }],
-    swarm: [{ id: 'Gemini 4 Neon (Medium)', label: 'Neon · 中', efforts: [] }, { id: 'Gemini 4 Neon (High)', label: 'Neon · 高', efforts: [] }, { id: 'Gemini 4 Argon (Medium)', label: 'Argon · 中', efforts: [] }],
+    swarm: [
+      mkSwarm('s_hydrogen', 'Hydrogen', 'Gemini 4 Hydrogen', E4, 'agy'),
+      mkSwarm('s_neon', 'Neon', 'Gemini 4 Neon', E4, 'agy'),
+      mkSwarm('s_argon', 'Argon', 'Gemini 4 Argon', E3, 'agy'),
+      mkSwarm('s_carbon', 'Carbon', 'Gemini 4 Carbon', E3, 'agy'),
+      mkSwarm('s_flash38', 'Flash 3.8', 'Gemini 3.8 Flash', E3, 'agy'),
+      mkSwarm('s_opus55', 'Opus 5.5', 'Claude Opus 5.5', E4M, 'claude'),
+      mkSwarm('s_sonnet55', 'Sonnet 5.5', 'Claude Sonnet 5.5', E4M, 'claude'),
+    ],
   };
   const t = (engine, model, effort = '', channel = 'cli', extra = {}) => ({ channel, engine, model, effort, ...extra });
   const DEFAULT_SEAT_POOL = [
@@ -51,19 +93,29 @@
   const engKeyOf = x => x.channel === 'invoke_subagent' ? 'native' : x.channel === 'swarm' ? 'swarm' : x.engine;
   const modelsFor = (ek, ro) => ek === 'native' ? (ro ? CATALOG.native_ro : CATALOG.native_rw) : (CATALOG[ek] || []);
   const findSpec = (ek, m, ro) => modelsFor(ek, ro).find(s => (s.match ? s.match(m) : s.id === m));
+  function effortOf(x, spec) {
+    if (x.channel === 'swarm') {
+      const m = /\((Low|Medium|High|XHigh|Max)\)$/i.exec(x.model || '');
+      return m ? m[1].toLowerCase() : (spec?.efforts?.[1] || 'high');
+    }
+    if (x.effort) return x.effort;
+    const m = /-(low|medium|high|xhigh|max|ultra)$/i.exec(x.model || '');
+    return m ? m[1].toLowerCase() : '';
+  }
   const buildTarget = (ek, spec, effort, extra = {}) => {
     const meta = ENG[ek] || { channel: 'cli' };
-    if (meta.channel !== 'cli') return t('agy', spec.id, '', meta.channel, extra);
-    const eff = effort === 'same' ? 'same' : (spec.efforts.includes(effort) ? effort : (spec.efforts[spec.efforts.length - 1] || ''));
+    const eff = effort === 'same' ? 'same' : (spec.efforts.includes(effort) ? effort : (spec.efforts.includes('high') ? 'high' : (spec.efforts[spec.efforts.length - 1] || '')));
+    if (meta.channel === 'swarm') return t('agy', spec.toModel ? spec.toModel(eff) : spec.id, '', 'swarm', extra);
+    if (meta.channel === 'invoke_subagent') return t('agy', spec.id, '', 'invoke_subagent', extra);
     return t(ek, spec.toModel ? spec.toModel(eff === 'same' ? 'high' : eff) : spec.id, eff, 'cli', extra);
   };
   const fmtTarget = x => {
     const ek = engKeyOf(x), em = ENG[ek] || { label: ek, brand: 'agy' };
     const spec = findSpec(ek, x.model, false) || findSpec(ek, x.model, true);
-    const lbl = spec ? spec.label : String(x.model || '').replace(/^(?:gemini-4-|gemini-|claude-)/, '').replace(/-(?:low|medium|high|xhigh)$/, '');
-    const eff = EFF[x.effort || ''];
-    const brand = spec?.brand || (ek === 'agy' && /claude|opus/i.test(x.model || '') ? 'claude' : em.brand);
-    return { eng: em.label, short: lbl, text: eff && ek !== 'native' && ek !== 'swarm' ? `${lbl} · ${eff}` : lbl, brand };
+    const lbl = spec ? spec.label : String(x.model || '').replace(/^(?:gemini-4-|gemini-|claude-)/, '').replace(/-(?:low|medium|high|xhigh|max|ultra)$/, '');
+    const eff = EFF[effortOf(x, spec)];
+    const brand = ek === 'droid' ? 'droid' : (spec?.brand || (ek === 'agy' && /claude|opus|sonnet/i.test(x.model || '') ? 'claude' : em.brand));
+    return { eng: em.label, short: lbl, text: eff && ek !== 'native' ? `${lbl} · ${eff}` : lbl, brand };
   };
 
   let saved = null, draft = null, busy = false, dirty = false, conflicted = false;
@@ -115,7 +167,8 @@
 
   function renderTargetEditor(target, { readOnly, allowNative = true, allowSwarm = true, allowSame = false, onChange }) {
     const has = avail(), ek = engKeyOf(target), em = ENG[ek] || { label: ek, brand: 'agy' };
-    const spec = findSpec(ek, target.model, readOnly) || { id: target.model, label: fmtTarget(target).short, efforts: target.effort ? ALL_EFF : [] };
+    const spec = findSpec(ek, target.model, readOnly) || { id: target.model, label: fmtTarget(target).short, efforts: target.effort ? E4 : [] };
+    const curEffRaw = effortOf(target, spec);
     const card = el('div', { className: 'ds-card' });
 
     const engKeys = [...['agy', 'codex', 'droid', 'grok'].filter(e => has.includes(e) || e === ek), ...(allowNative ? ['native'] : []), ...(allowSwarm ? ['swarm'] : [])];
@@ -127,7 +180,7 @@
         btn.addEventListener('click', () => {
           if (k === ek) return;
           const list = modelsFor(k, readOnly);
-          if (list.length) onChange(buildTarget(k, list[0], target.effort || 'high'));
+          if (list.length) onChange(buildTarget(k, list[0], curEffRaw || 'high'));
         });
         return btn;
       }))));
@@ -137,13 +190,13 @@
     card.append(el('div', { className: 'ds-block' }, el('div', { className: 'ds-block-lbl' }, '模型'),
       el('div', { className: 'ds-chips' }, ...modItems.map(m => {
         const btn = el('button', { type: 'button', className: m.id === spec.id ? 'ds-chip is-on' : 'ds-chip' }, dot(m.brand || em.brand), m.label);
-        btn.addEventListener('click', () => { if (m.id !== spec.id) onChange(buildTarget(ek, m, target.effort || 'high')); });
+        btn.addEventListener('click', () => { if (m.id !== spec.id) onChange(buildTarget(ek, m, curEffRaw || 'high')); });
         return btn;
       }))));
 
     if (spec.efforts.length) {
       const effs = allowSame ? ['same', ...spec.efforts] : spec.efforts;
-      const curEff = effs.includes(target.effort) ? target.effort : effs[0];
+      const curEff = effs.includes(curEffRaw) ? curEffRaw : effs[0];
       card.append(el('div', { className: 'ds-block' }, el('div', { className: 'ds-block-lbl' }, '推理档位'),
         el('div', { className: 'ds-seg' }, ...effs.map(e => {
           const btn = el('button', { type: 'button', className: e === curEff ? 'is-on' : '' }, EFF[e] || e);
@@ -164,9 +217,11 @@
         note = el('span', { className: 'ds-hint' }, `${why ? why + ' → ' : '↪ '}${rf.eng} ${rf.text}`);
       }
       const row = el('button', { type: 'button', className: 'ds-row' },
-        el('div', { className: 'ds-row-col' }, el('span', { className: 'ds-lbl' }, name), note),
-        el('div', { className: 'ds-val' }, dot(f.brand), el('span', { className: 'ds-val-eng' }, f.eng),
-          el('span', { className: 'ds-val-txt' }, f.text), el('span', { className: 'ds-arrow' }, '›')));
+        el('span', { className: 'ds-lbl' }, name),
+        el('span', { className: 'ds-eng-col' }, dot(f.brand), el('span', { className: 'ds-val-eng' }, f.eng)),
+        el('span', { className: 'ds-val-txt' }, f.text),
+        el('span', { className: 'ds-arrow' }, '›'),
+        note);
       row.addEventListener('click', () => go({ type: 'role', role }));
       roleCard.append(row);
     }
@@ -174,9 +229,10 @@
     const seats = enabledSeats(p);
     const preview = seats.slice(0, 2).map(s => fmtTarget(s).short).join(' · ') + (seats.length > 2 ? ` +${seats.length - 2}` : '');
     const pRow = el('button', { type: 'button', className: 'ds-row' },
-      el('div', { className: 'ds-row-col' }, el('span', { className: 'ds-lbl' }, '多方会审')),
-      el('div', { className: 'ds-val' }, seats[0] ? dot(fmtTarget(seats[0]).brand) : '',
-        el('span', { className: 'ds-val-eng' }, `${seats.length}席`), el('span', { className: 'ds-val-txt' }, preview || '未配置'), el('span', { className: 'ds-arrow' }, '›')));
+      el('span', { className: 'ds-lbl' }, '多方会审'),
+      el('span', { className: 'ds-eng-col' }, seats[0] ? dot(fmtTarget(seats[0]).brand) : '', el('span', { className: 'ds-val-eng' }, `${seats.length}席`)),
+      el('span', { className: 'ds-val-txt' }, preview || '未配置'),
+      el('span', { className: 'ds-arrow' }, '›'));
     pRow.addEventListener('click', () => go({ type: 'panel' }));
     roleCard.append(pRow);
 
@@ -242,7 +298,9 @@
     const seats = enabledSeats(p), listCard = el('div', { className: 'ds-card' });
     seats.forEach((seat, idx) => {
       const f = fmtTarget(seat);
-      const main = el('button', { type: 'button', className: 'ds-seat-main' }, dot(f.brand), el('span', { className: 'ds-val-eng' }, f.eng), el('span', { className: 'ds-val-txt' }, f.text));
+      const main = el('button', { type: 'button', className: 'ds-seat-main' },
+        el('span', { className: 'ds-eng-col' }, dot(f.brand), el('span', { className: 'ds-val-eng' }, f.eng)),
+        el('span', { className: 'ds-val-txt' }, f.text));
       main.addEventListener('click', () => go({ type: 'seat', index: idx }));
       const move = dir => {
         const copy = seats.map(s => ({ ...s, enabled: true }));

@@ -78,9 +78,10 @@
 /* Grouped inset card */
 .ds-card { background: var(--card-hi); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 
-/* Navigation & setting list items */
+/* Navigation & setting list items (aligned 4-column optical grid) */
 .ds-row {
-  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; display: grid; grid-template-columns: 62px 58px minmax(0, 1fr) 10px;
+  align-items: center; gap: 6px;
   min-height: 35px; padding: 6px 10px; border: 0; background: transparent; color: var(--text);
   font-size: 11px; line-height: 1.3; text-align: left; cursor: pointer; transition: background-color .1s;
 }
@@ -92,11 +93,11 @@
 .ds-row-col { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
 .ds-lbl { font-size: 11px; font-weight: 500; color: var(--text); white-space: nowrap; }
 .ds-lbl-sub { font-size: 10.5px; font-weight: 500; color: var(--muted); white-space: nowrap; }
-.ds-hint { font-size: 9.5px; color: var(--orange); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ds-val { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 68%; }
-.ds-val-eng { font-size: 9.5px; font-weight: 600; color: var(--dim); flex-shrink: 0; }
+.ds-hint { grid-column: 1 / -1; font-size: 9.5px; color: var(--orange); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: -2px; }
+.ds-eng-col { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.ds-val-eng { font-size: 10px; font-weight: 600; color: var(--dim); white-space: nowrap; }
 .ds-val-txt { font-size: 10.5px; font-weight: 500; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ds-arrow { font-size: 13px; line-height: 1; color: var(--dim); flex-shrink: 0; margin-left: 1px; }
+.ds-arrow { font-size: 13px; line-height: 1; color: var(--dim); text-align: right; }
 
 .ds-item {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -121,8 +122,8 @@
 /* Segmented effort strip */
 .ds-seg { display: flex; gap: 2px; padding: 2px; border-radius: 7px; background: var(--track-bg); }
 .ds-seg button {
-  flex: 1; height: 24px; border: 0; border-radius: 5px; background: transparent;
-  color: var(--muted); font-size: 10.5px; font-weight: 600; line-height: 1; cursor: pointer; transition: all .12s;
+  flex: 1; min-width: 0; height: 24px; padding: 0 2px; border: 0; border-radius: 5px; background: transparent;
+  color: var(--muted); font-size: 10px; font-weight: 600; line-height: 1; white-space: nowrap; cursor: pointer; transition: all .12s;
 }
 .ds-seg button:hover:not(.is-on) { color: var(--text); }
 .ds-seg button.is-on {
@@ -139,7 +140,7 @@
   background: var(--track-bg); color: var(--dim); font-family: "SF Mono", Menlo, monospace; font-size: 9.5px; font-weight: 600;
 }
 .ds-seat-main {
-  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 4px;
+  flex: 1; min-width: 0; display: grid; grid-template-columns: 56px minmax(0, 1fr); align-items: center; gap: 6px; padding: 4px;
   border: 0; border-radius: 5px; background: transparent; color: var(--text);
   font-size: 10.5px; font-weight: 500; line-height: 1.2; text-align: left; cursor: pointer;
 }
