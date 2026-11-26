@@ -1,0 +1,3979 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AGY Cockpit</title>
+<style>
+  :root {
+    --bg: #141617;
+    --card: color-mix(in srgb, #ffffff 5.5%, var(--bg));
+    --card-hi: color-mix(in srgb, #ffffff 9%, var(--bg));
+    --popover-bg: color-mix(in srgb, #dce8f8 12%, var(--bg));
+    --popover-border: color-mix(in srgb, var(--text) 24%, var(--card));
+    --popover-cell: color-mix(in srgb, #000000 22%, var(--popover-bg));
+    --popover-shadow: 0 12px 32px rgba(0, 0, 0, 0.68), 0 0 0 1px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    --border: color-mix(in srgb, var(--text) 12%, var(--card));
+    --divider: color-mix(in srgb, var(--text) 6%, transparent);
+    --pill-bg: color-mix(in srgb, var(--text) 7%, transparent);
+    --track-bg: color-mix(in srgb, #000000 38%, var(--bg));
+    --foot-bg: color-mix(in srgb, var(--bg) 92%, transparent);
+    --text: #eef2f6;
+    --muted: color-mix(in srgb, var(--text) 62%, var(--bg));
+    --dim: color-mix(in srgb, var(--text) 42%, var(--bg));
+    --cyan: #6cb6ff;
+    --cyan-text: color-mix(in srgb, var(--cyan) 62%, #ffffff);
+    --badge-bg: color-mix(in srgb, var(--cyan) 14%, transparent);
+    --badge-border: color-mix(in srgb, var(--cyan) 30%, transparent);
+    --spin-track: color-mix(in srgb, var(--cyan) 25%, transparent);
+    --blue: #4c9aff;
+    --green: #4cc86b;
+    --yellow: #f5cd47;
+    --orange: #fea362;
+    --red: #f87168;
+    --brand-gemini: #4c9aff;
+    --brand-claude: #d97757;
+    --brand-codex: #10a37f;
+    --brand-droid: #a78bfa;
+    --brand-grok: #f472b6;
+    --ring-track: var(--track-bg);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow-x: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    font-size: 11.5px;
+    line-height: 1.35;
+    -webkit-font-smoothing: antialiased;
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+  .wrap {
+    min-height: 100%;
+    height: 100%;
+    padding: 8px 8px 34px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    overflow-y: auto;
+  }
+  .wrap > .hero-grid,
+  .wrap > .turns-box {
+    flex-shrink: 0;
+  }
+  #subBox:not([open]) > .sub-box-body {
+    display: none;
+  }
+  #subBox[open] {
+    flex: 1 1 120px;
+    min-height: 120px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #subBox[open] > .sub-box-summary {
+    flex-shrink: 0;
+  }
+  #subBox[open] > .sub-box-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #subBox[open] .sub-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 1px;
+  }
+  .wrap::-webkit-scrollbar,
+  #subBox[open] .sub-list::-webkit-scrollbar,
+  .mb-chart.mb-chart--scroll::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  .wrap::-webkit-scrollbar-track,
+  #subBox[open] .sub-list::-webkit-scrollbar-track,
+  .mb-chart.mb-chart--scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .wrap::-webkit-scrollbar-thumb,
+  #subBox[open] .sub-list::-webkit-scrollbar-thumb,
+  .mb-chart.mb-chart--scroll::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 999px;
+  }
+  .wrap:hover::-webkit-scrollbar-thumb,
+  #subBox[open] .sub-list:hover::-webkit-scrollbar-thumb,
+  .mb-chart.mb-chart--scroll:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--text) 16%, transparent);
+  }
+  .wrap::-webkit-scrollbar-thumb:hover,
+  #subBox[open] .sub-list::-webkit-scrollbar-thumb:hover,
+  .mb-chart.mb-chart--scroll::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--text) 30%, transparent);
+  }
+  .mono {
+    font-family: "SF Mono", "JetBrains Mono", Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  .c-text { color: var(--text); font-weight: 700; }
+  .c-cyan { color: var(--cyan-text); }
+  .c-blue { color: var(--blue); }
+  .c-green { color: var(--green); }
+  .c-yellow { color: var(--yellow); }
+  .c-orange { color: var(--orange); }
+  .c-red { color: var(--red); }
+  .c-muted { color: var(--muted); }
+  .c-dim { color: var(--dim); }
+
+  /* Layer 1: Header Bar */
+  .hdr {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 8px;
+  }
+  .hdr-main {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .conv-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .model-badge {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--cyan);
+    background: var(--badge-bg);
+    border: 1px solid var(--badge-border);
+    padding: 1px 6px;
+    border-radius: 999px;
+  }
+  .hdr-sub {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    margin-top: 5px;
+    padding-top: 4px;
+    border-top: 1px solid var(--divider);
+    font-size: 10px;
+  }
+  .cache-ttl {
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Layer 2: 2x2 Hero KPI Grid (Core Glanceable Metrics) */
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .kpi-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 8px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-width: 0;
+  }
+  .kpi-card.has-ring {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .kpi-main {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-width: 0;
+    flex: 1;
+  }
+  .kpi-ring {
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    transform: scaleX(-1) rotate(-90deg);
+  }
+  .ring-track {
+    fill: none;
+    stroke: var(--track-bg);
+    stroke-width: 4;
+  }
+  .ring-fill {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 4;
+    stroke-linecap: round;
+    transition: stroke-dasharray 0.25s ease;
+  }
+  .kpi-spark {
+    width: 24px;
+    height: 26px;
+    margin-right: 5px;
+    flex-shrink: 0;
+    overflow: visible;
+  }
+  .spark-empty {
+    fill: var(--track-bg);
+  }
+  .spark-hist {
+    fill: color-mix(in srgb, var(--text) 28%, var(--track-bg));
+  }
+  .spark-curr {
+    fill: currentColor;
+  }
+  .kpi-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--muted);
+    letter-spacing: 0.2px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 2px;
+  }
+  .kpi-val {
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.4px;
+    margin: 1px 0 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* Layer 3: 2-Card Token Breakdown (Same layout & ring style as Hero KPI cards) */
+  .tk-ring-card {
+    cursor: default;
+    transition: border-color 0.12s ease;
+  }
+  .tk-ring-card:hover,
+  .tk-ring-card:focus-visible {
+    border-color: var(--badge-border);
+    outline: none;
+  }
+  .tk-cost {
+    font-size: 9.5px;
+    font-weight: 700;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  .kpi-unit {
+    font-size: 10.5px;
+    font-weight: 500;
+    color: var(--muted);
+    margin-left: 2px;
+  }
+  .kpi-sub {
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .kpi-sub strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  /* Layer 3: Token Breakdown Card */
+  .section-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 8px;
+  }
+  .tk-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  .tk-table th {
+    font-size: 10px;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 0 2px 5px;
+    border-bottom: 1px solid var(--border);
+    text-align: right;
+    white-space: nowrap;
+  }
+  .tk-table th:first-child {
+    text-align: left;
+    width: 31%;
+  }
+  .tk-table th:nth-child(2) { width: 23%; }
+  .tk-table th:nth-child(3) { width: 24%; }
+  .tk-table th:nth-child(4) { width: 22%; }
+  .tk-table td {
+    padding: 3.5px 2px;
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .row-primary td {
+    padding-top: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .row-primary td:first-child {
+    text-align: left;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .row-child td {
+    font-size: 11px;
+    color: var(--muted);
+    padding-top: 1.5px;
+    padding-bottom: 2px;
+  }
+  .row-child td:first-child {
+    text-align: left;
+    padding-left: 8px;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 10.5px;
+    color: var(--muted);
+  }
+  .row-divider td {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 5px;
+  }
+
+  /* Layer 4: Collapsible Boxes */
+  .turns-box {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 8px;
+  }
+  details.turns-box summary,
+  .turns-box > .sub-box-summary {
+    cursor: pointer;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 2px 4px;
+    list-style: none;
+    user-select: none;
+  }
+  details.turns-box summary::-webkit-details-marker { display: none; }
+  details.turns-box summary:hover,
+  .turns-box > .sub-box-summary:hover { color: var(--text); }
+  details.turns-box > summary > span:first-child,
+  .turns-box > .sub-box-summary > span:first-child {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  details.turns-box > summary > span:first-child::before,
+  .turns-box > .sub-box-summary > span:first-child::before {
+    content: "▸";
+    display: inline-block;
+    font-size: 10px;
+    line-height: 1;
+    color: var(--dim);
+    transition: transform 0.14s ease, color 0.14s ease;
+  }
+  details.turns-box[open] > summary > span:first-child::before,
+  .turns-box[open] > .sub-box-summary > span:first-child::before {
+    transform: rotate(90deg);
+    color: var(--muted);
+  }
+  details.turns-box > summary:hover > span:first-child::before,
+  .turns-box > .sub-box-summary:hover > span:first-child::before {
+    color: var(--text);
+  }
+  #subBadge, #calBadge {
+    font-size: 9.5px;
+    letter-spacing: -0.2px;
+    white-space: nowrap;
+  }
+  .cal-tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: auto;
+    padding: 1px;
+    background: var(--pill-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+  }
+  .cal-tab {
+    font-family: inherit;
+    font-size: 9.5px;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid transparent;
+    padding: 1px 5px;
+    border-radius: 3.5px;
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.12s ease, background-color 0.12s ease, border-color 0.12s ease;
+  }
+  .cal-tab:hover {
+    color: var(--text);
+    background: var(--bg-hover, var(--card-hi));
+  }
+  .cal-tab.active {
+    color: var(--cyan-text);
+    background: var(--badge-bg);
+    border-color: var(--badge-border);
+  }
+  .cal-tab:focus-visible {
+    outline: 1.5px solid var(--cyan);
+    outline-offset: 1px;
+  }
+  .cal-panel {
+    margin-top: 5px;
+    width: 100%;
+    overflow: hidden;
+  }
+  .cal-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    padding: 4px 2px 5px;
+    border-bottom: 1px solid var(--divider);
+  }
+  .cal-chart.cal-chart--collapsed {
+    border-bottom: none;
+    padding-bottom: 2px;
+  }
+  .cal-chart.cal-chart--collapsed .cal-bar-col:not(.is-zero) .cal-bar-fill {
+    background: color-mix(in srgb, var(--cyan) 44%, var(--card));
+    box-shadow: none;
+  }
+  .cal-chart.cal-chart--collapsed .cal-bar-col:not(.is-zero):hover .cal-bar-fill {
+    background: color-mix(in srgb, var(--cyan) 64%, var(--card));
+  }
+  .cal-chart.cal-chart--collapsed .cal-bar-col.is-current:not(.is-zero) .cal-bar-fill {
+    background: color-mix(in srgb, var(--blue) 88%, var(--card));
+  }
+  .cal-chart.cal-chart--collapsed .cal-bar-col.is-current:not(.is-zero):hover .cal-bar-fill {
+    background: var(--blue);
+  }
+  .cal-chart.cal-chart--collapsed .cal-bar-col.is-current .cal-bar-lbl {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .cal-chart.cal-chart--collapsed .cal-bar-col:not(.is-zero) .cal-bar-tok {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .cal-chart.cal-chart--collapsed .cal-bar-col:not(.is-zero) .cal-bar-usd {
+    color: var(--muted);
+  }
+  .cal-chart.cal-chart--collapsed .cal-bar-col:not(.is-zero) .cal-bar-lbl {
+    color: var(--muted);
+  }
+  .cal-chart.cal-chart--collapsed .cal-bar-col:not(.is-zero):hover .cal-bar-lbl {
+    color: var(--text);
+  }
+  .cal-chart.cal-chart--month {
+    gap: 2px;
+    padding: 4px 1px 5px;
+  }
+  .cal-chart.cal-chart--month.cal-chart--collapsed {
+    padding-bottom: 2px;
+  }
+  .cal-bar-col {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 0;
+    margin: 0;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    color: inherit;
+    transition: background-color 0.12s ease;
+  }
+  .cal-bar-col:hover {
+    background: var(--pill-bg);
+  }
+  .cal-bar-col:focus-visible {
+    outline: 1.5px solid var(--cyan);
+    outline-offset: 1px;
+  }
+  .cal-bar-val {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 1px;
+    height: 20px;
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .cal-bar-tok, .cal-bar-usd {
+    display: block;
+    line-height: 1.05;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+  .cal-bar-tok {
+    font-size: 8.5px;
+    color: var(--muted);
+  }
+  .cal-bar-usd {
+    font-size: 8px;
+    color: var(--dim);
+  }
+  .cal-chart--month .cal-bar-col.is-selected .cal-bar-val,
+  .cal-chart--month .cal-bar-col.is-selected .cal-bar-tok,
+  .cal-chart--month .cal-bar-col.is-selected .cal-bar-usd,
+  .cal-chart--month .cal-bar-col.is-month-anchor .cal-bar-val,
+  .cal-chart--month .cal-bar-col.is-month-anchor .cal-bar-tok,
+  .cal-chart--month .cal-bar-col.is-month-anchor .cal-bar-usd {
+    overflow: visible;
+    max-width: none;
+  }
+  .cal-chart--month .cal-bar-col:first-child.is-selected .cal-bar-val,
+  .cal-chart--month .cal-bar-col:first-child.is-month-anchor .cal-bar-val {
+    align-self: flex-start;
+    align-items: flex-start;
+  }
+  .cal-chart--month .cal-bar-col:last-child.is-selected .cal-bar-val,
+  .cal-chart--month .cal-bar-col:last-child.is-month-anchor .cal-bar-val {
+    align-self: flex-end;
+    align-items: flex-end;
+  }
+  .cal-bar-col.is-selected .cal-bar-tok {
+    color: var(--text);
+    font-weight: 700;
+  }
+  .cal-bar-col.is-selected .cal-bar-usd {
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .cal-bar-track {
+    width: 100%;
+    height: 54px;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+  }
+  .cal-bar-fill {
+    width: 72%;
+    max-width: 22px;
+    min-width: 6px;
+    border-radius: 2.5px 2.5px 1px 1px;
+    background: color-mix(in srgb, var(--cyan) 26%, var(--pill-bg));
+    transition: background-color 0.14s ease, opacity 0.14s ease;
+  }
+  .cal-chart--month .cal-bar-fill {
+    width: 78%;
+    min-width: 5px;
+  }
+  .cal-bar-col:hover .cal-bar-fill {
+    background: color-mix(in srgb, var(--cyan) 46%, var(--pill-bg));
+  }
+  .cal-bar-col.is-selected .cal-bar-fill {
+    background: color-mix(in srgb, var(--cyan) 72%, var(--card));
+    box-shadow: none;
+  }
+  .cal-bar-col.is-zero .cal-bar-fill {
+    border-radius: 1px;
+    background: var(--divider);
+    opacity: 0.75;
+    box-shadow: none;
+  }
+  .cal-bar-col.is-zero:hover .cal-bar-fill {
+    background: var(--dim);
+    opacity: 0.65;
+  }
+  .cal-bar-col.is-zero.is-selected .cal-bar-fill {
+    background: var(--cyan);
+    opacity: 0.75;
+    box-shadow: none;
+  }
+  .cal-bar-lbl {
+    font-size: 9px;
+    line-height: 1.15;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+  .cal-bar-col.is-zero .cal-bar-lbl {
+    opacity: 0.65;
+  }
+  .cal-bar-col.is-selected .cal-bar-lbl {
+    color: var(--text);
+    font-weight: 700;
+    opacity: 1;
+  }
+  .cal-sel-hdr {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 5px 2px 4px;
+    font-size: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .cal-sel-left {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+    font-weight: 600;
+  }
+  .cal-sel-turns {
+    color: var(--muted);
+    font-weight: 400;
+  }
+  .cal-sel-right {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    color: var(--muted);
+  }
+  .cal-sep {
+    color: var(--dim);
+  }
+  .cal-models {
+    display: flex;
+    flex-direction: column;
+  }
+  .cal-m-hdr, .cal-m-row {
+    display: grid;
+    grid-template-columns: minmax(0, 36fr) minmax(0, 25fr) minmax(0, 19fr) minmax(0, 20fr);
+    align-items: start;
+    gap: 4px;
+    padding: 4px 2px;
+  }
+  .cal-m-hdr {
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--dim);
+    padding: 4px 2px 3px;
+    border-bottom: 1px solid var(--divider);
+  }
+  .cal-m-hdr > span:not(:first-child) {
+    text-align: right;
+  }
+  .cal-m-row {
+    border-bottom: 1px solid var(--divider);
+    font-size: 10px;
+    line-height: 1.25;
+  }
+  .cal-m-row:last-child {
+    border-bottom: none;
+  }
+  .cal-m-col {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 1.5px;
+  }
+  .cal-m-col.cal-m-name-col {
+    align-items: stretch;
+  }
+  .cal-m-name {
+    display: block;
+    font-size: 10px;
+    font-weight: 600;
+    color: color-mix(in srgb, var(--cal-m-color, var(--cyan-text)) 78%, var(--text));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cal-m-main {
+    display: block;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cal-m-sub {
+    display: block;
+    max-width: 100%;
+    font-size: 9px;
+    line-height: 1.15;
+    color: var(--muted);
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cal-m-bar {
+    display: block;
+    width: 100%;
+    height: 2px;
+    margin-top: 2px;
+    border-radius: 1px;
+    background: var(--pill-bg);
+    overflow: hidden;
+  }
+  .cal-m-bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: 1px;
+    background: var(--cal-m-color, color-mix(in srgb, var(--cyan) 72%, var(--blue)));
+  }
+  .cal-empty {
+    padding: 10px 4px 6px;
+    text-align: center;
+    font-size: 10px;
+    color: var(--dim);
+  }
+  .list-toggle-btn {
+    width: 100%;
+    margin-top: 1px;
+    padding: 2px 0 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--dim);
+    font-family: inherit;
+    font-size: 10px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: color 0.12s ease, background-color 0.12s ease;
+  }
+  .list-toggle-btn:hover {
+    color: var(--cyan);
+    background: var(--pill-bg);
+  }
+  .list-toggle-btn:focus-visible {
+    outline: 1.5px solid var(--cyan);
+    outline-offset: 1px;
+  }
+  .list-toggle-btn svg {
+    width: 12px;
+    height: 12px;
+    display: block;
+    transition: transform 0.14s ease;
+  }
+  .list-toggle-btn[aria-expanded="true"] svg {
+    transform: rotate(180deg);
+  }
+  /* Model Board Bar Chart (All Bars Highlighted + Hover Popover) */
+  .mb-panel {
+    margin-top: 5px;
+    width: 100%;
+    overflow: hidden;
+  }
+  .mb-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    padding: 4px 2px 2px;
+  }
+  .mb-chart.mb-chart--scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .mb-chart.mb-chart--scroll .mb-bar-col {
+    flex: 0 0 48px;
+    min-width: 46px;
+  }
+  .mb-bar-col .cal-bar-tok {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .mb-bar-col .cal-bar-usd {
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .mb-bar-col .cal-bar-lbl {
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .mb-bar-col:hover .cal-bar-lbl,
+  .mb-bar-col:focus-visible .cal-bar-lbl {
+    color: var(--text);
+  }
+  .mb-bar-col:not(.is-zero) .cal-bar-fill {
+    background: color-mix(in srgb, var(--mb-color, var(--cyan)) 68%, var(--card));
+    box-shadow: none;
+  }
+  .mb-bar-col:not(.is-zero):hover .cal-bar-fill,
+  .mb-bar-col:not(.is-zero):focus-visible .cal-bar-fill {
+    background: color-mix(in srgb, var(--mb-color, var(--cyan)) 88%, var(--card));
+    box-shadow: none;
+  }
+
+  /* Per-Turn Interactive SVG Line Chart (Header Tabs + Hover Popover) */
+  .turn-dur-tag {
+    margin-left: 4px;
+    font-size: 9.5px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .turn-tabs {
+    margin-left: auto;
+  }
+  .turn-tabs .cal-tab {
+    padding: 1px 4px;
+    font-size: 9px;
+  }
+  .turn-tabs .cal-tab.active[data-turn-metric="tps"] {
+    color: var(--green);
+    background: color-mix(in srgb, var(--green) 14%, transparent);
+    border-color: color-mix(in srgb, var(--green) 32%, transparent);
+  }
+  .turn-tabs .cal-tab.active[data-turn-metric="ttft"] {
+    color: var(--yellow);
+    background: color-mix(in srgb, var(--yellow) 14%, transparent);
+    border-color: color-mix(in srgb, var(--yellow) 32%, transparent);
+  }
+  .turn-tabs .cal-tab.active[data-turn-metric="dur"] {
+    color: var(--brand-droid);
+    background: color-mix(in srgb, var(--brand-droid) 15%, transparent);
+    border-color: color-mix(in srgb, var(--brand-droid) 34%, transparent);
+  }
+  .turn-panel {
+    margin-top: 4px;
+    width: 100%;
+    overflow: hidden;
+  }
+  .turn-svg-wrap {
+    width: 100%;
+    padding-bottom: 1px;
+  }
+  .turn-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    overflow: visible;
+  }
+  .turn-grid {
+    stroke: var(--divider);
+    stroke-width: 1;
+  }
+  .turn-axis-lbl {
+    fill: var(--muted);
+    font-size: 8.5px;
+    font-family: "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  .turn-line {
+    fill: none;
+    stroke: var(--turn-accent, var(--cyan));
+    stroke-width: 1.85;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .turn-line--out {
+    stroke: var(--yellow);
+    stroke-width: 1.65;
+  }
+  .turn-line--hit {
+    stroke: var(--green);
+    stroke-width: 1.65;
+  }
+  .turn-bar {
+    fill: color-mix(in srgb, var(--cyan) 42%, var(--card));
+    pointer-events: none;
+  }
+  .turn-bar--out {
+    fill: color-mix(in srgb, var(--yellow) 72%, var(--card));
+    pointer-events: none;
+  }
+  .turn-area {
+    pointer-events: none;
+  }
+  .turn-dot {
+    fill: var(--turn-accent, var(--cyan));
+    stroke: var(--card);
+    stroke-width: 1.2;
+    pointer-events: none;
+  }
+  .turn-dot--out {
+    fill: var(--yellow);
+  }
+  .turn-dot--hit {
+    fill: var(--green);
+  }
+  .turn-sel-dot--out {
+    fill: var(--yellow);
+    stroke: var(--card);
+    stroke-width: 1.4;
+    pointer-events: none;
+  }
+  .turn-sel-dot--hit {
+    fill: var(--green);
+    stroke: var(--card);
+    stroke-width: 1.4;
+    pointer-events: none;
+  }
+  .turn-legend {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 0 4px 2px;
+    font-size: 8.5px;
+    color: var(--muted);
+  }
+  .turn-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    white-space: nowrap;
+  }
+  .turn-legend-bar {
+    width: 7px;
+    height: 7px;
+    border-radius: 1.5px;
+    background: color-mix(in srgb, var(--cyan) 50%, var(--card));
+  }
+  .turn-legend-line {
+    width: 9px;
+    height: 2px;
+    border-radius: 1px;
+  }
+  .turn-compact-ring {
+    fill: none;
+    stroke: var(--orange);
+    stroke-width: 1.4;
+    pointer-events: none;
+  }
+  .turn-guide {
+    stroke: var(--turn-accent, var(--cyan));
+    stroke-opacity: 0.5;
+    stroke-width: 1;
+    stroke-dasharray: 2.5 2.5;
+    pointer-events: none;
+  }
+  .turn-sel-halo {
+    fill: var(--turn-accent, var(--cyan));
+    fill-opacity: 0.24;
+    pointer-events: none;
+  }
+  .turn-sel-dot {
+    fill: var(--turn-accent, var(--cyan));
+    stroke: var(--card);
+    stroke-width: 1.5;
+    pointer-events: none;
+  }
+  .turn-sel-dot.is-missing {
+    fill: var(--card);
+    stroke: var(--dim);
+    stroke-width: 1.4;
+  }
+  .turn-hit {
+    fill: transparent;
+    cursor: pointer;
+    outline: none;
+  }
+  .turn-hit:focus-visible {
+    fill: color-mix(in srgb, var(--cyan) 10%, transparent);
+  }
+  .turn-compact-badge {
+    font-size: 8.5px;
+    color: var(--orange);
+    background: color-mix(in srgb, var(--orange) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--orange) 32%, transparent);
+    border-radius: 999px;
+    padding: 0 4px;
+    line-height: 1.35;
+    flex-shrink: 0;
+  }
+
+  /* Shared Floating Chart Hover Popover */
+  .chart-tip {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 9999;
+    pointer-events: none;
+    width: 228px;
+    max-width: calc(100vw - 16px);
+    padding: 8px 9px;
+    border-radius: 9px;
+    background: var(--popover-bg);
+    border: 1px solid var(--popover-border);
+    box-shadow: var(--popover-shadow);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.1s ease;
+  }
+  .chart-tip.open {
+    opacity: 1;
+    visibility: visible;
+  }
+  .chart-tip.is-wide {
+    width: 292px;
+  }
+  .ct-cal-more {
+    margin-top: 4px;
+    text-align: center;
+    font-size: 8.5px;
+    color: var(--dim);
+  }
+  .ct-hdr {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px;
+    padding-bottom: 5px;
+    margin-bottom: 5px;
+    border-bottom: 1px solid var(--divider);
+  }
+  .ct-left {
+    min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1 1 auto;
+    overflow: hidden;
+  }
+  .ct-title {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--cyan-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ct-meta {
+    flex-shrink: 0;
+    font-size: 9px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .ct-right {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 3px;
+    font-size: 9.5px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .ct-right strong {
+    color: var(--text);
+    font-weight: 700;
+  }
+  .ct-pct {
+    font-size: 9px;
+    color: var(--muted);
+  }
+  .chart-tip .cal-m-hdr {
+    color: var(--muted);
+    font-size: 9.5px;
+    font-weight: 600;
+  }
+  .ct-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .ct-cell {
+    min-width: 0;
+    background: var(--popover-cell);
+    border: 1px solid color-mix(in srgb, var(--text) 7%, transparent);
+    border-radius: 5px;
+    padding: 3.5px 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .ct-cell.is-active {
+    background: var(--badge-bg);
+    border-color: var(--badge-border);
+  }
+  .ct-cell.is-active .ct-lbl {
+    color: var(--cyan-text);
+    font-weight: 600;
+  }
+  .ct-right.is-active {
+    background: var(--badge-bg);
+    border: 1px solid var(--badge-border);
+    border-radius: 4px;
+    padding: 0.5px 5px;
+    color: var(--cyan);
+  }
+  .ct-right.is-active strong {
+    color: var(--cyan);
+  }
+  .ct-lbl {
+    font-size: 9.5px;
+    font-weight: 600;
+    color: var(--muted);
+    letter-spacing: 0.15px;
+    white-space: nowrap;
+  }
+  .ct-val {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ct-sub {
+    font-size: 8px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sub-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 5px;
+  }
+  .sub-bar-row {
+    position: relative;
+    flex-shrink: 0;
+    overflow: hidden;
+    border-radius: 5px;
+    padding: 3.5px 6px;
+    background: var(--pill-bg);
+    border: 1px solid transparent;
+    cursor: default;
+    transition: border-color 0.12s ease, background-color 0.12s ease;
+  }
+  .sub-bar-row:hover,
+  .sub-bar-row:focus-visible {
+    border-color: color-mix(in srgb, var(--sub-color, var(--cyan)) 40%, transparent);
+    background: color-mix(in srgb, var(--sub-color, var(--cyan)) 8%, var(--pill-bg));
+    outline: none;
+  }
+  .sub-bar-bg {
+    position: absolute;
+    inset: 0 auto 0 0;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--sub-color, var(--cyan)) 20%, transparent);
+    pointer-events: none;
+    transition: width 0.2s ease;
+  }
+  .sub-bar-row.is-running .sub-bar-bg {
+    background: color-mix(in srgb, var(--sub-color, var(--cyan)) 28%, transparent);
+  }
+  .sub-bar-fg {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .sub-bar-left {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+  .sub-bar-model {
+    font-size: 9.5px;
+    color: var(--muted);
+    text-align: right;
+    white-space: nowrap;
+    max-width: 118px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sub-name {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sub-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .sub-dot.st-run {
+    background: var(--green);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 28%, transparent);
+    animation: subpulse 1.3s ease-in-out infinite;
+  }
+  .sub-dot.st-done {
+    background: var(--dim);
+    opacity: 0.72;
+  }
+  .sub-dot.st-err {
+    background: var(--red);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--red) 24%, transparent);
+  }
+  @keyframes subpulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.45; transform: scale(0.85); }
+  }
+  .sub-state-pill {
+    font-size: 8.5px;
+    font-weight: 600;
+    padding: 0.5px 5px;
+    border-radius: 999px;
+    line-height: 1.35;
+    flex-shrink: 0;
+  }
+  .sub-state-pill.st-run {
+    color: var(--green);
+    background: color-mix(in srgb, var(--green) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--green) 32%, transparent);
+  }
+  .sub-state-pill.st-done {
+    color: var(--dim);
+    background: color-mix(in srgb, var(--dim) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--dim) 26%, transparent);
+  }
+  .sub-state-pill.st-err {
+    color: var(--red);
+    background: color-mix(in srgb, var(--red) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--red) 32%, transparent);
+  }
+  .sub-agent {
+    font-size: 8.5px;
+    color: var(--dim);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .sub-empty {
+    margin-top: 6px;
+    padding: 4px 2px 2px;
+    font-size: 10.5px;
+    color: var(--dim);
+    text-align: center;
+  }
+  .sub-val {
+    display: block;
+    font-size: 9.5px;
+    color: var(--muted);
+    font-weight: 400;
+    line-height: 1.15;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Layer 6: Single-row quota foot bar + details drawer */
+  .foot-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    height: 27px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 5px 8px;
+    cursor: pointer;
+    user-select: none;
+    background: var(--foot-bg);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border-top: 1px solid var(--border);
+    font-size: 10px;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .fb-agent {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .fb-name {
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1px;
+    color: var(--text);
+  }
+  .fb-ring {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    transform: scaleX(-1) rotate(-90deg);
+  }
+  .fb-ring .ring-bg,
+  .fb-ring .ring-fg {
+    fill: none;
+    stroke-width: 2.2;
+  }
+  .fb-ring .ring-bg { stroke: color-mix(in srgb, var(--text) 16%, transparent); }
+  .fb-ring .ring-fg {
+    stroke: currentColor;
+    stroke-linecap: round;
+  }
+  .fb-caret {
+    flex: 0 0 auto;
+    color: var(--dim);
+    font-size: 10px;
+    line-height: 1;
+  }
+  .quota-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 28;
+    background: rgba(0, 0, 0, 0.35);
+  }
+  .quota-backdrop.open { display: block; }
+  .quota-drawer {
+    display: none;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 27px;
+    z-index: 29;
+    background: var(--card);
+    color: var(--text);
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.28);
+  }
+  .quota-drawer.open { display: block; }
+  .qd-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .qd-title {
+    font-weight: 700;
+    font-size: 11.5px;
+    color: var(--text);
+  }
+  .qd-head-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .qd-sum {
+    color: var(--muted);
+    font-size: 10px;
+    white-space: nowrap;
+  }
+  .qd-close,
+  .qd-refresh {
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 4px;
+  }
+  .qd-refresh {
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .qd-close:hover,
+  .qd-refresh:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--pill-bg);
+  }
+  .qd-refresh:disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+  @keyframes qdSpin {
+    to { transform: rotate(360deg); }
+  }
+  .qd-refresh.is-spinning {
+    color: var(--cyan);
+    animation: qdSpin 0.9s linear infinite;
+  }
+  .qd-col-hdr {
+    display: grid;
+    grid-template-columns: 22px minmax(20px, 1fr) 30px 38px 96px;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 15px 0;
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--dim);
+  }
+  .qd-col-hdr span { white-space: nowrap; }
+  .qd-col-hdr span:nth-child(3),
+  .qd-col-hdr span:nth-child(4),
+  .qd-col-hdr span:nth-child(5) {
+    text-align: right;
+  }
+  .qd-body {
+    max-height: calc(100vh - 82px);
+    overflow-y: auto;
+    padding: 6px 8px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .qd-card {
+    background: var(--card-hi);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 7px;
+  }
+  .qd-hdr {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding-bottom: 4px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--divider);
+  }
+  .qd-name {
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    font-weight: 700;
+    font-size: 11px;
+    color: var(--text);
+  }
+  .qd-est {
+    color: var(--muted);
+    font-size: 9.5px;
+    white-space: nowrap;
+  }
+  .qd-est strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .qd-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .qd-row {
+    display: grid;
+    grid-template-columns: 22px minmax(20px, 1fr) 30px 38px 96px;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    line-height: 1.25;
+  }
+  .qd-dim {
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 9.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .qd-bar {
+    width: 100%;
+    height: 5px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--text) 14%, transparent);
+    overflow: hidden;
+  }
+  .qd-fill {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: currentColor;
+  }
+  .qd-pct {
+    text-align: right;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .qd-rst {
+    text-align: right;
+    color: var(--dim);
+    font-size: 9.5px;
+    white-space: nowrap;
+  }
+  .qd-money {
+    color: var(--text);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: right;
+    white-space: nowrap;
+    font-size: 9.5px;
+  }
+  .qd-money strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .qd-sep {
+    color: var(--dim);
+    margin: 0 1.5px;
+  }
+  .qd-empty {
+    color: var(--dim);
+    font-size: 10px;
+    text-align: center;
+    padding: 2px 0;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- Layer 2: 2x2 Hero KPI Grid (Glanceable in 0.5s) -->
+  <div class="hero-grid">
+    <!-- Hero 1: Context Occupancy -->
+    <div class="kpi-card has-ring">
+      <div class="kpi-main">
+        <div class="kpi-label">
+          <span title="上次请求的输入；压缩后为估算，不是实时占用">上次请求上下文</span>
+        </div>
+        <div class="kpi-val mono" id="heroCtxPct">--%</div>
+        <div class="kpi-sub mono" id="heroCtxUsed">-- / --</div>
+      </div>
+      <svg class="kpi-ring" viewBox="0 0 36 36" aria-hidden="true">
+        <circle class="ring-track" cx="18" cy="18" r="14" />
+        <circle class="ring-fill c-blue" id="ringCtxIn" cx="18" cy="18" r="14" pathLength="100" stroke-dasharray="0 100" />
+        <circle class="ring-fill c-green" id="ringCtxCache" cx="18" cy="18" r="14" pathLength="100" stroke-dasharray="0 100" />
+      </svg>
+    </div>
+
+    <!-- Hero 2: Cache Hit Rate -->
+    <div class="kpi-card has-ring">
+      <div class="kpi-main">
+        <div class="kpi-label">
+          <span>缓存命中</span>
+        </div>
+        <div class="kpi-val mono c-dim" id="heroHitLatest">--%</div>
+        <div class="kpi-sub mono">累计 <strong class="c-dim" id="heroHitCum">--%</strong></div>
+      </div>
+      <svg class="kpi-ring" viewBox="0 0 36 36" aria-hidden="true">
+        <circle class="ring-track" cx="18" cy="18" r="14" />
+        <circle class="ring-fill c-green" id="ringHit" cx="18" cy="18" r="14" pathLength="100" stroke-dasharray="0 100" />
+      </svg>
+    </div>
+
+    <!-- Hero 3: Decode TPS -->
+    <div class="kpi-card has-ring">
+      <div class="kpi-main">
+        <div class="kpi-label">
+          <span title="全会话 Σ输出 / Σ有效流秒数（含思考）；极短流不代表持续速度">解码速度 TPS</span>
+        </div>
+        <div class="kpi-val mono" id="heroTpsLatest">--</div>
+        <div class="kpi-sub mono">平均 <strong id="heroTpsAvg">--</strong></div>
+      </div>
+      <svg class="kpi-spark" id="sparkTps" viewBox="0 0 24 26" aria-hidden="true"></svg>
+    </div>
+
+    <!-- Hero 4: TTFT Latency -->
+    <div class="kpi-card has-ring">
+      <div class="kpi-main">
+        <div class="kpi-label">
+          <span title="请求至首个输出 Token（可含思考，不一定是可见文字）">首 Token 延迟</span>
+        </div>
+        <div class="kpi-val mono" id="heroTtftLatest">--</div>
+        <div class="kpi-sub mono">平均 <strong id="heroTtftAvg">--</strong></div>
+      </div>
+      <svg class="kpi-spark" id="sparkTtft" viewBox="0 0 24 26" aria-hidden="true"></svg>
+    </div>
+  </div>
+
+  <!-- Layer 3: 2-Card Token Breakdown (Same KPI Card + Dual Ring Layout) -->
+  <div class="hero-grid tk-grid">
+    <!-- Input Card (Ring: Cache Hit vs New Input) -->
+    <div class="kpi-card has-ring tk-ring-card" id="tkInCard" tabindex="0">
+      <div class="kpi-main">
+        <div class="kpi-label">
+          <span>输入 In</span>
+        </div>
+        <div class="kpi-val mono" id="cumPrompt">--</div>
+        <div class="kpi-sub mono">API <strong id="costPrompt">--</strong></div>
+      </div>
+      <svg class="kpi-ring" viewBox="0 0 36 36" aria-hidden="true">
+        <circle class="ring-track" cx="18" cy="18" r="14" />
+        <circle class="ring-fill c-blue" id="ringInNew" cx="18" cy="18" r="14" pathLength="100" stroke-dasharray="0 100" />
+        <circle class="ring-fill c-green" id="ringInCache" cx="18" cy="18" r="14" pathLength="100" stroke-dasharray="0 100" />
+      </svg>
+    </div>
+
+    <!-- Output Card (Ring: Thinking vs Reply) -->
+    <div class="kpi-card has-ring tk-ring-card" id="tkOutCard" tabindex="0">
+      <div class="kpi-main">
+        <div class="kpi-label">
+          <span>输出 Out</span>
+        </div>
+        <div class="kpi-val mono" id="cumOut">--</div>
+        <div class="kpi-sub mono">API <strong id="costOut">--</strong></div>
+      </div>
+      <svg class="kpi-ring" viewBox="0 0 36 36" aria-hidden="true">
+        <circle class="ring-track" cx="18" cy="18" r="14" />
+        <circle class="ring-fill c-cyan" id="ringOutResp" cx="18" cy="18" r="14" pathLength="100" stroke-dasharray="0 100" />
+        <circle class="ring-fill c-yellow" id="ringOutThink" cx="18" cy="18" r="14" pathLength="100" stroke-dasharray="0 100" />
+      </svg>
+    </div>
+  </div>
+
+  <!-- Layer 3.5: Collapsible Per-Turn History -->
+  <details class="turns-box" id="turnBox">
+    <summary class="turns-summary">
+      <span id="turnSummary">逐轮明细</span>
+      <span class="cal-tabs turn-tabs" role="tablist" aria-label="逐轮指标切换">
+        <button type="button" class="cal-tab active" id="turnTabCtx" role="tab" aria-selected="true" data-turn-metric="ctx">上下文</button>
+        <button type="button" class="cal-tab" id="turnTabPrompt" role="tab" aria-selected="false" data-turn-metric="prompt">Prompt</button>
+        <button type="button" class="cal-tab" id="turnTabTps" role="tab" aria-selected="false" data-turn-metric="tps">TPS</button>
+        <button type="button" class="cal-tab" id="turnTabTtft" role="tab" aria-selected="false" data-turn-metric="ttft">TTFT</button>
+        <button type="button" class="cal-tab" id="turnTabDur" role="tab" aria-selected="false" data-turn-metric="dur">耗时</button>
+      </span>
+    </summary>
+    <div class="turn-panel mono" id="turnPanel"></div>
+  </details>
+
+  <!-- Layer 4: Collapsible Models & API Cost Board (Current Session + Subagents) -->
+  <details class="turns-box" id="modelBox">
+    <summary>
+      <span id="modelSummary">模型看板</span>
+      <span class="mono c-dim" id="modelBadge">--</span>
+    </summary>
+    <div id="modelEmpty" class="sub-empty">暂无模型调用记录</div>
+    <div class="mb-panel mono" id="modelPanel" style="display:none"></div>
+  </details>
+
+  <!-- Layer 5: Collapsible Subagent Token Consumption -->
+  <section class="turns-box" id="subBox">
+    <div class="sub-box-summary" id="subBoxSummary" role="button" tabindex="0" aria-expanded="false">
+      <span id="subSummary">子代理</span>
+      <span class="mono c-dim" id="subBadge">未派出</span>
+    </div>
+    <div class="sub-box-body">
+      <div id="subEmpty" class="sub-empty">当前会话未派出子代理</div>
+      <div class="sub-list mono" id="subList" style="display:none"></div>
+    </div>
+  </section>
+
+  <!-- Layer 6: Collapsible Calendar Usage Statistics (Day | Week | Month) -->
+  <details class="turns-box" id="calBox">
+    <summary class="turns-summary">
+      <span id="calSummary">日历</span>
+      <span class="cal-tabs" role="tablist" aria-label="日历维度切换">
+        <button type="button" class="cal-tab active" id="calTabDay" role="tab" aria-selected="true" data-mode="day">日</button>
+        <button type="button" class="cal-tab" id="calTabWeek" role="tab" aria-selected="false" data-mode="week">周</button>
+        <button type="button" class="cal-tab" id="calTabMonth" role="tab" aria-selected="false" data-mode="month">月</button>
+      </span>
+      <span class="mono c-dim" id="calBadge" style="display:none"></span>
+    </summary>
+    <div class="cal-panel mono" id="calPanel"></div>
+  </details>
+</div>
+
+<!-- Shared Chart Hover Popover -->
+<div class="chart-tip mono" id="chartTip" role="tooltip" aria-hidden="true"></div>
+
+<!-- Layer 6: Single-row quota rings + expandable details -->
+<div class="quota-backdrop" id="quotaBackdrop"></div>
+<div class="quota-drawer" id="quotaDrawer" role="dialog" aria-label="额度">
+  <div class="qd-head">
+    <div class="qd-title">额度</div>
+    <div class="qd-head-right">
+      <span class="qd-sum mono" id="qdSum">周 -- · 月 --</span>
+      <button type="button" class="qd-refresh" id="qdRefresh" aria-label="刷新配额" title="按需调用官方 CLI 刷新配额">↻</button>
+      <button type="button" class="qd-close" id="qdClose" aria-label="关闭">✕</button>
+    </div>
+  </div>
+  <div class="qd-col-hdr mono">
+    <span>周期</span>
+    <span>进度</span>
+    <span>剩余</span>
+    <span>重置</span>
+    <span>估算花费 / 额度</span>
+  </div>
+  <div class="qd-body mono" id="qdBody"></div>
+</div>
+<div class="foot-bar mono" id="footBar" role="button" tabindex="0" aria-controls="quotaDrawer" aria-expanded="false" title="点击展开配额明细">
+  <div class="fb-agent" id="fbAgyG">
+    <span class="fb-name">Agy-G</span>
+    <svg class="fb-ring" viewBox="0 0 16 16" aria-hidden="true"><circle class="ring-bg" cx="8" cy="8" r="5.5" stroke-width="2.2"></circle><circle class="ring-fg c-dim" id="fbRingAgyG" cx="8" cy="8" r="5.5" stroke-width="2.2"></circle></svg>
+  </div>
+  <div class="fb-agent" id="fbAgyC">
+    <span class="fb-name">Agy-C</span>
+    <svg class="fb-ring" viewBox="0 0 16 16" aria-hidden="true"><circle class="ring-bg" cx="8" cy="8" r="5.5" stroke-width="2.2"></circle><circle class="ring-fg c-dim" id="fbRingAgyC" cx="8" cy="8" r="5.5" stroke-width="2.2"></circle></svg>
+  </div>
+  <div class="fb-agent" id="fbCodex" style="display:none">
+    <span class="fb-name">Codex</span>
+    <svg class="fb-ring" viewBox="0 0 16 16" aria-hidden="true"><circle class="ring-bg" cx="8" cy="8" r="5.5" stroke-width="2.2"></circle><circle class="ring-fg c-dim" id="fbRingCodex" cx="8" cy="8" r="5.5" stroke-width="2.2"></circle></svg>
+  </div>
+  <div class="fb-agent" id="fbDroid" style="display:none">
+    <span class="fb-name">Droid</span>
+    <svg class="fb-ring" viewBox="0 0 16 16" aria-hidden="true"><circle class="ring-bg" cx="8" cy="8" r="5.5" stroke-width="2.2"></circle><circle class="ring-fg c-dim" id="fbRingDroid" cx="8" cy="8" r="5.5" stroke-width="2.2"></circle></svg>
+  </div>
+  <div class="fb-agent" id="fbGrok" style="display:none">
+    <span class="fb-name">Grok</span>
+    <svg class="fb-ring" viewBox="0 0 16 16" aria-hidden="true"><circle class="ring-bg" cx="8" cy="8" r="5.5" stroke-width="2.2"></circle><circle class="ring-fg c-dim" id="fbRingGrok" cx="8" cy="8" r="5.5" stroke-width="2.2"></circle></svg>
+  </div>
+  <span class="fb-caret" id="fbCaret">▴</span>
+</div>
+
+<script>
+  const storageFallback = new Map();
+  function safeGetStorage(area, key) {
+    try { return window[area].getItem(key); }
+    catch (_) { return storageFallback.get(area + ':' + key) || null; }
+  }
+  function safeSetStorage(area, key, value) {
+    storageFallback.set(area + ':' + key, String(value));
+    try { window[area].setItem(key, String(value)); } catch (_) {}
+  }
+  const renderedHtml = new WeakMap();
+  function setHtml(element, html) {
+    if (!element || renderedHtml.get(element) === html) return;
+    element.innerHTML = html;
+    renderedHtml.set(element, html);
+  }
+  function showStatusError(error) {
+    const status = error && error.status;
+    const text = status === 401 ? '⚠️ 网关鉴权失效 (401)' :
+      (status === 502 || status === 503) ? `⏳ 服务重载中 (${status})` :
+      error && error.kind === 'timeout' ? '⚠️ 请求超时，保留上次数据' :
+      error && error.kind === 'stale' ? '⏳ 数据刷新繁忙，保留上次数据' :
+      status ? `⚠️ 服务请求失败 (${status})` : '⚠️ 连接异常，保留上次数据';
+    const label = document.getElementById('cacheTtl');
+    if (label) {
+      label.textContent = text;
+      label.className = 'cache-ttl mono c-orange';
+      label.title = error && error.message || text;
+    }
+  }
+  async function request(url, options = {}, format = 'json', timeoutMs = 4500) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      const body = await response.text();
+      if (!response.ok) throw Object.assign(new Error(body.slice(0, 240) || response.statusText), { status: response.status });
+      return format === 'text' ? body : JSON.parse(body);
+    } catch (error) {
+      if (controller.signal.aborted) throw Object.assign(new Error('请求超时'), { kind: 'timeout' });
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
+  const metric = (v, digits, unit = '') => Number.isFinite(v) ? v.toFixed(digits) + unit : '—';
+  const hit = row => metric(row.prompt > 0 ? row.hit_pct : null, 1, '%');
+  const rateKind = {decode:'解码', request:'请求', active:'活跃期', step_est:'步骤估算', turn:'整轮'};
+  const costKind = {reported:'日志实报', mixed:'实报与估算', estimated:'价表估算', unmatched_estimate:'未匹配·估算'};
+  function fmtK(n) {
+    if (n == null) return '—';
+    const v = Number(n || 0);
+    if (v >= 999995) return (v / 1000000).toFixed(2) + 'M';
+    if (v >= 100000 && v % 10000 === 0) return (v / 1000).toFixed(0) + 'k';
+    if (v >= 100000) return (v / 1000).toFixed(1) + 'k';
+    if (v >= 1000) return (v / 1000).toFixed(1) + 'k';
+    return String(v);
+  }
+  function fmtUsd(n) {
+    if (n == null) return '—';
+    const v = Number(n || 0);
+    if (v <= 0) return '$0.00';
+    if (v < 0.01) return '<$0.01';
+    if (v >= 1000) return '$' + v.toFixed(0);
+    return '$' + v.toFixed(2);
+  }
+  function fmtFootUsd(n) {
+    if (!Number.isFinite(n)) return '--';
+    const v = Number(n);
+    if (v <= 0) return '$0';
+    if (v < 0.01) return '<$0.01';
+    if (v < 10) return '$' + v.toFixed(2);
+    if (v < 100) return '$' + v.toFixed(1);
+    return '$' + Math.round(v);
+  }
+  function ctxClass(p, used, limit) {
+    const lim = (typeof limit === 'number' && limit > 0) ? limit : 300000;
+    const u = typeof used === 'number' ? used : (p * lim / 100);
+    if (p >= 85 || u >= lim * 0.85) return 'c-red';
+    if (p >= 65 || u >= lim * 0.65) return 'c-orange';
+    if (p >= (125000 * 100 / 300000) || u >= lim * (125000 / 300000)) return 'c-yellow';
+    return 'c-green';
+  }
+  function hitClass(h) {
+    if (h > 95) return 'c-green';
+    if (h >= 90) return 'c-yellow';
+    if (h >= 80) return 'c-orange';
+    return 'c-red';
+  }
+  function quotaClass(remPct) {
+    if (remPct <= 10) return 'c-red';
+    if (remPct <= 25) return 'c-orange';
+    if (remPct <= 50) return 'c-yellow';
+    return 'c-green';
+  }
+  function fmtRst(sec) {
+    const s = Number(sec || 0);
+    if (!Number.isFinite(s) || s <= 0) return '';
+    if (s < 60) return '<1m';
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (d > 0) return `${d}d${String(h).padStart(2, '0')}h`;
+    if (h > 0) return `${h}h${String(m).padStart(2, '0')}m`;
+    return `${m}m`;
+  }
+  const RING_C = 2 * Math.PI * 5.5;
+  const FOOT_AGENTS = [
+    { id: 'fbAgyG', ring: 'fbRingAgyG', name: 'Agy-G', prefix: 'gemini', brand: '--brand-gemini', optional: false },
+    { id: 'fbAgyC', ring: 'fbRingAgyC', name: 'Agy-C', prefix: '3p', brand: '--brand-claude', optional: false },
+    { id: 'fbCodex', ring: 'fbRingCodex', name: 'Codex', prefix: 'codex', brand: '--brand-codex', optional: true, flag: 'codex-installed' },
+    { id: 'fbDroid', ring: 'fbRingDroid', name: 'Droid', prefix: 'droid', brand: '--brand-droid', optional: true, flag: 'droid-installed' },
+    { id: 'fbGrok', ring: 'fbRingGrok', name: 'Grok', prefix: 'grok', brand: '--brand-grok', optional: true, flag: 'grok-installed' },
+  ];
+  function calcEstTotalUsd(b) {
+    if (!b || b.estimate_ok !== true) return null;
+    if (Number.isFinite(b.estimate_total_usd) && b.estimate_total_usd > 0) return b.estimate_total_usd;
+    if (!Number.isFinite(b.estimate_usd) || b.estimate_usd <= 0) return null;
+    const usedFrac = b.estimate_mode === 'delta' ? b.estimate_used_frac : (Number.isFinite(b.pct) ? (100 - b.pct) / 100 : null);
+    const total = Number.isFinite(usedFrac) && usedFrac >= 0.0005 ? b.estimate_usd / usedFrac : null;
+    return Number.isFinite(total) ? total : null;
+  }
+  function fmtEstUsd(val) {
+    if (!Number.isFinite(val) || val <= 0) return '--';
+    if (val < 10) return '~$' + val.toFixed(2);
+    if (val < 100) return '~$' + val.toFixed(1);
+    return '~$' + Math.round(val).toLocaleString('en-US');
+  }
+  function agentMinPct(qMap, prefix) {
+    const pcts = [];
+    for (const key of Object.keys(qMap).filter(key => key.startsWith(prefix + '-'))) {
+      const b = qMap[key];
+      if (b && Number.isFinite(b.pct)) pcts.push(b.pct);
+    }
+    return pcts.length ? Math.min.apply(null, pcts) : null;
+  }
+  function paintFootRing(id, pct) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const has = typeof pct === 'number' && isFinite(pct);
+    const dash = has ? (Math.max(0, Math.min(100, pct)) / 100) * RING_C : 0;
+    el.setAttribute('stroke-dasharray', dash.toFixed(2) + ' ' + RING_C.toFixed(2));
+    el.setAttribute('class', 'ring-fg ' + (has ? quotaClass(pct) : 'c-dim'));
+  }
+  function renderDrawerRow(label, b) {
+    const pctCls = quotaClass(b.pct);
+    const pctStr = b.pct.toFixed(0) + '%';
+    const countdown = fmtRst(b.reset_sec);
+    const rstStr = countdown ? (b.reset_is_estimate ? '~' : '') + countdown : '--';
+    const rstTitle = b.window_boundary_uncertain ? '窗口边界不明' : '';
+    const usdStr = typeof b.usd === 'number' ? fmtFootUsd(b.usd) : '--';
+    const estimate = calcEstTotalUsd(b);
+    const deltaPct = Number.isFinite(b.estimate_delta_pct) ? b.estimate_delta_pct : 0;
+    const deltaTip = estimate != null ? '按基线后新增估算花费 / 新增已用占比推算' : '增量样本累积中' + (deltaPct >= 5 ? '（等待满 5 分钟且有新增花费）' : `（已观测 ${Number(deltaPct.toFixed(2))}% / 需 5%）`);
+    const usdTitle = b.estimate_mode === 'delta' ? deltaTip : (b.usd_scope === 'legacy_rolling' ? '旧口径：滚动估算花费' : '本地估算花费 / 预计额度');
+    const estStr = fmtEstUsd(estimate);
+    const width = Math.max(0, Math.min(100, b.pct)).toFixed(1);
+    return `<div class="qd-row"><span class="qd-dim" title="${escHtml(b.limit_id || '')}">${escHtml(label)}</span><span class="qd-bar"><span class="qd-fill ${pctCls}" style="width:${width}%"></span></span><span class="qd-pct ${pctCls}">${pctStr}</span><span class="qd-rst" title="${rstTitle}">${escHtml(rstStr)}</span><span class="qd-money" title="${usdTitle}"><strong>${usdStr}</strong><span class="qd-sep">/</span><span class="c-text">${estStr}</span></span></div>`;
+  }
+  function estWeeklyUsd(qMap, prefix) {
+    const fromWeek = calcEstTotalUsd(qMap[prefix + '-weekly']);
+    if (fromWeek != null) return fromWeek;
+    const fromMonth = calcEstTotalUsd(qMap[prefix + '-monthly']);
+    if (fromMonth != null) return fromMonth * (7 / 30);
+    return null;
+  }
+  function estMonthlyUsd(qMap, prefix) {
+    const fromMonth = calcEstTotalUsd(qMap[prefix + '-monthly']);
+    if (fromMonth != null) return fromMonth;
+    const fromWeek = calcEstTotalUsd(qMap[prefix + '-weekly']);
+    const monthly = fromWeek == null ? null : fromWeek * (30 / 7);
+    return Number.isFinite(monthly) ? monthly : null;
+  }
+  function renderAgentCard(name, qMap, prefix) {
+    const dims = [['5h', prefix + '-5h'], ['周', prefix + '-weekly'], ['月', prefix + '-monthly'],
+      ...Object.keys(qMap).filter(key => key.startsWith(prefix + '-window-')).map(key => ['未知周期', key])];
+    const rows = [];
+    for (const pair of dims) {
+      const b = qMap[pair[1]];
+      if (b && Number.isFinite(b.pct)) rows.push(renderDrawerRow(b.window_label || pair[0], b));
+    }
+    const body = rows.length ? rows.join('') : '<div class="qd-empty">暂无官方配额数据</div>';
+    const estMo = fmtEstUsd(estMonthlyUsd(qMap, prefix));
+    return `<section class="qd-card"><div class="qd-hdr"><span class="qd-name">${name}</span><span class="qd-est">预计月额度 <strong>${estMo}</strong></span></div><div class="qd-rows">${body}</div></section>`;
+  }
+  const QUOTA_CACHE_TTL_SEC = 300;
+  let latestQuotaMap = {};
+  let latestQuotaFetchedAt = 0;
+  let latestModelObj = null;
+  let quotaRefreshing = false;
+  let quotaRefreshError = '';
+
+  function quotaCacheExpired(maxAgeSec = QUOTA_CACHE_TTL_SEC) {
+    if (latestQuotaFetchedAt <= 0) return true;
+    return ((Date.now() / 1000) - latestQuotaFetchedAt) >= maxAgeSec;
+  }
+
+  function updateQuotaRefreshBtn() {
+    const btn = document.getElementById('qdRefresh');
+    if (!btn) return;
+    btn.disabled = quotaRefreshing;
+    btn.classList.toggle('is-spinning', quotaRefreshing);
+    btn.setAttribute('aria-busy', quotaRefreshing ? 'true' : 'false');
+    if (quotaRefreshing) {
+      btn.title = '正在刷新配额...';
+      return;
+    }
+    if (quotaRefreshError) {
+      btn.title = `刷新失败 (${quotaRefreshError}) · 点击重试`;
+      return;
+    }
+    if (latestQuotaFetchedAt > 0) {
+      const ageSec = Math.max(0, Math.floor(Date.now() / 1000 - latestQuotaFetchedAt));
+      const ageStr = ageSec < 60 ? `${ageSec}s 前` : (ageSec < 3600 ? `${Math.floor(ageSec / 60)}m 前` : `${Math.floor(ageSec / 3600)}h 前`);
+      btn.title = `上次刷新 ${ageStr} · 点击立即刷新（打开面板超过 5 分钟自动刷新）`;
+    } else {
+      btn.title = '点击立即刷新配额';
+    }
+  }
+
+  async function triggerQuotaRefresh({ manual = false } = {}) {
+    if (quotaRefreshing) return;
+    const mode = manual ? 'manual' : 'open';
+    const expectProbe = manual || quotaCacheExpired();
+    quotaRefreshing = true;
+    if (expectProbe) {
+      quotaRefreshError = '';
+      updateQuotaRefreshBtn();
+    }
+    const spinDelay = expectProbe ? null : setTimeout(() => {
+      if (quotaRefreshing) updateQuotaRefreshBtn();
+    }, 120);
+    try {
+      const tok = new URLSearchParams(window.location.search).get('token') || '';
+      const params = ['mode=' + mode];
+      if (tok.trim()) params.push('token=' + encodeURIComponent(tok.trim()));
+      const out = await request('/api/quota/refresh?' + params.join('&'), { method: 'POST' }, 'json', 20000);
+      if (out && typeof out.quota_fetched_at === 'number') {
+        latestQuotaFetchedAt = out.quota_fetched_at;
+      }
+      if (out && out.quota) {
+        latestQuotaMap = out.quota;
+        renderQuotaFootBar(out.quota, latestModelObj);
+      }
+      if (out && out.ok === false) {
+        quotaRefreshError = out.error || '刷新失败';
+      } else {
+        quotaRefreshError = '';
+      }
+      if (out && out.refreshed) {
+        await refresh(true);
+      }
+    } catch (e) {
+      if (expectProbe || manual) {
+        quotaRefreshError = (e && e.kind === 'timeout') ? '请求超时' : '刷新失败';
+      }
+    } finally {
+      if (spinDelay) clearTimeout(spinDelay);
+      quotaRefreshing = false;
+      updateQuotaRefreshBtn();
+    }
+  }
+
+  function renderQuotaFootBar(q, modelObj) {
+    if (modelObj !== undefined) latestModelObj = modelObj;
+    const mName = ((latestModelObj && (latestModelObj.name || latestModelObj.short)) || '').toLowerCase();
+    const is3p = mName.includes('claude') || mName.includes('opus') || mName.includes('sonnet') || mName.includes('gpt');
+    const isGemini = !is3p && mName.length > 0;
+    const qMap = q || {};
+    latestQuotaMap = qMap;
+    const cards = [];
+    let totEstWeek = 0;
+    let totEstMonth = 0;
+    let partialEstimates = false;
+    for (const agent of FOOT_AGENTS) {
+      const installed = !agent.optional || Boolean(qMap[agent.flag] && qMap[agent.flag].installed);
+      const el = document.getElementById(agent.id);
+      if (el) el.style.display = installed ? 'flex' : 'none';
+      if (!installed) continue;
+      const minPct = agentMinPct(qMap, agent.prefix);
+      paintFootRing(agent.ring, minPct);
+      if (el) {
+        const pctTxt = minPct == null ? '--' : (minPct >= 99.95 ? '100%' : minPct.toFixed(0) + '%');
+        el.title = agent.name + ' 最低剩余: ' + pctTxt + ' (点击展开详情)';
+        el.classList.toggle('active', (agent.prefix === 'gemini' && isGemini) || (agent.prefix === '3p' && is3p));
+      }
+      const wEst = estWeeklyUsd(qMap, agent.prefix);
+      const mEst = estMonthlyUsd(qMap, agent.prefix);
+      if (wEst == null || mEst == null) partialEstimates = true;
+      if (Number.isFinite(wEst) && wEst > 0) totEstWeek += wEst;
+      if (Number.isFinite(mEst) && mEst > 0) totEstMonth += mEst;
+      cards.push(renderAgentCard(agent.name, qMap, agent.prefix));
+    }
+    const body = document.getElementById('qdBody');
+    setHtml(body, cards.join(''));
+    const sum = document.getElementById('qdSum');
+    if (sum) {
+      const uw = fmtEstUsd(totEstWeek > 0 ? totEstWeek : null);
+      const um = fmtEstUsd(totEstMonth > 0 ? totEstMonth : null);
+      sum.innerHTML = `周 <strong class="c-text">${uw}</strong> · 月 <strong class="c-text">${um}</strong>${partialEstimates ? ' · 部分缺项' : ''}`;
+      sum.title = '仅合计可估算的 Agent，不是官方额度';
+    }
+    updateQuotaRefreshBtn();
+  }
+  function setQuotaDrawer(open, { userInitiated = false } = {}) {
+    const drawer = document.getElementById('quotaDrawer');
+    const backdrop = document.getElementById('quotaBackdrop');
+    const bar = document.getElementById('footBar');
+    const caret = document.getElementById('fbCaret');
+    const wasOpen = Boolean(drawer && drawer.classList.contains('open'));
+    if (drawer) drawer.classList.toggle('open', open);
+    if (backdrop) backdrop.classList.toggle('open', open);
+    if (bar) {
+      bar.classList.toggle('open', open);
+      bar.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+    if (caret) caret.textContent = open ? '▾' : '▴';
+    if (open) { const close = document.getElementById('qdClose'); if (close) close.focus(); }
+    if (open && !wasOpen && userInitiated) {
+      triggerQuotaRefresh({ manual: false });
+    }
+    try { safeSetStorage('sessionStorage', 'quotaDrawerOpen', open ? '1' : '0'); } catch (e) {}
+  }
+  const footBarEl = document.getElementById('footBar');
+  if (footBarEl) {
+    footBarEl.addEventListener('click', () => setQuotaDrawer(!footBarEl.classList.contains('open'), { userInitiated: true }));
+    footBarEl.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setQuotaDrawer(!footBarEl.classList.contains('open'), { userInitiated: true }); }
+    });
+  }
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { setQuotaDrawer(false); if (footBarEl) footBarEl.focus(); }
+  });
+  const quotaBackdropEl = document.getElementById('quotaBackdrop');
+  if (quotaBackdropEl) quotaBackdropEl.addEventListener('click', () => setQuotaDrawer(false));
+  const qdCloseEl = document.getElementById('qdClose');
+  if (qdCloseEl) qdCloseEl.addEventListener('click', () => setQuotaDrawer(false));
+  const qdRefreshEl = document.getElementById('qdRefresh');
+  if (qdRefreshEl) qdRefreshEl.addEventListener('click', () => triggerQuotaRefresh({ manual: true }));
+  setQuotaDrawer(safeGetStorage('sessionStorage', 'quotaDrawerOpen') === '1');
+  function ttftClass(s) {
+    if (!Number.isFinite(s)) return 'c-dim';
+    if (s < 8) return 'c-green';
+    if (s < 15) return 'c-yellow';
+    if (s < 25) return 'c-orange';
+    return 'c-red';
+  }
+  function tpsClass(t) {
+    if (!Number.isFinite(t)) return 'c-dim';
+    if (t > 150) return 'c-green';
+    if (t >= 100) return 'c-yellow';
+    if (t >= 80) return 'c-orange';
+    return 'c-red';
+  }
+
+  function escHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  const UI_VERSION = __UI_VERSION__;
+  let lastThemeJson = '';
+  let lastThemeObj = null;
+
+  function applyTheme(t, force) {
+    if (!t || typeof t !== 'object') return;
+    const rawJson = JSON.stringify(t);
+    if (!force && rawJson === lastThemeJson) return;
+    lastThemeJson = rawJson;
+    lastThemeObj = t;
+    try { safeSetStorage('localStorage', 'agyCockpitTheme', rawJson); } catch (e) {}
+
+    let isDark = true;
+    if (t.mode === 'light') {
+      isDark = false;
+    } else if (t.mode === 'system') {
+      isDark = !(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+    }
+    const seeds = (isDark ? t.dark : t.light) || {};
+    const bg = seeds.background || (isDark ? '#101010' : '#F9F9F9');
+    const fg = seeds.foreground || (isDark ? '#cccccc' : '#101010');
+    const primary = seeds.primary || '#007acc';
+
+    const root = document.documentElement.style;
+    root.colorScheme = isDark ? 'dark' : 'light';
+    root.setProperty('--bg', bg);
+    root.setProperty('--text', fg);
+    root.setProperty('--cyan', primary);
+
+    if (isDark) {
+      root.setProperty('--cyan-text', 'color-mix(in srgb, var(--cyan) 62%, #ffffff)');
+      root.setProperty('--card', 'color-mix(in srgb, #ffffff 5.5%, var(--bg))');
+      root.setProperty('--card-hi', 'color-mix(in srgb, #ffffff 9%, var(--bg))');
+      root.setProperty('--popover-bg', 'color-mix(in srgb, #dce8f8 12%, var(--bg))');
+      root.setProperty('--popover-border', 'color-mix(in srgb, var(--text) 24%, var(--card))');
+      root.setProperty('--popover-cell', 'color-mix(in srgb, #000000 22%, var(--popover-bg))');
+      root.setProperty('--popover-shadow', '0 12px 32px rgba(0, 0, 0, 0.68), 0 0 0 1px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.07)');
+      root.setProperty('--border', 'color-mix(in srgb, var(--text) 12%, var(--card))');
+      root.setProperty('--divider', 'color-mix(in srgb, var(--text) 6%, transparent)');
+      root.setProperty('--pill-bg', 'color-mix(in srgb, var(--text) 7%, transparent)');
+      root.setProperty('--track-bg', 'color-mix(in srgb, #000000 38%, var(--bg))');
+      root.setProperty('--foot-bg', 'color-mix(in srgb, var(--bg) 92%, transparent)');
+      root.setProperty('--muted', 'color-mix(in srgb, var(--text) 62%, var(--bg))');
+      root.setProperty('--dim', 'color-mix(in srgb, var(--text) 42%, var(--bg))');
+      root.setProperty('--blue', '#4c9aff');
+      root.setProperty('--green', '#4cc86b');
+      root.setProperty('--yellow', '#f5cd47');
+      root.setProperty('--orange', '#fea362');
+      root.setProperty('--red', '#f87168');
+      root.setProperty('--brand-gemini', '#4c9aff');
+      root.setProperty('--brand-claude', '#d97757');
+      root.setProperty('--brand-codex', '#10a37f');
+      root.setProperty('--brand-droid', '#a78bfa');
+      root.setProperty('--brand-grok', '#f472b6');
+      root.setProperty('--ring-track', 'var(--track-bg)');
+    } else {
+      root.setProperty('--cyan-text', 'color-mix(in srgb, var(--cyan) 84%, #000000)');
+      root.setProperty('--card', 'color-mix(in srgb, var(--bg) 65%, #ffffff)');
+      root.setProperty('--card-hi', 'color-mix(in srgb, #000000 6%, var(--bg))');
+      root.setProperty('--popover-bg', '#ffffff');
+      root.setProperty('--popover-border', 'color-mix(in srgb, var(--text) 18%, #ffffff)');
+      root.setProperty('--popover-cell', 'color-mix(in srgb, var(--text) 4.5%, #ffffff)');
+      root.setProperty('--popover-shadow', '0 10px 28px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.06)');
+      root.setProperty('--border', 'color-mix(in srgb, var(--text) 14%, var(--card))');
+      root.setProperty('--divider', 'color-mix(in srgb, var(--text) 8%, transparent)');
+      root.setProperty('--pill-bg', 'color-mix(in srgb, var(--text) 6%, transparent)');
+      root.setProperty('--track-bg', 'color-mix(in srgb, var(--text) 11%, var(--bg))');
+      root.setProperty('--foot-bg', 'color-mix(in srgb, var(--bg) 92%, transparent)');
+      root.setProperty('--muted', 'color-mix(in srgb, var(--text) 65%, var(--bg))');
+      root.setProperty('--dim', 'color-mix(in srgb, var(--text) 45%, var(--bg))');
+      root.setProperty('--blue', '#0066cc');
+      root.setProperty('--green', '#1a7f37');
+      root.setProperty('--yellow', '#9a6700');
+      root.setProperty('--orange', '#bc4c00');
+      root.setProperty('--red', '#cf222e');
+      root.setProperty('--brand-gemini', '#1a73e8');
+      root.setProperty('--brand-claude', '#c6613f');
+      root.setProperty('--brand-codex', '#0e7c5a');
+      root.setProperty('--brand-droid', '#7c3aed');
+      root.setProperty('--brand-grok', '#db2777');
+      root.setProperty('--ring-track', 'var(--track-bg)');
+    }
+  }
+
+  try {
+    const cachedTheme = safeGetStorage('localStorage', 'agyCockpitTheme');
+    if (cachedTheme) applyTheme(JSON.parse(cachedTheme), true);
+  } catch (e) {}
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if (lastThemeObj) applyTheme(lastThemeObj, true);
+    });
+  }
+
+  ['modelBox', 'turnBox', 'calBox'].forEach(boxId => {
+    const el = document.getElementById(boxId);
+    if (!el) return;
+    const key = 'agy_open_' + boxId;
+    const legacyKey = boxId + 'Open';
+    if (safeGetStorage('sessionStorage', key) === '1' || safeGetStorage('sessionStorage', legacyKey) === '1') {
+      el.open = true;
+    }
+    el.addEventListener('toggle', () => {
+      const v = el.open ? '1' : '0';
+      safeSetStorage('sessionStorage', key, v);
+      safeSetStorage('sessionStorage', legacyKey, v);
+    });
+  });
+  (function initSubBoxToggle() {
+    const el = document.getElementById('subBox');
+    const hdr = document.getElementById('subBoxSummary');
+    if (!el || !hdr) return;
+    const key = 'agy_open_subBox';
+    const legacyKey = 'subBoxOpen';
+    function setSubBoxOpen(isOpen, persist) {
+      if (isOpen) el.setAttribute('open', '');
+      else el.removeAttribute('open');
+      hdr.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      if (persist) {
+        const v = isOpen ? '1' : '0';
+        safeSetStorage('sessionStorage', key, v);
+        safeSetStorage('sessionStorage', legacyKey, v);
+      }
+    }
+    if (safeGetStorage('sessionStorage', key) === '1' || safeGetStorage('sessionStorage', legacyKey) === '1') {
+      setSubBoxOpen(true, false);
+    }
+    hdr.addEventListener('click', () => setSubBoxOpen(!el.hasAttribute('open'), true));
+    hdr.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        setSubBoxOpen(!el.hasAttribute('open'), true);
+      }
+    });
+  })();
+
+  const CAL_MODES = ['day', 'week', 'month'];
+  const CAL_TAB_IDS = { day: 'calTabDay', week: 'calTabWeek', month: 'calTabMonth' };
+  const CAL_PERIOD_FALLBACK = { day: '近7天', week: '近7周', month: '近1年' };
+  const calBox = document.getElementById('calBox');
+  let calMode = safeGetStorage('sessionStorage', 'agy_cal_mode') || 'day';
+  if (!CAL_MODES.includes(calMode)) calMode = 'day';
+  let latestCalendar = null;
+
+  function fmtCalTok(n) {
+    const v = Number(n || 0);
+    if (v >= 9995000000) return (v / 1000000000).toFixed(1) + 'B';
+    if (v >= 999500000) return (v / 1000000000).toFixed(2) + 'B';
+    if (v >= 99950000) return Math.round(v / 1000000) + 'M';
+    if (v >= 999500) return (v / 1000000).toFixed(1) + 'M';
+    if (v >= 99950) return Math.round(v / 1000) + 'k';
+    if (v >= 1000) return (v / 1000).toFixed(1) + 'k';
+    return String(v);
+  }
+  function fmtCalUsd(n) {
+    const v = Number(n || 0);
+    if (v <= 0) return '$0.00';
+    if (v < 0.01) return '<$0.01';
+    if (v < 9.995) return '$' + v.toFixed(2);
+    if (v < 99.95) return '$' + v.toFixed(1);
+    if (v < 9999.5) return '$' + Math.round(v);
+    return '$' + (v / 1000).toFixed(1) + 'k';
+  }
+
+  function syncCalTabs() {
+    CAL_MODES.forEach(m => {
+      const btn = document.getElementById(CAL_TAB_IDS[m]);
+      if (!btn) return;
+      const isAct = m === calMode;
+      btn.classList.toggle('active', isAct);
+      btn.setAttribute('aria-selected', isAct ? 'true' : 'false');
+    });
+  }
+
+  function calItemKey(b) {
+    if (!b || typeof b !== 'object') return '';
+    return String(b.key != null ? b.key : (b.label || ''));
+  }
+  function calItemTotal(b) {
+    if (!b || typeof b !== 'object') return 0;
+    const p = Number(b.prompt || 0);
+    const o = Number(b.out || 0);
+    return b.total != null ? Number(b.total) : (p + o);
+  }
+  function formatCalAxisLabel(mode, b) {
+    const sub = String(b && b.sub_label || '');
+    const lbl = String(b && b.label || '');
+    if (mode === 'day') {
+      if (sub === '今日' || sub === '昨日') return sub;
+      return lbl || calItemKey(b);
+    }
+    if (mode === 'week') {
+      if (sub === '本周' || sub === '上周') return sub;
+      const head = lbl.split(/[–~-]/)[0];
+      return (head && head.trim()) || lbl || calItemKey(b);
+    }
+    if (sub === '本月') return '本月';
+    const raw = String(b && (b.key || b.label) || '');
+    const m = raw.match(/^\d{4}-(\d{1,2})$/);
+    if (m) return String(parseInt(m[1], 10));
+    return lbl || raw;
+  }
+  function focusCalBar(panelEl, key) {
+    if (!panelEl || !key) return;
+    const cols = panelEl.querySelectorAll('button.cal-bar-col');
+    for (let i = 0; i < cols.length; i++) {
+      if (cols[i].getAttribute('data-cal-key') === key) {
+        cols[i].focus({ preventScroll: true });
+        break;
+      }
+    }
+  }
+  const LIST_TOP_LIMIT = 4;
+  const CAL_TIP_MODEL_LIMIT = 8;
+  let latestCalItems = [];
+
+  function buildCalTipHtml(item, mode) {
+    if (!item || typeof item !== 'object') return '';
+    const key = calItemKey(item);
+    const turns = Number(item.turns || 0);
+    const prompt = Number(item.prompt || 0);
+    const total = calItemTotal(item);
+    const cost = Number(item.cost || 0);
+    const hitVal = (item.hit_pct != null && Number.isFinite(Number(item.hit_pct))) ? Number(item.hit_pct) : null;
+    const title = item.sub_label ? `${item.label || key} ${item.sub_label}` : `${item.label || key}`;
+    const hitHtml = (prompt > 0 && hitVal != null)
+      ? `<span class="${hitClass(hitVal)}">${hitVal.toFixed(1)}%</span>`
+      : '<span class="c-dim">—</span>';
+    const hdr = `
+      <div class="ct-hdr">
+        <div class="ct-left">
+          <span class="ct-title">${escHtml(title)}</span>
+          <span class="ct-meta">· ${turns}轮</span>
+        </div>
+        <div class="ct-right">
+          <span>${fmtCalTok(total)}</span>
+          <span class="cal-sep">·</span>
+          ${hitHtml}
+          <span class="cal-sep">·</span>
+          <strong>${escHtml(fmtCalUsd(cost))}</strong>
+        </div>
+      </div>
+    `;
+    const rawModels = Array.isArray(item.models) ? item.models : [];
+    const isZero = total <= 0 && cost <= 0 && turns === 0 && rawModels.length === 0;
+    if (isZero) {
+      return `${hdr}<div class="cal-empty" style="padding:4px 0 2px">${mode === 'day' ? '当日暂无用量' : '该周期暂无用量'}</div>`;
+    }
+    if (!rawModels.length) {
+      return `${hdr}<div class="cal-empty" style="padding:4px 0 2px">暂无分模型明细</div>`;
+    }
+    const sorted = rawModels.slice().sort((a, b) => {
+      const ta = calItemTotal(a);
+      const tb = calItemTotal(b);
+      if (tb !== ta) return tb - ta;
+      const ca = Number(a && a.cost || 0);
+      const cb = Number(b && b.cost || 0);
+      if (cb !== ca) return cb - ca;
+      const ra = Number(a && a.turns || 0);
+      const rb = Number(b && b.turns || 0);
+      if (rb !== ra) return rb - ra;
+      return String(a && a.model || '').localeCompare(String(b && b.model || ''));
+    });
+    const maxModelTotal = sorted.reduce((mx, m) => Math.max(mx, calItemTotal(m)), 0);
+    const visibleModels = sorted.slice(0, CAL_TIP_MODEL_LIMIT);
+    const mHdr = `
+      <div class="cal-m-hdr">
+        <span>模型</span>
+        <span>用量</span>
+        <span>缓存命中</span>
+        <span>API$</span>
+      </div>
+    `;
+    const rowsHtml = visibleModels.map(m => {
+      const rec = (m && typeof m === 'object') ? m : {};
+      const modelName = String(rec.model || '未知模型');
+      const escapedName = escHtml(modelName);
+      const mTurns = Number(rec.turns || 0);
+      const mPrompt = Number(rec.prompt || 0);
+      const mOut = Number(rec.out || 0);
+      const mCache = Number(rec.cache || 0);
+      const mTotal = calItemTotal(rec);
+      const mCost = Number(rec.cost || 0);
+      const mHit = (rec.hit_pct != null && Number.isFinite(Number(rec.hit_pct))) ? Number(rec.hit_pct) : null;
+      const barPct = maxModelTotal > 0
+        ? Math.max(mTotal > 0 ? 3 : 0, Math.min(100, (mTotal / maxModelTotal) * 100))
+        : 0;
+      const turnsSub = mTurns > 0 ? `<span class="cal-m-sub">${mTurns}轮</span>` : '';
+      const hitMain = (mPrompt > 0 && mHit != null)
+        ? `<span class="cal-m-main ${hitClass(mHit)}">${mHit.toFixed(1)}%</span>`
+        : '<span class="cal-m-main c-dim">—</span>';
+      const cacheSub = mCache > 0 ? `<span class="cal-m-sub">${fmtCalTok(mCache)}</span>` : '';
+      const barColor = modelBrandVar(modelName);
+      return `
+        <div class="cal-m-row" style="--cal-m-color:${barColor}">
+          <div class="cal-m-col cal-m-name-col">
+            <span class="cal-m-name">${escapedName}</span>
+            ${turnsSub}
+            <span class="cal-m-bar" aria-hidden="true"><span class="cal-m-bar-fill" style="width:${barPct.toFixed(1)}%"></span></span>
+          </div>
+          <div class="cal-m-col">
+            <span class="cal-m-main">${fmtCalTok(mTotal)}</span>
+            <span class="cal-m-sub">入${fmtCalTok(mPrompt)} 出${fmtCalTok(mOut)}</span>
+          </div>
+          <div class="cal-m-col">
+            ${hitMain}
+            ${cacheSub}
+          </div>
+          <div class="cal-m-col">
+            <span class="cal-m-main ${mCost > 0 ? 'c-text' : 'c-dim'}">${fmtCalUsd(mCost)}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+    const moreHtml = sorted.length > CAL_TIP_MODEL_LIMIT
+      ? `<div class="ct-cal-more">其余 ${sorted.length - CAL_TIP_MODEL_LIMIT} 个模型（共 ${sorted.length} 个）</div>`
+      : '';
+    return `${hdr}<div class="cal-models" style="margin-top:0">${mHdr}${rowsHtml}${moreHtml}</div>`;
+  }
+
+  function renderCalendar(cal) {
+    syncCalTabs();
+    const sumTitleEl = document.getElementById('calSummary');
+    const badgeEl = document.getElementById('calBadge');
+    const panelEl = document.getElementById('calPanel');
+    if (!panelEl) return;
+
+    const bucketData = (cal && typeof cal === 'object') ? cal[calMode] : null;
+    if (!bucketData || typeof bucketData !== 'object') {
+      latestCalItems = [];
+      if (sumTitleEl) sumTitleEl.textContent = '日历';
+      if (badgeEl) badgeEl.textContent = '--';
+      setHtml(panelEl, '');
+      if (activeTipSource && activeTipSource.kind === 'cal') hideChartTip();
+      return;
+    }
+
+    const periodLabel = bucketData.period_label || CAL_PERIOD_FALLBACK[calMode] || '近7天';
+    const sum = bucketData.summary || {};
+    if (sumTitleEl) {
+      sumTitleEl.textContent = `日历 (${periodLabel})`;
+    }
+    if (badgeEl) {
+      setHtml(badgeEl, `${escHtml(periodLabel)} ${Number(sum.turns || 0)}轮`);
+    }
+
+    const items = Array.isArray(bucketData.items) ? bucketData.items : [];
+    latestCalItems = items;
+    if (!items.length) {
+      setHtml(panelEl, `<div class="cal-empty">${calMode === 'day' ? '当日暂无用量' : '该周期暂无用量'}</div>`);
+      if (activeTipSource && activeTipSource.kind === 'cal') hideChartTip();
+      return;
+    }
+
+    const currentKey = calItemKey(items[0]);
+    const monthAnchorKey = calMode === 'month' ? currentKey : '';
+    const ordered = items.slice().reverse();
+    const maxTotal = ordered.reduce((mx, b) => Math.max(mx, calItemTotal(b)), 0);
+    const BAR_MAX_PX = 54;
+
+    const barsHtml = ordered.map(b => {
+      const key = calItemKey(b);
+      const turns = Number(b.turns || 0);
+      const prompt = Number(b.prompt || 0);
+      const total = calItemTotal(b);
+      const cost = Number(b.cost || 0);
+      const hitVal = (b.hit_pct != null && Number.isFinite(Number(b.hit_pct))) ? Number(b.hit_pct) : null;
+      const isCurrent = Boolean(currentKey) && key === currentKey;
+      const isMonthAnchor = Boolean(monthAnchorKey) && key === monthAnchorKey;
+      const isZero = total <= 0;
+      const barHeight = isZero || maxTotal <= 0
+        ? 2
+        : Math.max(4, Math.round((total / maxTotal) * BAR_MAX_PX));
+      const showVal = calMode === 'month'
+        ? (isMonthAnchor && (total > 0 || cost > 0))
+        : (total > 0 || cost > 0);
+      const valHtml = showVal
+        ? `<span class="cal-bar-tok">${escHtml(fmtCalTok(total))}</span><span class="cal-bar-usd">${escHtml(fmtCalUsd(cost))}</span>`
+        : '';
+      const axisLbl = formatCalAxisLabel(calMode, b);
+      const fullPeriod = b.sub_label ? `${b.label || key} ${b.sub_label}` : `${b.label || key}`;
+      const hitStr = (prompt > 0 && hitVal != null) ? `${hitVal.toFixed(1)}%` : '—';
+      const aria = `${fullPeriod} · ${turns}轮 · 总量 ${fmtCalTok(total)} · 命中 ${hitStr} · ${fmtCalUsd(cost)}`;
+      const cls = ['cal-bar-col', isCurrent ? 'is-current' : '', isMonthAnchor ? 'is-month-anchor' : '', isZero ? 'is-zero' : ''].filter(Boolean).join(' ');
+      return `
+        <button type="button" class="${cls}" data-cal-key="${escHtml(key)}" aria-label="${escHtml(aria)}">
+          <span class="cal-bar-val">${valHtml}</span>
+          <span class="cal-bar-track" aria-hidden="true"><span class="cal-bar-fill" style="height:${barHeight}px"></span></span>
+          <span class="cal-bar-lbl">${escHtml(axisLbl)}</span>
+        </button>
+      `;
+    }).join('');
+
+    const chartCls = calMode === 'month'
+      ? 'cal-chart cal-chart--month cal-chart--collapsed'
+      : 'cal-chart cal-chart--collapsed';
+    const panelHtml = `<div class="${chartCls}" role="group" aria-label="${escHtml(periodLabel)}用量柱状图">${barsHtml}</div>`;
+
+    const activeBar = document.activeElement && document.activeElement.closest
+      ? document.activeElement.closest('button.cal-bar-col') : null;
+    const focusedKey = (activeBar && panelEl.contains(activeBar))
+      ? activeBar.getAttribute('data-cal-key') : null;
+
+    setHtml(panelEl, panelHtml);
+
+    if (focusedKey && !panelEl.contains(document.activeElement)) {
+      focusCalBar(panelEl, focusedKey);
+    }
+
+    if (activeTipSource && activeTipSource.kind === 'cal') {
+      const match = items.find(b => calItemKey(b) === activeTipSource.key);
+      const barEl = match ? Array.from(panelEl.querySelectorAll('button.cal-bar-col')).find(el => el.getAttribute('data-cal-key') === activeTipSource.key) : null;
+      if (match && barEl) {
+        showChartTip(barEl, buildCalTipHtml(match, calMode), { kind: 'cal', key: activeTipSource.key, wide: true });
+      } else {
+        hideChartTip();
+      }
+    }
+  }
+
+  function switchCalMode(mode) {
+    if (CAL_MODES.includes(mode)) {
+      calMode = mode;
+      safeSetStorage('sessionStorage', 'agy_cal_mode', calMode);
+    }
+    if (activeTipSource && activeTipSource.kind === 'cal') hideChartTip();
+    if (calBox && !calBox.open) {
+      calBox.open = true;
+      safeSetStorage('sessionStorage', 'agy_open_calBox', '1');
+      safeSetStorage('sessionStorage', 'calBoxOpen', '1');
+    }
+    renderCalendar(latestCalendar);
+  }
+
+  CAL_MODES.forEach(mode => {
+    const btn = document.getElementById(CAL_TAB_IDS[mode]);
+    if (!btn) return;
+    btn.addEventListener('click', e => {
+      if (e && e.preventDefault) e.preventDefault();
+      if (e && e.stopPropagation) e.stopPropagation();
+      switchCalMode(mode);
+    });
+    btn.addEventListener('keydown', e => {
+      if (e.key === ' ' || e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        switchCalMode(mode);
+      } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        e.stopPropagation();
+        const idx = CAL_MODES.indexOf(calMode);
+        const nextMode = CAL_MODES[(idx + (e.key === 'ArrowRight' ? 1 : CAL_MODES.length - 1)) % CAL_MODES.length];
+        const nextBtn = document.getElementById(CAL_TAB_IDS[nextMode]);
+        if (nextBtn) nextBtn.focus();
+        switchCalMode(nextMode);
+      }
+    });
+  });
+  const calPanelEl = document.getElementById('calPanel');
+  if (calPanelEl) {
+    function openCalBarTip(btn) {
+      if (!btn || !calPanelEl.contains(btn)) return;
+      const key = btn.getAttribute('data-cal-key') || '';
+      const item = latestCalItems.find(b => calItemKey(b) === key);
+      if (item) showChartTip(btn, buildCalTipHtml(item, calMode), { kind: 'cal', key, wide: true });
+    }
+    calPanelEl.addEventListener('mouseover', e => {
+      const btn = e.target && e.target.closest ? e.target.closest('button.cal-bar-col') : null;
+      if (btn) openCalBarTip(btn);
+    });
+    calPanelEl.addEventListener('focusin', e => {
+      const btn = e.target && e.target.closest ? e.target.closest('button.cal-bar-col') : null;
+      if (btn) openCalBarTip(btn);
+    });
+    calPanelEl.addEventListener('mouseleave', () => {
+      if (activeTipSource && activeTipSource.kind === 'cal') hideChartTip();
+    });
+    calPanelEl.addEventListener('focusout', e => {
+      if (!calPanelEl.contains(e.relatedTarget) && activeTipSource && activeTipSource.kind === 'cal') {
+        hideChartTip();
+      }
+    });
+    calPanelEl.addEventListener('keydown', e => {
+      const btn = e.target && e.target.closest ? e.target.closest('button.cal-bar-col') : null;
+      if (!btn || !calPanelEl.contains(btn)) return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        const cols = Array.from(calPanelEl.querySelectorAll('button.cal-bar-col'));
+        const idx = cols.indexOf(btn);
+        if (idx < 0 || !cols.length) return;
+        const delta = e.key === 'ArrowRight' ? 1 : -1;
+        const nextCol = cols[(idx + delta + cols.length) % cols.length];
+        if (nextCol) nextCol.focus({ preventScroll: true });
+      }
+    });
+  }
+  syncCalTabs();
+  let lastSubConvId = '';
+  let subListExpanded = false;
+  let latestSubRenderer = null;
+  let latestSubItems = [];
+
+  function fmtSubModel(model) {
+    return String(model || '').trim()
+      .replace(/\s*\((low|med|medium|high|xhigh|max)\)\s*$/i, (_, e) => ':' + e.toLowerCase())
+      .replace(/\s+(low|med|medium|high|xhigh|max)\s*$/i, (_, e) => ':' + e.toLowerCase());
+  }
+  function buildSubTipHtml(item) {
+    if (!item || typeof item !== 'object') return '';
+    const nameTxt = String(item.label || '子代理');
+    const agentTxt = String(item.agent || '').trim();
+    const modelShort = fmtSubModel(item.model);
+    const metaParts = [agentTxt, modelShort].filter(Boolean).join(' · ');
+    const unavailTxt = item.metrics_unavailable ? (item.status === 'running' ? '等待首轮统计' : '用量不可用') : '';
+    const costLabel = costKind[item.cost_source] || '估算';
+    const hasCost = !item.metrics_unavailable && item.cost != null;
+    const totTok = item.metrics_unavailable ? null : (Number(item.prompt || 0) + Number(item.out || 0));
+    const hitCls = item.metrics_unavailable ? 'c-dim' : hitClass(item.hit_pct);
+    const tpsCls = item.metrics_unavailable ? 'c-dim' : tpsClass(item.tps);
+    const speedSub = item.metrics_unavailable
+      ? (unavailTxt || '暂无统计')
+      : `${rateKind[item.tps_kind] || '无计时'} · 首字 ${metric(item.ttft, 1, 's')}`;
+    const stCls = item.status === 'running' ? 'st-run' : (item.status === 'error' ? 'st-err' : 'st-done');
+    const stLbl = item.status === 'running' ? '运行中' : (item.status === 'error' ? '失败' : '已完成');
+    return `
+      <div class="ct-hdr">
+        <div class="ct-left">
+          <span class="ct-title">${escHtml(nameTxt)}</span>
+          ${metaParts ? `<span class="ct-meta">${escHtml(metaParts)}</span>` : ''}
+        </div>
+        <span class="sub-state-pill ${stCls}">${stLbl}</span>
+      </div>
+      <div class="ct-grid">
+        <div class="ct-cell">
+          <span class="ct-lbl">总用量</span>
+          <span class="ct-val">${totTok == null ? (item.status === 'running' ? '运行中' : '—') : escHtml(fmtK(totTok))}</span>
+        </div>
+        <div class="ct-cell">
+          <span class="ct-lbl">API$</span>
+          <span class="ct-val ${hasCost ? '' : 'c-dim'}">${hasCost ? escHtml(fmtUsd(item.cost)) : '—'}</span>
+          ${hasCost ? `<span class="ct-sub">${escHtml(costLabel)}</span>` : ''}
+        </div>
+        <div class="ct-cell">
+          <span class="ct-lbl">In</span>
+          <span class="ct-val">${item.metrics_unavailable ? '—' : escHtml(fmtK(item.prompt))}</span>
+        </div>
+        <div class="ct-cell">
+          <span class="ct-lbl">Out</span>
+          <span class="ct-val">${item.metrics_unavailable ? '—' : escHtml(fmtK(item.out))}</span>
+        </div>
+        <div class="ct-cell">
+          <span class="ct-lbl">缓存命中</span>
+          <span class="ct-val ${hitCls}">${item.metrics_unavailable ? '—' : escHtml(hit(item))}</span>
+        </div>
+        <div class="ct-cell">
+          <span class="ct-lbl">速度 / 首字</span>
+          <span class="ct-val ${tpsCls}">${item.metrics_unavailable ? '—' : escHtml(metric(item.tps, 1, ' t/s'))}</span>
+          <span class="ct-sub">${escHtml(speedSub)}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  const subListDelegEl = document.getElementById('subList');
+  if (subListDelegEl) {
+    function openSubRowTip(rowEl) {
+      if (!rowEl || !subListDelegEl.contains(rowEl)) return;
+      const idx = Number(rowEl.getAttribute('data-sub-idx'));
+      const item = Number.isInteger(idx) ? latestSubItems[idx] : null;
+      if (item) showChartTip(rowEl, buildSubTipHtml(item), { kind: 'sub', key: String(idx) });
+    }
+    subListDelegEl.addEventListener('click', e => {
+      const btn = e.target && e.target.closest ? e.target.closest('button[data-sub-list-toggle]') : null;
+      if (!btn || !subListDelegEl.contains(btn)) return;
+      subListExpanded = !subListExpanded;
+      if (activeTipSource && activeTipSource.kind === 'sub') hideChartTip();
+      if (latestSubRenderer) latestSubRenderer();
+    });
+    subListDelegEl.addEventListener('mouseover', e => {
+      const row = e.target && e.target.closest ? e.target.closest('.sub-bar-row') : null;
+      if (row) openSubRowTip(row);
+    });
+    subListDelegEl.addEventListener('focusin', e => {
+      const row = e.target && e.target.closest ? e.target.closest('.sub-bar-row') : null;
+      if (row) openSubRowTip(row);
+    });
+    subListDelegEl.addEventListener('mouseleave', () => {
+      if (activeTipSource && activeTipSource.kind === 'sub') hideChartTip();
+    });
+    subListDelegEl.addEventListener('focusout', e => {
+      if (!subListDelegEl.contains(e.relatedTarget) && activeTipSource && activeTipSource.kind === 'sub') {
+        hideChartTip();
+      }
+    });
+  }
+
+  // ---- Shared Floating Chart Hover Tooltip ----
+  const chartTipEl = document.getElementById('chartTip');
+  let activeTipSource = null; // { kind: 'model'|'turn', key: string, anchor: Element }
+
+  function showChartTip(anchorEl, html, sourceInfo) {
+    if (!chartTipEl || !anchorEl || !html) return;
+    chartTipEl.classList.toggle('is-wide', Boolean(sourceInfo && sourceInfo.wide));
+    chartTipEl.innerHTML = html;
+    chartTipEl.setAttribute('aria-hidden', 'false');
+    chartTipEl.classList.add('open');
+    activeTipSource = sourceInfo ? { ...sourceInfo, anchor: anchorEl } : null;
+    const rect = anchorEl.getBoundingClientRect();
+    const tipW = chartTipEl.offsetWidth || (sourceInfo && sourceInfo.wide ? 292 : 228);
+    const tipH = chartTipEl.offsetHeight || 96;
+    const vw = window.innerWidth || 360;
+    const vh = window.innerHeight || 800;
+    const left = Math.max(8, Math.min(vw - tipW - 8, rect.left + rect.width / 2 - tipW / 2));
+    let top = rect.top - tipH - 8;
+    if (top < 8) {
+      top = Math.min(vh - tipH - 8, rect.bottom + 8);
+    }
+    chartTipEl.style.left = `${Math.round(left)}px`;
+    chartTipEl.style.top = `${Math.round(Math.max(8, top))}px`;
+  }
+  function hideChartTip() {
+    if (chartTipEl) {
+      chartTipEl.classList.remove('open');
+      chartTipEl.setAttribute('aria-hidden', 'true');
+    }
+    activeTipSource = null;
+  }
+  window.addEventListener('scroll', hideChartTip, true);
+
+  let latestTokenTipData = null;
+  function buildTokenCardTipHtml(kind) {
+    if (!latestTokenTipData) return '';
+    const { lt, cum, inCachePct, outThinkPct } = latestTokenTipData;
+    if (kind === 'in') {
+      const newPct = Number(cum.prompt || 0) > 0 ? Math.max(0, 100 - inCachePct) : 0;
+      return `
+        <div class="ct-hdr">
+          <div class="ct-left">
+            <span class="ct-title">输入明细</span>
+            <span class="ct-meta">本轮 #${escHtml(lt.turn)}</span>
+          </div>
+          <div class="ct-right"><strong>${escHtml(fmtUsd(cum.cost_prompt))}</strong></div>
+        </div>
+        <div class="ct-grid">
+          <div class="ct-cell">
+            <span class="ct-lbl">缓存命中 (${inCachePct.toFixed(1)}%)</span>
+            <span class="ct-val c-green">${escHtml(fmtK(cum.cache))}</span>
+            <span class="ct-sub">本轮 ${escHtml(fmtK(lt.cache))} · ${escHtml(fmtUsd(cum.cost_cache))}</span>
+          </div>
+          <div class="ct-cell">
+            <span class="ct-lbl">新增输入 (${newPct.toFixed(1)}%)</span>
+            <span class="ct-val c-blue">${escHtml(fmtK(cum.in))}</span>
+            <span class="ct-sub">本轮 ${escHtml(fmtK(lt.in))} · ${escHtml(fmtUsd(cum.cost_in))}</span>
+          </div>
+        </div>
+      `;
+    }
+    const respPct = Number(cum.out || 0) > 0 ? Math.max(0, 100 - outThinkPct) : 0;
+    return `
+      <div class="ct-hdr">
+        <div class="ct-left">
+          <span class="ct-title">输出明细</span>
+          <span class="ct-meta">本轮 #${escHtml(lt.turn)}</span>
+        </div>
+        <div class="ct-right"><strong>${escHtml(fmtUsd(cum.cost_out))}</strong></div>
+      </div>
+      <div class="ct-grid">
+        <div class="ct-cell">
+          <span class="ct-lbl">思考 (${outThinkPct.toFixed(1)}%)</span>
+          <span class="ct-val c-yellow">${escHtml(fmtK(cum.think))}</span>
+          <span class="ct-sub">本轮 ${escHtml(fmtK(lt.think))} · ${escHtml(fmtUsd(cum.cost_think))}</span>
+        </div>
+        <div class="ct-cell">
+          <span class="ct-lbl">回复 (${respPct.toFixed(1)}%)</span>
+          <span class="ct-val c-cyan">${escHtml(fmtK(cum.resp))}</span>
+          <span class="ct-sub">本轮 ${escHtml(fmtK(lt.resp))} · ${escHtml(fmtUsd(cum.cost_resp))}</span>
+        </div>
+      </div>
+    `;
+  }
+  [['tkInCard', 'in', 'tk_in'], ['tkOutCard', 'out', 'tk_out']].forEach(([elId, kind, tipKind]) => {
+    const cardEl = document.getElementById(elId);
+    if (!cardEl) return;
+    const openTip = () => {
+      const html = buildTokenCardTipHtml(kind);
+      if (html) showChartTip(cardEl, html, { kind: tipKind, key: kind });
+    };
+    const closeTip = () => {
+      if (activeTipSource && activeTipSource.kind === tipKind) hideChartTip();
+    };
+    cardEl.addEventListener('mouseenter', openTip);
+    cardEl.addEventListener('focusin', openTip);
+    cardEl.addEventListener('mouseleave', closeTip);
+    cardEl.addEventListener('focusout', closeTip);
+  });
+
+  // ---- Model Board (Bar Chart: All Highlighted + Hover Popover) ----
+  let latestModelItems = [];
+
+  function modelItemTotal(item) {
+    if (!item || typeof item !== 'object') return 0;
+    return Number(item.prompt || 0) + Number(item.out || 0);
+  }
+  function shortModelAxisLabel(name) {
+    return String(name || '未知模型').trim().replace(/^models\//i, '') || '未知模型';
+  }
+  function modelBrandVar(name) {
+    const s = String(name || '').toLowerCase();
+    if (/claude|opus|sonnet|haiku/.test(s)) return 'var(--brand-claude)';
+    if (/gpt|codex|astra|\bsol\b|\bo[134]\b/.test(s)) return 'var(--brand-codex)';
+    if (/grok/.test(s)) return 'var(--brand-grok)';
+    if (/gemini|neon|argon|carbon|hydrogen|flash/.test(s)) return 'var(--brand-gemini)';
+    if (/droid/.test(s)) return 'var(--brand-droid)';
+    return 'var(--cyan)';
+  }
+  function sortModelItems(items) {
+    return (Array.isArray(items) ? items : []).slice().sort((a, b) => {
+      const ta = modelItemTotal(a);
+      const tb = modelItemTotal(b);
+      if (tb !== ta) return tb - ta;
+      const ca = Number(a && a.cost || 0);
+      const cb = Number(b && b.cost || 0);
+      if (cb !== ca) return cb - ca;
+      const ra = Number(a && a.calls || 0);
+      const rb = Number(b && b.calls || 0);
+      if (rb !== ra) return rb - ra;
+      return String(a && a.model || '').localeCompare(String(b && b.model || ''));
+    });
+  }
+  function buildModelTipHtml(item) {
+    if (!item || typeof item !== 'object') return '';
+    const name = String(item.model || '未知模型');
+    const sourceTag = String(item.source_tag || '').trim();
+    const calls = Number(item.calls || 0);
+    const meta = sourceTag ? `${sourceTag} · ${calls}次` : `${calls}次`;
+    const cost = Number(item.cost || 0);
+    const costPct = (item.cost_pct != null && item.cost_pct !== '' && Number.isFinite(Number(item.cost_pct)))
+      ? Number(item.cost_pct) : null;
+    const hitValid = Number(item.prompt || 0) > 0 && item.hit_pct != null && Number.isFinite(Number(item.hit_pct));
+    const hitCls = hitValid ? hitClass(Number(item.hit_pct)) : 'c-dim';
+    return `
+      <div class="ct-hdr">
+        <div class="ct-left">
+          <span class="ct-title">${escHtml(name)}</span>
+          <span class="ct-meta">${escHtml(meta)}</span>
+        </div>
+        <div class="ct-right">
+          <strong>${escHtml(fmtUsd(cost))}</strong>
+          ${costPct != null ? `<span class="ct-pct">${costPct.toFixed(1)}%</span>` : ''}
+        </div>
+      </div>
+      <div class="ct-grid">
+        <div class="ct-cell">
+          <span class="ct-lbl">In</span>
+          <span class="ct-val">${escHtml(fmtK(item.prompt))}</span>
+        </div>
+        <div class="ct-cell">
+          <span class="ct-lbl">Out</span>
+          <span class="ct-val">${escHtml(fmtK(item.out))}</span>
+        </div>
+        <div class="ct-cell">
+          <span class="ct-lbl">缓存命中</span>
+          <span class="ct-val ${hitCls}">${escHtml(hit(item))}</span>
+        </div>
+        <div class="ct-cell">
+          <span class="ct-lbl">新增输入</span>
+          <span class="ct-val c-blue">${escHtml(fmtK(item.in))}</span>
+        </div>
+      </div>
+    `;
+  }
+  function renderModelPanel(items) {
+    const panelEl = document.getElementById('modelPanel');
+    if (!panelEl) return;
+    const sorted = sortModelItems(items);
+    latestModelItems = sorted;
+    if (!sorted.length) {
+      setHtml(panelEl, '');
+      if (activeTipSource && activeTipSource.kind === 'model') hideChartTip();
+      return;
+    }
+    const maxTotal = sorted.reduce((mx, it) => Math.max(mx, modelItemTotal(it)), 0);
+    const BAR_MAX_PX = 54;
+
+    const barsHtml = sorted.map(it => {
+      const rec = (it && typeof it === 'object') ? it : {};
+      const key = String(rec.model || '未知模型');
+      const total = modelItemTotal(rec);
+      const cost = Number(rec.cost || 0);
+      const calls = Number(rec.calls || 0);
+      const sourceTag = String(rec.source_tag || '').trim();
+      const isZero = total <= 0;
+      const barHeight = isZero || maxTotal <= 0
+        ? 2
+        : Math.max(4, Math.round((total / maxTotal) * BAR_MAX_PX));
+      const valHtml = (total > 0 || cost > 0)
+        ? `<span class="cal-bar-tok">${escHtml(fmtCalTok(total))}</span><span class="cal-bar-usd">${escHtml(fmtUsd(cost))}</span>`
+        : '';
+      const axisLbl = shortModelAxisLabel(key);
+      const aria = `${key}${sourceTag ? ' · ' + sourceTag : ''} · ${calls}次 · 总量 ${fmtCalTok(total)} · 命中 ${hit(rec)} · API ${fmtUsd(cost)}`;
+      const cls = ['cal-bar-col', 'mb-bar-col', isZero ? 'is-zero' : ''].filter(Boolean).join(' ');
+      const barColor = modelBrandVar(key);
+      return `
+        <button type="button" class="${cls}" style="--mb-color:${barColor}" data-model-key="${escHtml(key)}" aria-label="${escHtml(aria)}">
+          <span class="cal-bar-val">${valHtml}</span>
+          <span class="cal-bar-track" aria-hidden="true"><span class="cal-bar-fill" style="height:${barHeight}px"></span></span>
+          <span class="cal-bar-lbl">${escHtml(axisLbl)}</span>
+        </button>
+      `;
+    }).join('');
+
+    const chartCls = sorted.length > 6 ? 'mb-chart mb-chart--scroll' : 'mb-chart';
+    setHtml(panelEl, `<div class="${chartCls}" role="group" aria-label="模型用量柱状图">${barsHtml}</div>`);
+
+    if (activeTipSource && activeTipSource.kind === 'model') {
+      const match = sorted.find(it => String(it && it.model || '未知模型') === activeTipSource.key);
+      const barEl = match ? Array.from(panelEl.querySelectorAll('button.mb-bar-col')).find(b => b.getAttribute('data-model-key') === activeTipSource.key) : null;
+      if (match && barEl) showChartTip(barEl, buildModelTipHtml(match), { kind: 'model', key: activeTipSource.key });
+      else hideChartTip();
+    }
+  }
+
+  const modelPanelEl = document.getElementById('modelPanel');
+  if (modelPanelEl) {
+    function openModelBarTip(btn) {
+      if (!btn || !modelPanelEl.contains(btn)) return;
+      const key = btn.getAttribute('data-model-key') || '';
+      const item = latestModelItems.find(it => String(it && it.model || '未知模型') === key);
+      if (item) showChartTip(btn, buildModelTipHtml(item), { kind: 'model', key });
+    }
+    modelPanelEl.addEventListener('mouseover', e => {
+      const btn = e.target && e.target.closest ? e.target.closest('button.mb-bar-col') : null;
+      if (btn) openModelBarTip(btn);
+    });
+    modelPanelEl.addEventListener('focusin', e => {
+      const btn = e.target && e.target.closest ? e.target.closest('button.mb-bar-col') : null;
+      if (btn) openModelBarTip(btn);
+    });
+    modelPanelEl.addEventListener('mouseleave', () => {
+      if (activeTipSource && activeTipSource.kind === 'model') hideChartTip();
+    });
+    modelPanelEl.addEventListener('focusout', e => {
+      if (!modelPanelEl.contains(e.relatedTarget) && activeTipSource && activeTipSource.kind === 'model') {
+        hideChartTip();
+      }
+    });
+  }
+
+  // ---- Per-Turn History (Header Tabs + Interactive SVG Line/Combo Chart + Hover Popover) ----
+  const TURN_METRICS = [
+    { key: 'ctx', label: '上下文', tabId: 'turnTabCtx' },
+    { key: 'prompt', label: 'Prompt', tabId: 'turnTabPrompt' },
+    { key: 'tps', label: 'TPS', tabId: 'turnTabTps' },
+    { key: 'ttft', label: 'TTFT', tabId: 'turnTabTtft' },
+    { key: 'dur', label: '耗时', tabId: 'turnTabDur' },
+  ];
+  const TURN_METRIC_KEYS = TURN_METRICS.map(m => m.key);
+  let turnMetric = safeGetStorage('sessionStorage', 'agy_turn_metric') || 'ctx';
+  if (turnMetric === 'out' || turnMetric === 'hit_pct') turnMetric = 'prompt';
+  if (!TURN_METRIC_KEYS.includes(turnMetric)) turnMetric = 'ctx';
+  let latestTurnsDesc = [];
+  let latestTurnPts = [];
+  let turnBaseY = 84;
+  let turnPadT = 10;
+
+  function parseFiniteNum(v) {
+    if (v === null || v === undefined || v === '' || typeof v === 'boolean') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  function getTurnMetricVal(t, metricKey) {
+    if (!t || typeof t !== 'object') return null;
+    if (metricKey === 'ctx') return parseFiniteNum(t.ctx);
+    if (metricKey === 'prompt') return parseFiniteNum(t.prompt);
+    if (metricKey === 'out') return parseFiniteNum(t.out);
+    if (metricKey === 'hit_pct') {
+      const prompt = parseFiniteNum(t.prompt);
+      if (prompt == null || prompt <= 0) return null;
+      return parseFiniteNum(t.hit_pct);
+    }
+    if (metricKey === 'tps') return parseFiniteNum(t.tps);
+    if (metricKey === 'ttft') return parseFiniteNum(t.ttft);
+    if (metricKey === 'dur') return parseFiniteNum(t.dur);
+    return null;
+  }
+  function niceChartMax(maxVal, minCeil) {
+    if (!Number.isFinite(maxVal) || maxVal <= 0) return minCeil;
+    const raw = maxVal * 1.1;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / mag;
+    const step = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10;
+    return Math.max(minCeil, step * mag);
+  }
+  function fmtTurnYTick(metricKey, v) {
+    if (!Number.isFinite(v)) return '0';
+    if (metricKey === 'ctx' || metricKey === 'prompt' || metricKey === 'out') return v <= 0 ? '0' : fmtCalTok(Math.round(v));
+    if (metricKey === 'hit_pct') return Math.round(v) + '%';
+    if (metricKey === 'tps') return v <= 0 ? '0' : (v >= 10 ? String(Math.round(v)) : v.toFixed(1));
+    if (metricKey === 'ttft') return v <= 0 ? '0' : (v >= 10 ? Math.round(v) + 's' : v.toFixed(1) + 's');
+    if (metricKey === 'dur') return v <= 0 ? '0' : fmtDur(v);
+    return String(v);
+  }
+  function fmtTurnMetricVal(metricKey, v) {
+    if (v == null || !Number.isFinite(v)) return '—';
+    if (metricKey === 'ctx' || metricKey === 'prompt' || metricKey === 'out') return fmtK(v);
+    if (metricKey === 'hit_pct') return v.toFixed(1) + '%';
+    if (metricKey === 'tps') return v.toFixed(1) + ' t/s';
+    if (metricKey === 'ttft') return v.toFixed(1) + 's';
+    if (metricKey === 'dur') return fmtDur(v);
+    return String(v);
+  }
+  function syncTurnTabs() {
+    TURN_METRICS.forEach(m => {
+      const btn = document.getElementById(m.tabId);
+      if (!btn) return;
+      const act = m.key === turnMetric;
+      btn.classList.toggle('active', act);
+      btn.setAttribute('aria-selected', act ? 'true' : 'false');
+    });
+  }
+  function switchTurnMetric(metricKey) {
+    if (TURN_METRIC_KEYS.includes(metricKey)) {
+      turnMetric = metricKey;
+      safeSetStorage('sessionStorage', 'agy_turn_metric', turnMetric);
+    }
+    const turnBoxEl = document.getElementById('turnBox');
+    if (turnBoxEl && !turnBoxEl.open) {
+      turnBoxEl.open = true;
+      safeSetStorage('sessionStorage', 'agy_open_turnBox', '1');
+      safeSetStorage('sessionStorage', 'turnBoxOpen', '1');
+    }
+    syncTurnTabs();
+    renderTurnsPanel(latestTurnsDesc);
+  }
+  function buildTurnTipHtml(t) {
+    if (!t || typeof t !== 'object') return '';
+    const calls = Number(t.calls_count || 0);
+    const totTok = Number(t.prompt || 0) + Number(t.out || 0);
+    const hasCost = t.cost != null && Number.isFinite(Number(t.cost));
+    const hitValid = Number(t.prompt || 0) > 0 && t.hit_pct != null && Number.isFinite(Number(t.hit_pct));
+    const hitCls = hitValid ? hitClass(Number(t.hit_pct)) : 'c-dim';
+    const act = key => {
+      if (turnMetric === 'prompt' && (key === 'prompt' || key === 'out' || key === 'hit_pct')) return ' is-active';
+      return turnMetric === key ? ' is-active' : '';
+    };
+    return `
+      <div class="ct-hdr">
+        <div class="ct-left">
+          <span class="ct-title">#${escHtml(t.turn)}</span>
+          <span class="ct-meta">· ${calls}次调用</span>
+          ${t.compacted ? '<span class="turn-compact-badge">🧹 已压缩</span>' : ''}
+        </div>
+        <div class="ct-right${act('dur')}">
+          <span>耗时</span>
+          <strong>${escHtml(fmtDur(t.dur))}</strong>
+        </div>
+      </div>
+      <div class="ct-grid">
+        <div class="ct-cell">
+          <span class="ct-lbl">总 Token</span>
+          <span class="ct-val">${escHtml(fmtK(totTok))}</span>
+        </div>
+        <div class="ct-cell">
+          <span class="ct-lbl">API$</span>
+          <span class="ct-val ${hasCost ? '' : 'c-dim'}">${hasCost ? escHtml(fmtUsd(t.cost)) : '—'}</span>
+        </div>
+        <div class="ct-cell${act('ctx')}">
+          <span class="ct-lbl">上下文</span>
+          <span class="ct-val">${escHtml(fmtK(t.ctx))}</span>
+        </div>
+        <div class="ct-cell${act('hit_pct')}">
+          <span class="ct-lbl">缓存命中</span>
+          <span class="ct-val ${hitCls}">${escHtml(hit(t))}</span>
+        </div>
+        <div class="ct-cell${act('prompt')}">
+          <span class="ct-lbl">输入 In</span>
+          <span class="ct-val">${escHtml(fmtK(t.prompt))}</span>
+          <span class="ct-sub">缓${escHtml(fmtK(t.cache))} / 新${escHtml(fmtK(t.in))}</span>
+        </div>
+        <div class="ct-cell${act('out')}">
+          <span class="ct-lbl">输出 Out</span>
+          <span class="ct-val">${escHtml(fmtK(t.out))}</span>
+          <span class="ct-sub">思${escHtml(fmtK(t.think))} / 回${escHtml(fmtK(t.resp))}</span>
+        </div>
+        <div class="ct-cell${act('ttft')}">
+          <span class="ct-lbl">TTFT</span>
+          <span class="ct-val ${ttftClass(t.ttft)}">${escHtml(metric(t.ttft, 1, 's'))}</span>
+        </div>
+        <div class="ct-cell${act('tps')}">
+          <span class="ct-lbl">TPS</span>
+          <span class="ct-val ${tpsClass(t.tps)}">${escHtml(metric(t.tps, 1, ' t/s'))}</span>
+        </div>
+      </div>
+    `;
+  }
+  function setTurnHoverVisual(panelEl, pt) {
+    if (!panelEl) return;
+    const layer = panelEl.querySelector('.turn-hover-layer');
+    if (!layer) return;
+    if (!pt) {
+      layer.style.display = 'none';
+      return;
+    }
+    const line = layer.querySelector('.turn-guide');
+    const halo = layer.querySelector('.turn-sel-halo');
+    const dot = layer.querySelector('.turn-sel-dot');
+    const dotOut = layer.querySelector('.turn-sel-dot--out');
+    const dotHit = layer.querySelector('.turn-sel-dot--hit');
+    const xStr = pt.x.toFixed(1);
+    if (line) {
+      line.setAttribute('x1', xStr);
+      line.setAttribute('x2', xStr);
+      line.setAttribute('y1', String(turnPadT));
+      line.setAttribute('y2', String(turnBaseY));
+    }
+    if (pt.combo) {
+      if (halo) halo.style.display = 'none';
+      if (dot) dot.style.display = 'none';
+      if (dotOut) dotOut.style.display = 'none';
+      if (dotHit) {
+        if (pt.yHit !== null) {
+          dotHit.style.display = '';
+          dotHit.setAttribute('cx', xStr);
+          dotHit.setAttribute('cy', pt.yHit.toFixed(1));
+        } else {
+          dotHit.style.display = 'none';
+        }
+      }
+    } else {
+      if (dotOut) dotOut.style.display = 'none';
+      if (dotHit) dotHit.style.display = 'none';
+      if (dot) dot.style.display = '';
+      if (pt.y !== null) {
+        const yStr = pt.y.toFixed(1);
+        if (halo) {
+          halo.style.display = '';
+          halo.setAttribute('cx', xStr);
+          halo.setAttribute('cy', yStr);
+        }
+        if (dot) {
+          dot.classList.remove('is-missing');
+          dot.setAttribute('cx', xStr);
+          dot.setAttribute('cy', yStr);
+          dot.setAttribute('r', '3.8');
+        }
+      } else {
+        if (halo) halo.style.display = 'none';
+        if (dot) {
+          dot.classList.add('is-missing');
+          dot.setAttribute('cx', xStr);
+          dot.setAttribute('cy', turnBaseY.toFixed(1));
+          dot.setAttribute('r', '3.2');
+        }
+      }
+    }
+    layer.style.display = '';
+  }
+  function buildLineSegs(ptsList, yKey) {
+    const segs = [];
+    let cur = [];
+    for (let i = 0; i < ptsList.length; i++) {
+      if (ptsList[i][yKey] !== null) {
+        cur.push({ x: ptsList[i].x, y: ptsList[i][yKey] });
+      } else if (cur.length) {
+        segs.push(cur);
+        cur = [];
+      }
+    }
+    if (cur.length) segs.push(cur);
+    return segs;
+  }
+  function renderTurnsPanel(turnsDesc) {
+    syncTurnTabs();
+    const panelEl = document.getElementById('turnPanel');
+    if (!panelEl) return;
+    latestTurnsDesc = Array.isArray(turnsDesc) ? turnsDesc : [];
+    const asc = latestTurnsDesc.slice().reverse();
+
+    if (!asc.length) {
+      latestTurnPts = [];
+      setHtml(panelEl, '<div class="cal-empty">暂无对话轮次</div>');
+      if (activeTipSource && activeTipSource.kind === 'turn') hideChartTip();
+      return;
+    }
+
+    const isCombo = turnMetric === 'prompt';
+    const SVG_W = 320;
+    const SVG_H = 104;
+    const PAD_L = 34;
+    const PAD_R = isCombo ? 26 : 12;
+    const PAD_T = 10;
+    const PAD_B = 20;
+    const PLOT_W = SVG_W - PAD_L - PAD_R;
+    const PLOT_H = SVG_H - PAD_T - PAD_B;
+    const BASE_Y = PAD_T + PLOT_H;
+    turnPadT = PAD_T;
+    turnBaseY = BASE_Y;
+    const n = asc.length;
+    const dotR = n > 24 ? 1.8 : (n > 14 ? 2.2 : 2.8);
+
+    const getX = i => (n <= 1 ? PAD_L + PLOT_W / 2 : PAD_L + (i / (n - 1)) * PLOT_W);
+    const scaleY = (v, maxV) => {
+      const ratio = maxV > 0 ? Math.max(0, Math.min(1, v / maxV)) : 0;
+      return BASE_Y - ratio * PLOT_H;
+    };
+
+    let pts = [];
+    let gridHtml = '';
+    let barsHtml = '';
+    let areaPaths = [];
+    let linePaths = [];
+    let dotsHtml = '';
+    let legendHtml = '';
+
+    if (isCombo) {
+      const inVals = asc.map(t => getTurnMetricVal(t, 'prompt'));
+      const outVals = asc.map(t => getTurnMetricVal(t, 'out'));
+      const hitVals = asc.map(t => getTurnMetricVal(t, 'hit_pct'));
+      const totVals = asc.map((_, i) => {
+        const vi = inVals[i] || 0;
+        const vo = outVals[i] || 0;
+        return (inVals[i] === null && outVals[i] === null) ? null : (vi + vo);
+      });
+      const posTot = totVals.filter(v => v !== null && v > 0);
+      const maxPos = posTot.length ? Math.max.apply(null, posTot) : 10000;
+      const minPos = posTot.length ? Math.min.apply(null, posTot) : 1000;
+      const maxExp = Math.max(4, Math.ceil(Math.log10(Math.max(maxPos, 10))));
+      let minExp = Math.min(maxExp - 2, Math.max(2, Math.floor(Math.log10(Math.max(minPos, 10)))));
+      if ((maxExp - minExp) % 2 !== 0) minExp = Math.max(1, minExp - 1);
+      const spanExp = Math.max(2, maxExp - minExp);
+      const scaleLogY = v => {
+        if (v === null || v <= 0) return BASE_Y;
+        const ratio = Math.max(0.03, Math.min(1, (Math.log10(Math.max(v, 1)) - minExp) / spanExp));
+        return BASE_Y - ratio * PLOT_H;
+      };
+
+      pts = asc.map((t, i) => {
+        const x = getX(i);
+        const vIn = inVals[i] || 0;
+        const vOut = outVals[i] || 0;
+        const vTot = totVals[i];
+        const vHit = hitVals[i];
+        return {
+          i, turn: t.turn, compacted: Boolean(t.compacted), combo: true,
+          x, v: vTot, vIn, vOut, vHit,
+          y: vTot !== null ? scaleLogY(vTot) : null,
+          yHit: vHit !== null ? scaleY(vHit, 100) : null,
+          raw: t,
+        };
+      });
+
+      const expTicks = [maxExp, (maxExp + minExp) / 2, minExp];
+      const hitTicks = [100, 50, 0];
+      gridHtml = expTicks.map((exp, idx) => {
+        const ratio = (exp - minExp) / spanExp;
+        const gy = (BASE_Y - ratio * PLOT_H).toFixed(1);
+        const tickVal = Math.round(Math.pow(10, exp));
+        return `<line class="turn-grid" x1="${PAD_L}" y1="${gy}" x2="${SVG_W - PAD_R}" y2="${gy}" />` +
+          `<text class="turn-axis-lbl" x="${PAD_L - 4}" y="${(Number(gy) + 3).toFixed(1)}" text-anchor="end">${escHtml(fmtTurnYTick('prompt', tickVal))}</text>` +
+          `<text class="turn-axis-lbl" x="${SVG_W - PAD_R + 4}" y="${(Number(gy) + 3).toFixed(1)}" text-anchor="start">${hitTicks[idx]}%</text>`;
+      }).join('');
+
+      const barW = Math.max(2.5, Math.min(14, (PLOT_W / Math.max(n, 1)) * 0.56));
+      barsHtml = pts.map(p => {
+        if (p.v === null || p.v <= 0) return '';
+        const totH = Math.max(2, BASE_Y - scaleLogY(p.v));
+        const rawOutH = p.vOut > 0 ? Math.max(1.5, (p.vOut / p.v) * totH) : 0;
+        const outH = Math.min(totH, rawOutH);
+        const inH = Math.max(0, totH - outH);
+        const bx = (p.x - barW / 2).toFixed(1);
+        let rects = '';
+        if (inH > 0) {
+          rects += `<rect class="turn-bar" x="${bx}" y="${(BASE_Y - inH).toFixed(1)}" width="${barW.toFixed(1)}" height="${inH.toFixed(1)}" rx="1" />`;
+        }
+        if (outH > 0) {
+          rects += `<rect class="turn-bar--out" x="${bx}" y="${(BASE_Y - inH - outH).toFixed(1)}" width="${barW.toFixed(1)}" height="${outH.toFixed(1)}" rx="1" />`;
+        }
+        return rects;
+      }).join('');
+
+      buildLineSegs(pts, 'yHit').forEach(seg => {
+        if (seg.length < 2) return;
+        const d = seg.map((p, idx) => `${idx === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+        linePaths.push(`<path class="turn-line turn-line--hit" d="${d}" />`);
+      });
+
+      const comboDotR = Math.max(1.6, dotR - 0.3);
+      dotsHtml = pts.map(p => {
+        let out = '';
+        if (p.yHit !== null) out += `<circle class="turn-dot turn-dot--hit" cx="${p.x.toFixed(1)}" cy="${p.yHit.toFixed(1)}" r="${comboDotR}" />`;
+        if (p.compacted) {
+          const cy = p.yHit !== null ? p.yHit : (p.y !== null ? p.y : BASE_Y);
+          out += `<circle class="turn-compact-ring" cx="${p.x.toFixed(1)}" cy="${cy.toFixed(1)}" r="4.6" />`;
+        }
+        return out;
+      }).join('');
+
+      legendHtml = `
+        <div class="turn-legend">
+          <span class="turn-legend-item"><span class="turn-legend-bar"></span>In</span>
+          <span class="turn-legend-item"><span class="turn-legend-bar" style="background:color-mix(in srgb, var(--yellow) 72%, var(--card))"></span>Out</span>
+          <span class="turn-legend-item" style="color:var(--dim)">log</span>
+          <span class="turn-legend-item"><span class="turn-legend-line" style="background:var(--green)"></span>命中</span>
+        </div>
+      `;
+    } else {
+      const vals = asc.map(t => getTurnMetricVal(t, turnMetric));
+      const validVals = vals.filter(v => v !== null);
+      const maxRaw = validVals.length ? Math.max.apply(null, validVals) : 0;
+
+      let yMax = 100;
+      if (turnMetric === 'ctx') yMax = niceChartMax(maxRaw, 1000);
+      else if (turnMetric === 'tps') yMax = niceChartMax(maxRaw, 10);
+      else if (turnMetric === 'ttft') yMax = niceChartMax(maxRaw, 1);
+      else if (turnMetric === 'dur') yMax = niceChartMax(maxRaw, 5);
+
+      pts = asc.map((t, i) => {
+        const v = vals[i];
+        const x = getX(i);
+        const y = v !== null ? scaleY(v, yMax) : null;
+        return { i, turn: t.turn, compacted: Boolean(t.compacted), combo: false, v, x, y, raw: t };
+      });
+
+      buildLineSegs(pts, 'y').forEach(seg => {
+        if (seg.length < 2) return;
+        const dLine = seg.map((p, idx) => `${idx === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+        linePaths.push(`<path class="turn-line" d="${dLine}" />`);
+        const first = seg[0];
+        const last = seg[seg.length - 1];
+        const dArea = `${dLine} L${last.x.toFixed(1)} ${BASE_Y.toFixed(1)} L${first.x.toFixed(1)} ${BASE_Y.toFixed(1)} Z`;
+        areaPaths.push(`<path class="turn-area" d="${dArea}" fill="url(#turnAreaGrad)" />`);
+      });
+
+      const yTicks = [yMax, yMax / 2, 0];
+      gridHtml = yTicks.map(tv => {
+        const gy = scaleY(tv, yMax).toFixed(1);
+        return `<line class="turn-grid" x1="${PAD_L}" y1="${gy}" x2="${SVG_W - PAD_R}" y2="${gy}" /><text class="turn-axis-lbl" x="${PAD_L - 4}" y="${(Number(gy) + 3).toFixed(1)}" text-anchor="end">${escHtml(fmtTurnYTick(turnMetric, tv))}</text>`;
+      }).join('');
+
+      dotsHtml = pts.map(p => {
+        let out = '';
+        if (p.y !== null) {
+          out += `<circle class="turn-dot" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${dotR}" />`;
+        }
+        if (p.compacted) {
+          const cy = p.y !== null ? p.y : BASE_Y;
+          out += `<circle class="turn-compact-ring" cx="${p.x.toFixed(1)}" cy="${cy.toFixed(1)}" r="5.2" />`;
+        }
+        return out;
+      }).join('');
+    }
+    latestTurnPts = pts;
+
+    const tickIndices = new Set();
+    if (n <= 7) {
+      for (let i = 0; i < n; i++) tickIndices.add(i);
+    } else {
+      tickIndices.add(0);
+      tickIndices.add(n - 1);
+      const innerCount = 3;
+      for (let k = 1; k <= innerCount; k++) {
+        tickIndices.add(Math.round((k * (n - 1)) / (innerCount + 1)));
+      }
+    }
+    const sortedTicks = Array.from(tickIndices).sort((a, b) => a - b);
+    let lastDrawnX = -999;
+    const xLabelItems = [];
+    for (let k = 0; k < sortedTicks.length; k++) {
+      const idx = sortedTicks[k];
+      const px = pts[idx].x;
+      if (px - lastDrawnX < 26 && idx !== n - 1) continue;
+      lastDrawnX = px;
+      xLabelItems.push({ idx, x: px });
+    }
+    const xLabelsHtml = xLabelItems.map(item => {
+      const anchor = item.x <= PAD_L + 10 ? 'start' : (item.x >= SVG_W - PAD_R - 10 ? 'end' : 'middle');
+      return `<text class="turn-axis-lbl" x="${item.x.toFixed(1)}" y="${SVG_H - 4}" text-anchor="${anchor}">#${escHtml(asc[item.idx].turn)}</text>`;
+    }).join('');
+
+    const metricMeta = TURN_METRICS.find(m => m.key === turnMetric) || TURN_METRICS[0];
+    const hitRectsHtml = pts.map((p, i) => {
+      const leftBound = i === 0 ? Math.max(0, PAD_L - 8) : (pts[i - 1].x + p.x) / 2;
+      const rightBound = i === n - 1 ? Math.min(SVG_W, SVG_W - PAD_R + 8) : (p.x + pts[i + 1].x) / 2;
+      const rw = Math.max(4, rightBound - leftBound);
+      const t = asc[i];
+      const lbl = isCombo
+        ? `第 #${t.turn} 轮 · In ${fmtK(t.prompt)} · Out ${fmtK(t.out)} · 命中 ${hit(t)}`
+        : `第 #${t.turn} 轮 · ${metricMeta.label} ${fmtTurnMetricVal(turnMetric, p.v)}${t.compacted ? ' · 已压缩' : ''}`;
+      return `<rect class="turn-hit" data-turn="${escHtml(t.turn)}" tabindex="0" role="button" aria-label="${escHtml(lbl)}" x="${leftBound.toFixed(1)}" y="0" width="${rw.toFixed(1)}" height="${SVG_H}" />`;
+    }).join('');
+
+    const turnAccentMap = {
+      ctx: 'var(--cyan)',
+      prompt: 'var(--cyan)',
+      tps: 'var(--green)',
+      ttft: 'var(--yellow)',
+      dur: 'var(--brand-droid)',
+    };
+    const turnAccent = turnAccentMap[turnMetric] || 'var(--cyan)';
+    const svgHtml = `
+      ${legendHtml}
+      <div class="turn-svg-wrap" style="--turn-accent:${turnAccent}">
+        <svg class="turn-svg" viewBox="0 0 ${SVG_W} ${SVG_H}" role="img" aria-label="逐轮${escHtml(metricMeta.label)}图表">
+          <defs>
+            <linearGradient id="turnAreaGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="var(--turn-accent, var(--cyan))" stop-opacity="0.24" />
+              <stop offset="100%" stop-color="var(--turn-accent, var(--cyan))" stop-opacity="0.02" />
+            </linearGradient>
+          </defs>
+          ${gridHtml}
+          ${barsHtml}
+          ${areaPaths.join('')}
+          ${linePaths.join('')}
+          ${dotsHtml}
+          <g class="turn-hover-layer" style="display:none">
+            <line class="turn-guide" x1="0" y1="${PAD_T}" x2="0" y2="${BASE_Y}" />
+            <circle class="turn-sel-halo" cx="0" cy="0" r="6.5" />
+            <circle class="turn-sel-dot" cx="0" cy="0" r="3.8" />
+            <circle class="turn-sel-dot--out" cx="0" cy="0" r="3.5" style="display:none" />
+            <circle class="turn-sel-dot--hit" cx="0" cy="0" r="3.5" style="display:none" />
+          </g>
+          ${xLabelsHtml}
+          ${hitRectsHtml}
+        </svg>
+      </div>
+    `;
+
+    setHtml(panelEl, svgHtml);
+
+    if (activeTipSource && activeTipSource.kind === 'turn') {
+      const pt = pts.find(p => String(p.turn) === activeTipSource.key);
+      const hitEl = pt ? Array.from(panelEl.querySelectorAll('.turn-hit')).find(el => el.getAttribute('data-turn') === activeTipSource.key) : null;
+      if (pt && hitEl) {
+        setTurnHoverVisual(panelEl, pt);
+        showChartTip(hitEl, buildTurnTipHtml(pt.raw), { kind: 'turn', key: activeTipSource.key });
+      } else {
+        hideChartTip();
+      }
+    }
+  }
+
+  TURN_METRICS.forEach(m => {
+    const btn = document.getElementById(m.tabId);
+    if (!btn) return;
+    btn.addEventListener('click', e => {
+      if (e && e.preventDefault) e.preventDefault();
+      if (e && e.stopPropagation) e.stopPropagation();
+      switchTurnMetric(m.key);
+    });
+    btn.addEventListener('keydown', e => {
+      if (e.key === ' ' || e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        switchTurnMetric(m.key);
+      } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        e.stopPropagation();
+        const idx = TURN_METRIC_KEYS.indexOf(turnMetric);
+        const nextKey = TURN_METRIC_KEYS[(idx + (e.key === 'ArrowRight' ? 1 : TURN_METRIC_KEYS.length - 1)) % TURN_METRIC_KEYS.length];
+        const nextMeta = TURN_METRICS.find(x => x.key === nextKey);
+        const nextBtn = nextMeta ? document.getElementById(nextMeta.tabId) : null;
+        if (nextBtn) nextBtn.focus();
+        switchTurnMetric(nextKey);
+      }
+    });
+  });
+  syncTurnTabs();
+
+  const turnPanelEl = document.getElementById('turnPanel');
+  if (turnPanelEl) {
+    function openTurnHitTip(hitEl) {
+      if (!hitEl || !turnPanelEl.contains(hitEl)) return;
+      const key = hitEl.getAttribute('data-turn') || '';
+      const pt = latestTurnPts.find(p => String(p.turn) === key);
+      if (pt) {
+        setTurnHoverVisual(turnPanelEl, pt);
+        showChartTip(hitEl, buildTurnTipHtml(pt.raw), { kind: 'turn', key });
+      }
+    }
+    turnPanelEl.addEventListener('mouseover', e => {
+      const hitEl = e.target && e.target.closest ? e.target.closest('.turn-hit') : null;
+      if (hitEl) openTurnHitTip(hitEl);
+    });
+    turnPanelEl.addEventListener('focusin', e => {
+      const hitEl = e.target && e.target.closest ? e.target.closest('.turn-hit') : null;
+      if (hitEl) openTurnHitTip(hitEl);
+    });
+    turnPanelEl.addEventListener('mouseleave', () => {
+      setTurnHoverVisual(turnPanelEl, null);
+      if (activeTipSource && activeTipSource.kind === 'turn') hideChartTip();
+    });
+    turnPanelEl.addEventListener('focusout', e => {
+      if (!turnPanelEl.contains(e.relatedTarget)) {
+        setTurnHoverVisual(turnPanelEl, null);
+        if (activeTipSource && activeTipSource.kind === 'turn') hideChartTip();
+      }
+    });
+  }
+  let reqSeq = 0;
+  const urlParams = new URLSearchParams(window.location.search);
+  const pinnedConvId = (urlParams.get('conversationId') || urlParams.get('id') || '').trim();
+  const sidecarToken = (urlParams.get('token') || '').trim();
+  const tokenParam = sidecarToken ? '&token=' + encodeURIComponent(sidecarToken) : '';
+  let inFlight = 0;
+  let refreshPending = false;
+
+  function renderSparkBars(svgId, turnsDesc, field, minRefMax, clsFn) {
+    const svg = document.getElementById(svgId);
+    if (!svg) return;
+    const N = 6;
+    const recent = (turnsDesc || []).slice(0, N).reverse();
+    const padCount = Math.max(0, N - recent.length);
+    const vals = recent.map(t => Math.max(0, Number((t && t[field]) || 0)));
+    const maxVal = Math.max(minRefMax, ...vals, 0.001);
+    let rects = '';
+    for (let i = 0; i < N; i++) {
+      const x = (0.7 + i * 4.0).toFixed(2);
+      if (i < padCount || recent[i-padCount]?.[field] == null) {
+        rects += `<rect class="spark-empty" x="${x}" y="22" width="2.6" height="2" rx="1" />`;
+      } else {
+        const idx = i - padCount;
+        const v = vals[idx];
+        const isLatest = idx === recent.length - 1;
+        const h = v > 0 ? Math.max(4, Math.min(22, (v / maxVal) * 22)) : 2;
+        const y = (24 - h).toFixed(2);
+        const cls = isLatest ? ('spark-curr ' + clsFn(v)) : 'spark-hist';
+        rects += `<rect class="${cls}" x="${x}" y="${y}" width="2.6" height="${h.toFixed(2)}" rx="1.1" />`;
+      }
+    }
+    svg.innerHTML = rects;
+  }
+
+  function fmtSec(sec) {
+    const s = Math.max(0, Math.floor(sec));
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return String(m).padStart(2, '0') + ':' + String(r).padStart(2, '0');
+  }
+
+  function fmtDur(sec) {
+    const v = Number(sec || 0);
+    if (v <= 0) return '0s';
+    if (v < 10) return v.toFixed(1) + 's';
+    const s = Math.round(v);
+    if (s < 60) return s + 's';
+    if (s < 3600) {
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return `${m}m${String(r).padStart(2, '0')}s`;
+    }
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return `${h}h${String(m).padStart(2, '0')}m`;
+  }
+
+  function resetEmptyState(st) {
+    const cTitleEl = document.getElementById('cTitle');
+    if (cTitleEl) cTitleEl.textContent = st ? st.title + (st.archived ? ' · 已归档' : '') : '暂无会话';
+    const mBadgeEl = document.getElementById('mBadge');
+    if (mBadgeEl) mBadgeEl.textContent = '无记录';
+    const updEl = document.getElementById('updBadge');
+    if (updEl) {
+      updEl.className = 'mono c-dim turn-dur-tag';
+      updEl.textContent = '--';
+    }
+    const ttlEl = document.getElementById('cacheTtl');
+    if (ttlEl) {
+      ttlEl.className = 'cache-ttl mono c-dim';
+      ttlEl.textContent = '⏸ 暂无记录';
+    }
+    document.getElementById('heroCtxPct').className = 'kpi-val mono c-dim';
+    document.getElementById('heroCtxPct').textContent = '--%';
+    document.getElementById('heroCtxUsed').textContent = '-- / --';
+    document.getElementById('ringCtxCache').setAttribute('stroke-dasharray', '0 100');
+    document.getElementById('ringCtxIn').setAttribute('stroke-dasharray', '0 100');
+    document.getElementById('heroHitLatest').className = 'kpi-val mono c-dim';
+    document.getElementById('heroHitLatest').textContent = '--%';
+    document.getElementById('heroHitCum').className = 'c-dim';
+    document.getElementById('heroHitCum').textContent = '--%';
+    document.getElementById('ringHit').setAttribute('stroke-dasharray', '0 100');
+    document.getElementById('heroTpsLatest').textContent = '--';
+    document.getElementById('heroTpsAvg').className = 'c-dim';
+    document.getElementById('heroTpsAvg').textContent = '--';
+    renderSparkBars('sparkTps', [], 'tps', 200, tpsClass);
+    document.getElementById('heroTtftLatest').textContent = '--';
+    document.getElementById('heroTtftAvg').className = 'c-dim';
+    document.getElementById('heroTtftAvg').textContent = '--';
+    renderSparkBars('sparkTtft', [], 'ttft', 15, ttftClass);
+    const thLatestEl = document.getElementById('thLatest');
+    if (thLatestEl) thLatestEl.textContent = '本轮';
+    const thCumEl = document.getElementById('thCum');
+    if (thCumEl) thCumEl.textContent = '累计';
+    ['ltPrompt', 'cumPrompt', 'costPrompt', 'ltCache', 'cumCache', 'costCache', 'ltIn', 'cumIn', 'costIn', 'ltOut', 'cumOut', 'costOut', 'ltThink', 'cumThink', 'costThink', 'ltResp', 'cumResp', 'costResp'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = '--';
+    });
+    ['ringInNew', 'ringInCache', 'ringOutResp', 'ringOutThink'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.setAttribute('stroke-dasharray', '0 100');
+    });
+    latestTokenTipData = null;
+    document.getElementById('modelSummary').textContent = '模型看板';
+    const modelBadgeEl = document.getElementById('modelBadge');
+    modelBadgeEl.className = 'mono c-dim';
+    modelBadgeEl.textContent = '--';
+    document.getElementById('modelEmpty').style.display = 'block';
+    const modelPanelEl = document.getElementById('modelPanel');
+    modelPanelEl.style.display = 'none';
+    latestModelItems = [];
+    setHtml(modelPanelEl, '');
+    document.getElementById('turnSummary').textContent = '逐轮明细';
+    hideChartTip();
+    renderTurnsPanel([]);
+    document.getElementById('subSummary').textContent = '子代理';
+    const subBadgeEl = document.getElementById('subBadge');
+    subBadgeEl.className = 'mono c-dim';
+    subBadgeEl.textContent = '未派出';
+    document.getElementById('subEmpty').style.display = 'block';
+    const subListEl = document.getElementById('subList');
+    subListEl.style.display = 'none';
+    setHtml(subListEl, '');
+  }
+
+  function iframeVisible() {
+    if (document.hidden || window.innerWidth <= 0 || document.documentElement.clientWidth <= 0) return false;
+    try {
+      const frame = window.frameElement;
+      if (frame && (frame.offsetWidth <= 0 || getComputedStyle(frame).display === 'none')) return false;
+    } catch (_) {}
+    return true;
+  }
+
+  async function refresh(force) {
+    if (!iframeVisible()) return;
+    if (inFlight) { if (force) refreshPending = true; return; }
+    inFlight++;
+    const mySeq = ++reqSeq;
+    try {
+      const data = await request('/api/status?v=' + UI_VERSION + (pinnedConvId ? '&id=' + encodeURIComponent(pinnedConvId) : '') + tokenParam);
+      if (mySeq !== reqSeq) return;
+      if (data.ui_version && data.ui_version !== UI_VERSION) {
+        const key = 'uiReload:' + data.ui_version + ':' + pinnedConvId;
+        let state;
+        try { state = JSON.parse(safeGetStorage('sessionStorage', key) || '{}'); } catch (_) { state = {}; }
+        const now = Date.now();
+        if ((state.attempts || 0) < 3 && now - (state.last || 0) >= 5000) {
+          state = { attempts: (state.attempts || 0) + 1, last: now };
+          safeSetStorage('sessionStorage', key, JSON.stringify(state));
+          const target = new URL(window.location.href);
+          if (!target.searchParams.get('token') && sidecarToken) target.searchParams.set('token', sidecarToken);
+          const html = await request(target.toString(), { cache: 'no-store' }, 'text');
+          const version = html.match(/const UI_VERSION = (\d+)\s*;/);
+          if (html.includes('AGY Cockpit') && version && Number(version[1]) === data.ui_version) {
+            window.location.replace(target.toString());
+          } else { showStatusError(new Error('新界面版本尚未就绪')); }
+        }
+        return;
+      }
+
+      if (data.theme) {
+        applyTheme(data.theme, false);
+      }
+
+      const st = data.active;
+      const cal = data.calendar || (st && st.calendar) || null;
+      latestCalendar = cal;
+      if (typeof data.quota_fetched_at === 'number') {
+        latestQuotaFetchedAt = data.quota_fetched_at;
+      }
+      renderQuotaFootBar(data.quota, st && st.model);
+      if (st && st.error && st.empty) {
+        if (cal) renderCalendar(latestCalendar);
+        showStatusError(new Error(st.error));
+        return;
+      }
+      if (!st || st.empty) {
+        resetEmptyState(st);
+        renderCalendar(latestCalendar);
+        return;
+      }
+
+      const m = st.model;
+      const ctx = st.context;
+      const cum = st.cumulative;
+      const lt = st.latest_turn;
+      const lc = st.latest_call;
+      const ls = st.live_status || {};
+
+      // Layer 1: Header + Cache TTL (optional when header card is hidden)
+      const cTitleEl = document.getElementById('cTitle');
+      if (cTitleEl) {
+        cTitleEl.textContent = st.title +
+          (st.archived ? ' · 已归档' :
+           st.handoff && st.handoff.state === 'needs_manual_archive' ? ' · 旧会话待手动归档' :
+           st.handoff && !st.handoff.completed ? ' · 交接中' : '');
+      }
+      const mBadgeEl = document.getElementById('mBadge');
+      if (mBadgeEl) mBadgeEl.textContent = m.short || m.name;
+
+      const ttlEl = document.getElementById('cacheTtl');
+      if (ttlEl) {
+        ttlEl.title = '';
+        if (st.stale) {
+          ttlEl.className = 'cache-ttl mono c-orange';
+          ttlEl.textContent = '⚠️ 状态暂未刷新';
+        } else if (ls.has_pending_bg) {
+          ttlEl.className = 'cache-ttl mono c-yellow';
+          ttlEl.textContent = '⏳ 后台任务/定时等待中';
+        } else if (!ls.is_idle) {
+          ttlEl.className = 'cache-ttl mono c-cyan';
+          ttlEl.textContent = '⚡ 模型执行中...';
+        } else if (ctx.compacted) {
+          const ckHit = (lc && lc.prompt > 0) ? lc.pre_compact_hit_pct : null;
+          const ttlTail = ls.cache_rem_sec > 0 ? ` · 预计剩余${fmtSec(ls.cache_rem_sec)}` : ' · ❄️预计已过期';
+          if (ckHit != null && ckHit < 50) {
+            ttlEl.className = 'cache-ttl mono c-yellow';
+            ttlEl.textContent = `⚠️ 已压缩 (${fmtK(ctx.pre_compact)} → ≈${fmtK(ctx.used)} · 摘要命中${metric(ckHit, 0, '%')}${ttlTail})`;
+          } else {
+            ttlEl.className = ls.cache_rem_sec > 0 ? 'cache-ttl mono c-green' : 'cache-ttl mono c-dim';
+            ttlEl.textContent = `🧹 已压缩 (${fmtK(ctx.pre_compact)} → ≈${fmtK(ctx.used)} · 命中${metric(ckHit, 0, '%')}${ttlTail})`;
+          }
+        } else if (ls.cache_rem_sec > 60) {
+          ttlEl.className = 'cache-ttl mono c-green';
+          ttlEl.textContent = `🔥 缓存预计有效 ${fmtSec(ls.cache_rem_sec)}`;
+        } else if (ls.cache_rem_sec > 0) {
+          ttlEl.className = 'cache-ttl mono c-yellow';
+          ttlEl.textContent = `⏳ 缓存预计剩余 ${fmtSec(ls.cache_rem_sec)}`;
+        } else {
+          ttlEl.className = 'cache-ttl mono c-dim';
+          ttlEl.textContent = '❄️ 缓存预计已过期';
+        }
+      }
+
+      // Layer 2: 2x2 Hero KPIs
+      const kpiValClass = cls => (cls === 'c-green' ? 'c-text' : cls);
+      const cCls = ctxClass(ctx.pct, ctx.used, ctx.limit);
+      const cValCls = kpiValClass(cCls);
+      document.getElementById('heroCtxPct').className = 'kpi-val mono ' + cValCls;
+      document.getElementById('heroCtxPct').textContent = (ctx.compacted ? '≈' : '') + ctx.pct.toFixed(1) + '%';
+      document.getElementById('heroCtxUsed').title = ctx.limit_default ? '模型上限为默认值' : '模型上限取自请求记录';
+      if (ctx.compacted) {
+        document.getElementById('heroCtxUsed').innerHTML = `<strong class="${cValCls}">≈${fmtK(ctx.used)}</strong> / ${fmtK(ctx.limit)} <span class="c-green">🧹</span>`;
+      } else {
+        document.getElementById('heroCtxUsed').innerHTML = `<strong class="${cValCls}">${fmtK(ctx.used)}</strong> / ${fmtK(ctx.limit)}`;
+      }
+
+      const cachePctOfLimit = ctx.compacted ? 0 : Math.min(100, (lc.cache * 100) / ctx.limit);
+      const inPctOfLimit = ctx.compacted
+        ? Math.min(100, (ctx.used * 100) / ctx.limit)
+        : Math.min(100 - cachePctOfLimit, (lc.in * 100) / ctx.limit);
+      const totCtxPct = Math.min(100, cachePctOfLimit + inPctOfLimit);
+      const ringCtxCacheEl = document.getElementById('ringCtxCache');
+      const ringCtxInEl = document.getElementById('ringCtxIn');
+      ringCtxCacheEl.setAttribute('class', 'ring-fill ' + cCls);
+      ringCtxCacheEl.setAttribute('stroke-dasharray', `${cachePctOfLimit.toFixed(2)} 100`);
+      ringCtxInEl.setAttribute('stroke-dasharray', `${totCtxPct.toFixed(2)} 100`);
+
+      const hCls = hitClass(lt.hit_pct);
+      document.getElementById('heroHitLatest').className = 'kpi-val mono ' + kpiValClass(hCls);
+      document.getElementById('heroHitLatest').textContent = hit(lt);
+      document.getElementById('heroHitCum').className = kpiValClass(hitClass(cum.hit_pct));
+      document.getElementById('heroHitCum').textContent = hit(cum);
+      const ringHitEl = document.getElementById('ringHit');
+      ringHitEl.setAttribute('class', 'ring-fill ' + hCls);
+      ringHitEl.setAttribute('stroke-dasharray', `${Math.min(100, lt.hit_pct).toFixed(1)} 100`);
+
+      document.getElementById('heroTpsLatest').innerHTML =
+        `<span class="${kpiValClass(tpsClass(lt.tps))}">${metric(lt.tps, 1, 't')}</span>`;
+      document.getElementById('heroTpsAvg').className = kpiValClass(tpsClass(cum.dec_tps));
+      document.getElementById('heroTpsAvg').textContent = metric(cum.dec_tps, 1, ' t/s');
+      document.getElementById('heroTpsAvg').title = `全会话：${cum.streamed_calls} 次流计时，${metric(cum.tps_dur, 3, " 秒")}`;
+      renderSparkBars('sparkTps', st.turns, 'tps', 200, tpsClass);
+
+      document.getElementById('heroTtftLatest').innerHTML =
+        `<span class="${kpiValClass(ttftClass(lt.ttft))}">${metric(lt.ttft, 1, 's')}</span>`;
+      document.getElementById('heroTtftAvg').className = kpiValClass(ttftClass(cum.avg_ttft));
+      document.getElementById('heroTtftAvg').textContent = metric(cum.avg_ttft, 1, 's');
+      renderSparkBars('sparkTtft', st.turns, 'ttft', 15, ttftClass);
+
+      // Layer 3: 2-Card Token Breakdown (Dual-Ring KPI Cards + Hover Popover)
+      const ltPromptEl = document.getElementById('ltPrompt');
+      if (ltPromptEl) ltPromptEl.textContent = fmtK(lt.prompt);
+      document.getElementById('cumPrompt').textContent = fmtK(cum.prompt);
+      document.getElementById('costPrompt').textContent = fmtUsd(cum.cost_prompt);
+
+      const ltOutEl = document.getElementById('ltOut');
+      if (ltOutEl) ltOutEl.textContent = fmtK(lt.out);
+      document.getElementById('cumOut').textContent = fmtK(cum.out);
+      document.getElementById('costOut').textContent = fmtUsd(cum.cost_out);
+
+      const inTot = Number(cum.prompt || 0);
+      const inCachePct = inTot > 0 ? Math.max(0, Math.min(100, (Number(cum.cache || 0) * 100) / inTot)) : 0;
+      document.getElementById('ringInNew').setAttribute('stroke-dasharray', inTot > 0 ? '100 100' : '0 100');
+      document.getElementById('ringInCache').setAttribute('stroke-dasharray', inTot > 0 ? `${inCachePct.toFixed(2)} 100` : '0 100');
+
+      const outTot = Number(cum.out || 0);
+      const outThinkPct = outTot > 0 ? Math.max(0, Math.min(100, (Number(cum.think || 0) * 100) / outTot)) : 0;
+      document.getElementById('ringOutResp').setAttribute('stroke-dasharray', outTot > 0 ? '100 100' : '0 100');
+      document.getElementById('ringOutThink').setAttribute('stroke-dasharray', outTot > 0 ? `${outThinkPct.toFixed(2)} 100` : '0 100');
+
+      latestTokenTipData = { lt, cum, inCachePct, outThinkPct };
+      if (activeTipSource && (activeTipSource.kind === 'tk_in' || activeTipSource.kind === 'tk_out')) {
+        const cardEl = document.getElementById(activeTipSource.kind === 'tk_in' ? 'tkInCard' : 'tkOutCard');
+        const tipHtml = buildTokenCardTipHtml(activeTipSource.kind === 'tk_in' ? 'in' : 'out');
+        if (cardEl && tipHtml) showChartTip(cardEl, tipHtml, activeTipSource);
+      }
+
+      // Layer 3.5: Collapsible Models & API Cost Board (Bar Chart + Detail Card)
+      const mb = st.models_board || {};
+      const mSum = mb.summary || { count: 0, cost: 0 };
+      const mItems = mb.items || [];
+      const modelSummaryEl = document.getElementById('modelSummary');
+      const modelBadgeEl = document.getElementById('modelBadge');
+      const modelEmptyEl = document.getElementById('modelEmpty');
+      const modelPanelNode = document.getElementById('modelPanel');
+
+      if (!mItems.length) {
+        if (!st.stale || st.models_board) {
+          modelSummaryEl.textContent = '模型看板';
+          modelBadgeEl.className = 'mono c-dim';
+          modelBadgeEl.textContent = '--';
+          modelEmptyEl.style.display = 'block';
+          modelPanelNode.style.display = 'none';
+          latestModelItems = [];
+          setHtml(modelPanelNode, '');
+        }
+      } else {
+        modelSummaryEl.textContent = `模型看板 (${mItems.length})`;
+        modelBadgeEl.className = 'mono c-muted';
+        modelBadgeEl.innerHTML = `API <strong class="c-text">${fmtUsd(mSum.cost)}</strong>`;
+        modelEmptyEl.style.display = 'none';
+        modelPanelNode.style.display = 'block';
+        renderModelPanel(mItems);
+      }
+
+      // Layer 4: Collapsible Per-Turn History (Header Tabs + Interactive SVG Line Chart + Hover Popover)
+      document.getElementById('turnSummary').textContent = `逐轮明细 (${cum.turns})`;
+      renderTurnsPanel(st.turns || []);
+
+      // Layer 5: Collapsible Subagent Token Consumption (No total row inside list; header badge shows In, Out, Cache%, TPS)
+      const subSum = st.subagents_summary || { count: 0 };
+      const subs = st.subagents || [];
+      const subSummaryEl = document.getElementById('subSummary');
+      const subBadgeEl = document.getElementById('subBadge');
+      const subEmptyEl = document.getElementById('subEmpty');
+      const subListEl = document.getElementById('subList');
+
+      function renderSubRow(item, idx, maxSubTok) {
+        const nameTxt = escHtml(item.label);
+        const modelTxt = fmtSubModel(item.model) || '—';
+        const totTok = item.metrics_unavailable ? 0 : (Number(item.prompt || 0) + Number(item.out || 0));
+        const pct = maxSubTok > 0 && totTok > 0 ? Math.max(3, Math.min(100, (totTok / maxSubTok) * 100)) : 0;
+        const stCls = item.status === 'running' ? 'st-run' : (item.status === 'error' ? 'st-err' : 'st-done');
+        const stLbl = item.status === 'running' ? '运行中' : (item.status === 'error' ? '失败' : '已完成');
+        const statusHtml = `<span class="sub-dot ${stCls}" aria-label="${stLbl}" title="${stLbl}"></span>`;
+        const rowCls = item.status === 'running' ? 'sub-bar-row is-running' : 'sub-bar-row';
+        const subColor = modelBrandVar(`${item.model || ''} ${item.agent || ''}`);
+        return `
+          <div class="${rowCls}" style="--sub-color:${subColor}" data-sub-idx="${idx}" tabindex="0">
+            ${pct > 0 ? `<span class="sub-bar-bg" style="width:${pct.toFixed(1)}%" aria-hidden="true"></span>` : ''}
+            <div class="sub-bar-fg">
+              <div class="sub-bar-left">
+                ${statusHtml}
+                <span class="sub-name">${nameTxt}</span>
+              </div>
+              <span class="sub-bar-model">${escHtml(modelTxt)}</span>
+            </div>
+          </div>
+        `;
+      }
+
+      if (!subs.length) {
+        if (!st.stale || Array.isArray(st.subagents)) {
+          subSummaryEl.textContent = '子代理';
+          subBadgeEl.className = 'mono c-dim';
+          subBadgeEl.textContent = '未派出';
+          subEmptyEl.style.display = 'block';
+          subListEl.style.display = 'none';
+          latestSubRenderer = null;
+          latestSubItems = [];
+          subListExpanded = false;
+          if (activeTipSource && activeTipSource.kind === 'sub') hideChartTip();
+          setHtml(subListEl, '');
+        }
+      } else {
+        subSummaryEl.textContent = `子代理 (${subs.length})`;
+        subBadgeEl.className = 'mono c-muted';
+        const totSubTokens = Number(subSum.prompt || 0) + Number(subSum.out || 0);
+        const subSpeedTip = Object.entries(subSum.speeds || {}).map(([k,v]) => (rateKind[k] || k) + " " + metric(v.tps, 1, " t/s")).join(" · ");
+        subBadgeEl.innerHTML =
+          `<strong class="c-text">${subSum.metrics_incomplete ? "≈" : ""}${fmtK(totSubTokens)}</strong> · <strong class="c-text">${fmtUsd(subSum.cost)}</strong>`;
+        subBadgeEl.title = (subSum.metrics_incomplete ? "部分子代理运行中或无统计，当前为近似汇总" : "子代理合计用量与 API 费用") + (subSpeedTip ? " · " + subSpeedTip : "");
+        subEmptyEl.style.display = 'none';
+        subListEl.style.display = 'flex';
+
+        latestSubItems = subs;
+        const maxSubTok = subs.reduce((mx, s) => {
+          if (!s || s.metrics_unavailable) return mx;
+          return Math.max(mx, Number(s.prompt || 0) + Number(s.out || 0));
+        }, 0);
+        setHtml(subListEl, subs.map((s, idx) => renderSubRow(s, idx, maxSubTok)).join(''));
+        if (activeTipSource && activeTipSource.kind === 'sub') {
+          const idx = Number(activeTipSource.key);
+          const rowEl = subListEl.querySelector(`.sub-bar-row[data-sub-idx="${idx}"]`);
+          if (rowEl && latestSubItems[idx]) showChartTip(rowEl, buildSubTipHtml(latestSubItems[idx]), activeTipSource);
+          else hideChartTip();
+        }
+      }
+      // Layer 6: Collapsible Calendar Usage Statistics
+      renderCalendar(latestCalendar);
+      if (st.stale) showStatusError(Object.assign(new Error(st.error || "数据暂未更新"), { kind: 'stale' }));
+    } catch (e) {
+      showStatusError(e);
+    } finally {
+      inFlight--;
+      if (refreshPending) { refreshPending = false; queueMicrotask(() => refresh()); }
+    }
+  }
+
+  const siblingHealing = new WeakMap();
+  function healSiblingFrames() {
+    if (!iframeVisible()) return;
+    try {
+      if (!window.parent || window.parent === window) return;
+      const frames = window.parent.frames;
+      const current = new URL(window.location.href);
+      for (let i = 0; i < frames.length; i++) {
+        try {
+          const frame = frames[i];
+          if (!frame || frame === window) continue;
+          const target = new URL(frame.location.href);
+          if (target.protocol !== current.protocol || target.host !== current.host) continue;
+          const doc = frame.document;
+          if (!doc || doc.readyState !== 'complete') continue;
+          if (doc.getElementById('footBar') && frame.__AGY_COCKPIT_READY && frame.__AGY_COCKPIT_UI_VERSION === UI_VERSION) continue;
+          const now = Date.now();
+          const state = siblingHealing.get(frame) || { attempts: 0, last: 0 };
+          if (state.attempts >= 3 || now - state.last < 5000) continue;
+          siblingHealing.set(frame, { attempts: state.attempts + 1, last: now });
+          if (!target.searchParams.get('token') && sidecarToken) target.searchParams.set('token', sidecarToken);
+          frame.location.replace(target.toString());
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  let paneWasVisible = iframeVisible();
+  function onMaybeVisible() {
+    const visible = iframeVisible();
+    if (visible && !paneWasVisible) refresh(true);
+    paneWasVisible = visible;
+  }
+  window.addEventListener('resize', onMaybeVisible);
+  window.addEventListener('focus', onMaybeVisible);
+  document.addEventListener('visibilitychange', onMaybeVisible);
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(onMaybeVisible).observe(document.documentElement);
+  }
+  window.__AGY_COCKPIT_UI_VERSION = UI_VERSION;
+  window.__AGY_COCKPIT_READY = true;
+  healSiblingFrames();
+  if (paneWasVisible) refresh(true);
+  setInterval(() => {
+    healSiblingFrames();
+    if (iframeVisible()) refresh();
+  }, 500);
+</script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "display_name": "AGY Cockpit",
+  "description": "Antigravity 实时驾驶舱：自动跟随当前会话与主题，监控上下文窗口、缓存命中、TPS/TTFT、子代理消耗与模型配额。",
+  "command": "python3",
+  "args": [
+    "server.py"
+  ],
+  "restart_policy": "always",
+  "has_web_ui": true,
+  "agent_permissions": {
+    "allows_user_interactions": false
+  },
+  "ui_config": {
+    "display_name": "AGY Cockpit",
+    "views": [
+      {
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "path": "/",
+        "title": "AGY Cockpit"
+      }
+    ]
+  }
+}
