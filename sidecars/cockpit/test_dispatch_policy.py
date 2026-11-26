@@ -160,8 +160,8 @@ class DispatchPolicyTests(unittest.TestCase):
         caps = {"available_engines": ["agy", "codex"]}
         dp.validate_policy(p)
         scout, standard, deep, expert, panel = dp.resolve_all(p, caps).values()
-        self.assertEqual((scout["type"], standard["type"]), ("research", "self"))
-        self.assertEqual(scout["skipped"][0]["reason"], "role_permission_mismatch")
+        self.assertEqual((scout["type"], scout["model"], standard["type"], standard["model"]),
+                         ("research", "pro", "self", "flash"))
         self.assertEqual([deep["channel"], expert["channel"]], ["swarm", "swarm"])
         for resolved, tier in ((deep, "Medium"), (expert, "High")):
             self.assertEqual(resolved["model"], f"Gemini 4 Neon ({tier})")

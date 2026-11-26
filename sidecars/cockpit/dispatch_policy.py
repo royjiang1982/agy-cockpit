@@ -20,7 +20,7 @@ ROLE_READ_ONLY = {"scout": True, "standard": False, "deep": False, "expert": Fal
 ENGINES = ("agy", "codex", "droid", "grok", "pi")
 CHANNELS = ("cli", "invoke_subagent", "swarm")
 EFFORTS = ("", "low", "medium", "high", "xhigh", "max", "ultra", "same")
-NATIVE_MODELS = {"flash": "research", "inherit": "self", "pro": "self"}
+NATIVE_MODELS = ("flash_lite", "flash", "inherit", "pro")
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/() -]{0,80}", re.ASCII)
 _NAMESPACED_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.:-]*")
 _LABEL = re.compile(r"[^()]*(?: \([A-Za-z0-9._ -]+\))?")
@@ -317,8 +317,6 @@ def _selection(target, name, policy, caps):
         selected["codex_fast"] = policy["codex_fast"]
     if channel == "invoke_subagent":
         selected["type"] = "research" if ROLE_READ_ONLY[name] else "self"
-        if NATIVE_MODELS[model] != selected["type"]:
-            return None, "role_permission_mismatch"
     return selected, None
 
 
@@ -328,8 +326,8 @@ def _builtin_tails(name, policy):
         yield dict(mode="swarm", channel="swarm", engine="agy", model=f"Gemini 4 Neon ({tier})",
                    effort="", read_only=False, requires_model_check=True)
     model = {"scout": "flash", "standard": "inherit", "panel": "flash"}.get(name, "pro")
-    yield dict(mode="invoke_subagent", channel="invoke_subagent", engine="agy",
-               model=model, effort="", type=NATIVE_MODELS[model], read_only=ROLE_READ_ONLY[name])
+    yield dict(mode="invoke_subagent", channel="invoke_subagent", engine="agy", model=model,
+               effort="", type="research" if ROLE_READ_ONLY[name] else "self", read_only=ROLE_READ_ONLY[name])
 
 
 def _resolve_target(primary, name, policy, caps):

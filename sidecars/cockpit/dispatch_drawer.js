@@ -26,8 +26,7 @@
     grok: [m('grok-4.7', 'grok-4.7', E4), m('grok-4.7-build-fast', 'grok-4.7-fast', E4), m('grok-4.6', 'grok-4.6', E4), m('grok-4.5', 'grok-4.5', E4)],
     // Droid mirrors only models present in other engines (AGY + Codex), no extras.
     droid: [m('gemini-3.8-flash', 'Flash 3.8', E3, 'agy'), m('gemini-4-argon', 'Argon', E3, 'agy'), m('claude-opus-5-5', 'Opus 5.5', E4M, 'claude'), m('claude-sonnet-5-5', 'Sonnet 5.5', E4M, 'claude'), m('gpt-6.2-sol', 'gpt-6.2-sol', E6, 'codex'), m('gpt-6.2-astra', 'gpt-6.2-astra', E6, 'codex'), m('gpt-6.1-terra', 'gpt-6.1-terra', E6, 'codex'), m('gpt-6-luna', 'gpt-6-luna', E5, 'codex')],
-    native_ro: [m('flash', 'Flash', [])],
-    native_rw: [m('inherit', '继承主模型', []), m('pro', 'Pro', [])],
+    native: [m('flash_lite', 'Flash Lite', []), m('flash', 'Flash', []), m('inherit', '继承主模型', []), m('pro', 'Pro', [])],
     swarm: [mkSwarm('s_hydrogen', 'Hydrogen', 'Gemini 4 Hydrogen', E4, 'agy'), mkSwarm('s_neon', 'Neon', 'Gemini 4 Neon', E4, 'agy'), mkSwarm('s_argon', 'Argon', 'Gemini 4 Argon', E3, 'agy'), mkSwarm('s_carbon', 'Carbon', 'Gemini 4 Carbon', E3, 'agy'), mkSwarm('s_flash38', 'Flash 3.8', 'Gemini 3.8 Flash', E3, 'agy'), mkSwarm('s_opus55', 'Opus 5.5', 'Claude Opus 5.5', E4M, 'claude'), mkSwarm('s_sonnet55', 'Sonnet 5.5', 'Claude Sonnet 5.5', E4M, 'claude')],
   };
   const t = (engine, model, effort = '', channel = 'cli', extra = {}) => ({ channel, engine, model, effort, ...extra });
@@ -48,8 +47,8 @@
   };
   const dot = b => el('span', { className: 'ds-dot', 'data-b': b, 'aria-hidden': 'true' });
   const engKeyOf = x => x.channel === 'invoke_subagent' ? 'native' : x.channel === 'swarm' ? 'swarm' : x.engine;
-  const modelsFor = (ek, ro) => ek === 'native' ? (ro ? CATALOG.native_ro : CATALOG.native_rw) : (CATALOG[ek] || []);
-  const findSpec = (ek, m, ro) => modelsFor(ek, ro).find(s => (s.match ? s.match(m) : s.id === m));
+  const modelsFor = ek => CATALOG[ek] || [];
+  const findSpec = (ek, m) => modelsFor(ek).find(s => (s.match ? s.match(m) : s.id === m));
   function effortOf(x, spec) {
     if (x.channel === 'swarm') {
       const m = /\((Low|Medium|High|XHigh|Max)\)$/i.exec(x.model || '');
@@ -80,11 +79,11 @@
 
   const drawer = el('dialog', { id: 'dispatchDrawer', 'aria-labelledby': 'dsTitle' });
   const backBtn = el('button', { type: 'button', className: 'ds-back', hidden: true }, '‹ 返回');
-  const titleEl = el('h2', { id: 'dsTitle' }, '派发设置');
+  const titleEl = el('h2', { id: 'dsTitle' }, '子代理设置');
   const masterCb = el('input', { type: 'checkbox', className: 'ds-switch', 'aria-label': '启用子代理派发', title: '启用或暂停派发' });
   const closeBtn = el('button', { type: 'button', className: 'ds-close', 'aria-label': '关闭' }, '✕');
   const warnEl = el('div', { className: 'ds-warn', role: 'alert', hidden: true });
-  const fields = el('fieldset', { className: 'ds-fields', 'aria-label': '派发设置' });
+  const fields = el('fieldset', { className: 'ds-fields', 'aria-label': '子代理设置' });
   const bodyEl = el('div', { className: 'ds-body' }, warnEl, fields);
   const statusEl = el('span', { className: 'ds-status', role: 'status', 'aria-live': 'polite' });
   const reloadBtn = el('button', { type: 'button', className: 'ds-ghost', hidden: true }, '重载');
@@ -310,7 +309,7 @@
     backBtn.hidden = isHome;
     masterCb.hidden = !isHome;
     backBtn.textContent = view.type === 'seat' ? '‹ 多方会审' : '‹ 返回';
-    titleEl.textContent = isHome ? '派发设置' : view.type === 'role' ? (ROLES.find(r => r[0] === view.role)?.[1] || view.role) : view.type === 'panel' ? '多方会审' : `席位 #${view.index + 1}`;
+    titleEl.textContent = isHome ? '子代理设置' : view.type === 'role' ? (ROLES.find(r => r[0] === view.role)?.[1] || view.role) : view.type === 'panel' ? '多方会审' : `席位 #${view.index + 1}`;
     fields.className = isHome ? 'ds-fields' : 'ds-fields is-sub';
     const kids = isHome ? renderHome(p) : view.type === 'role' ? renderRoleDetail(p, view.role) : view.type === 'panel' ? renderPanelList(p) : renderSeatDetail(p, view.index);
     fields.replaceChildren(...kids);
