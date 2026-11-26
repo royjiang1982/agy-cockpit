@@ -25,7 +25,19 @@ _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/() -]{0,80}", re.ASCII)
 _NAMESPACED_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.:-]*")
 _LABEL = re.compile(r"[^()]*(?: \([A-Za-z0-9._ -]+\))?")
 MAX_QUOTA_AGE_SEC = 300
-_LOCK = threading.Lock()
+_LOCK, _REAL_WHICH = threading.Lock(), shutil.which
+_EXTRA_WRAPPER_DIRS = (Path.home() / "Dev/_shared/agent-runtime/bin", Path.home() / ".gemini/config/bin", Path.home() / ".local/bin")
+
+
+def _has_wrapper(engine):
+    exe = f"sa-{engine}"
+    if shutil.which(exe):
+        return True
+    if shutil.which is not _REAL_WHICH or not os.environ.get("PATH"):
+        return False
+    env_bin = os.environ.get("SA_RUNTIME_BIN")
+    dirs = ([Path(env_bin)] if env_bin else []) + list(_EXTRA_WRAPPER_DIRS)
+    return any((d / exe).is_file() and os.access(d / exe, os.X_OK) for d in dirs)
 
 
 class PolicyConflictError(Exception):
@@ -69,11 +81,9 @@ def _fields(obj, required, optional=()):
     if not isinstance(obj, dict) or not set(required) <= obj.keys() or obj.keys() - set(required) - set(optional):
         raise ValueError("unexpected or missing policy fields")
 
-
 def _bool(value):
     if type(value) is not bool:
         raise ValueError("policy switches must be boolean")
-
 
 def _revision(value):
     if type(value) is not int or value < 1:
@@ -284,7 +294,7 @@ def probe_capabilities(state_path=None, *, now=None):
     for chain in policy["fallbacks"].values():
         for target in chain:
             models[target["engine"]].add(target["model"])
-    return dict(available_engines=[engine for engine in ENGINES if shutil.which(f"sa-{engine}")],
+    return dict(available_engines=[engine for engine in ENGINES if _has_wrapper(engine)],
                 models={engine: sorted(names) for engine, names in models.items()},
                 quota={engine: _limiting_hint(rows) for engine, rows in quota.items()},
                 agy_quota={family: _limiting_hint(rows) for family, rows in agy_families.items()

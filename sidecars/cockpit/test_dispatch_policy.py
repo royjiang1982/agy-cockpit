@@ -324,3 +324,18 @@ class DispatchPolicyTests(unittest.TestCase):
                     self.assertEqual(body["available_engines"], [])
                 else:
                     self.assertEqual(body["type"], "research")
+
+    def test_wrapper_discovery_uses_runtime_bin_when_path_is_nonempty(self):
+        fake_bin = self.policy_path.parent / "runtime-bin"
+        fake_bin.mkdir()
+        exe = fake_bin / "sa-codex"
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o755)
+        with patch.object(dp, "_EXTRA_WRAPPER_DIRS", ()), \
+             patch.dict(os.environ, {"PATH": "/nonexistent", "SA_RUNTIME_BIN": str(fake_bin)}):
+            caps = dp.probe_capabilities(self.state_path)
+            self.assertEqual(caps["available_engines"], ["codex"])
+        with patch.object(dp, "_EXTRA_WRAPPER_DIRS", ()), \
+             patch.dict(os.environ, {"PATH": "", "SA_RUNTIME_BIN": str(fake_bin)}):
+            caps = dp.probe_capabilities(self.state_path)
+            self.assertEqual(caps["available_engines"], [])
