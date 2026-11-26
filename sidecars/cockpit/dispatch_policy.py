@@ -292,10 +292,7 @@ def _agy_quota_family(model):
     names = set(re.findall(r"[a-z0-9]+", model.lower()))
     if names.intersection(("claude", "opus", "sonnet", "haiku")):
         return "3p"
-    if names.intersection(("gemini", "neon", "argon", "carbon", "hydrogen", "flash")):
-        return "gemini"
-    return None
-
+    return "gemini" if names.intersection(("gemini", "neon", "argon", "carbon", "hydrogen", "flash")) else None
 
 def _selection(target, name, policy, caps):
     channel, engine, model = (target[key] for key in ("channel", "engine", "model"))
