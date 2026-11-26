@@ -32,6 +32,7 @@ python3 ~/.gemini/config/plugins/agy-cockpit/skills/cockpit-dispatch/scripts/res
 | `panel` | **只读** | 架构选型与重构评审 / 视频创意方向多视角评审 / 选品立项与定价策略多方辩论 |
 
 也可运行 `--all` 一次查看 5 个角色的解析结果与原因（`reason`）。若 `mode == "disabled"`，由主代理直接完成或按原生方式处理。
+多方会审支持按顺序取前 N 个可用席位（例如单方会审 `--role panel --count 1`、两方会审 `--role panel --count 2`）；若某席位不可用，解析器自动顺延至下一个可用席位，全部不可用时安全兜底到内置独立盲审。
 
 ---
 

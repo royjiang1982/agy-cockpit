@@ -339,3 +339,24 @@ class DispatchPolicyTests(unittest.TestCase):
              patch.dict(os.environ, {"PATH": "", "SA_RUNTIME_BIN": str(fake_bin)}):
             caps = dp.probe_capabilities(self.state_path)
             self.assertEqual(caps["available_engines"], [])
+
+    def test_panel_ordered_count_skips_unavailable_seats_and_backfills(self):
+        p = dp.default_policy()
+        for seat in p["roles"]["panel"]["seats"]:
+            seat["enabled"] = True
+        p["fallbacks"]["codex:gpt-6.2-astra"] = []  # Force seat #1 to be skipped when codex is unavailable
+        caps = {"available_engines": ["agy", "grok"]}
+        one = dp.resolve_role("panel", p, caps, count=1)
+        self.assertEqual([(s["order"], s["engine"], s["model"]) for s in one["seats"]],
+                         [(2, "agy", "gemini-4-neon-xhigh")])
+        self.assertEqual(one["skipped_seats"][0]["order"], 1)
+        two = dp.resolve_role("panel", p, caps, count=2)
+        self.assertEqual([(s["order"], s["engine"], s["model"]) for s in two["seats"]],
+                         [(2, "agy", "gemini-4-neon-xhigh"), (3, "agy", "claude-opus-5-5-high")])
+        four = dp.resolve_role("panel", p, caps, count=4)
+        self.assertEqual(len(four["seats"]), 4)
+        self.assertEqual([(s["channel"], s["engine"], s["model"]) for s in four["seats"]],
+                         [("cli", "agy", "gemini-4-neon-xhigh"), ("cli", "agy", "claude-opus-5-5-high"),
+                          ("cli", "grok", "grok-4.7"), ("invoke_subagent", "agy", "flash")])
+        with self.assertRaises(ValueError):
+            dp.resolve_role("panel", p, caps, count=0)

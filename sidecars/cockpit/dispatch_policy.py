@@ -47,7 +47,6 @@ class PolicyConflictError(Exception):
 def _target(engine, model, effort="", channel="cli", **extras):
     return dict(channel=channel, engine=engine, model=model, effort=effort, **extras)
 
-
 def default_policy():
     primaries = {
         "scout": _target("agy", "gemini-4-hydrogen-high", "high"),
@@ -55,8 +54,7 @@ def default_policy():
         "deep": _target("codex", "gpt-6.2-sol", "high"),
         "expert": _target("codex", "gpt-6.2-astra", "xhigh"),
     }
-    roles = {name: dict(read_only=ROLE_READ_ONLY[name], primary=primary)
-             for name, primary in primaries.items()}
+    roles = {name: dict(read_only=ROLE_READ_ONLY[name], primary=primary) for name, primary in primaries.items()}
     roles["panel"] = dict(read_only=True, seats=[
         dict(primaries["expert"], enabled=True),
         _target("agy", "gemini-4-neon-xhigh", "xhigh", enabled=True),
@@ -73,8 +71,7 @@ def default_policy():
     }
     return dict(schema_version=SCHEMA_VERSION, revision=1, enabled=True, external_enabled=True,
                 allow_swarm=False, codex_fast=True, quota_fallback=dict(enabled=True, threshold_pct=5),
-                roles=roles, fallbacks={key: [_target("droid", *spec, enabled=True)]
-                                        for key, spec in fallback_specs.items()})
+                roles=roles, fallbacks={k: [_target("droid", *v, enabled=True)] for k, v in fallback_specs.items()})
 
 
 def _fields(obj, required, optional=()):
@@ -223,14 +220,10 @@ def save_policy(payload, *, expected_revision, policy_path=None):
         raise ValueError("payload and expected revision do not match")
     return _write_policy(policy, expected_revision, policy_path)
 
-
 def reset_policy(*, expected_revision, policy_path=None):
     return _write_policy(default_policy(), expected_revision, policy_path)
 
-
 def _quota_cache(state_path):
-    # Existing Cockpit installations persist state as view_state.json; use it
-    # when a standalone state.json does not exist. Explicit paths never fall back.
     paths = (Path(state_path),) if state_path is not None else (STATE_PATH, STATE_PATH.with_name("view_state.json"))
     for path in paths:
         try:
@@ -243,26 +236,20 @@ def _quota_cache(state_path):
             break
     return {}
 
-
 def _number(value):
     try:
         return value if type(value) in (int, float) and math.isfinite(value) else None
     except OverflowError:
         return None
 
-
 def _quota_hint(row, now):
-    observed = _number(row.get("observed_at"))
-    reset = _number(row.get("reset_ts"))
-    fraction = _number(row.get("rem_frac"))
+    observed, reset, fraction = _number(row.get("observed_at")), _number(row.get("reset_ts")), _number(row.get("rem_frac"))
     pct = _number(row.get("pct", None if fraction is None or not 0 <= fraction <= 1 else fraction * 100))
     if pct is not None and not 0 <= pct <= 100:
         pct = None
-    fresh = (pct is not None and observed is not None and observed > 0
-             and 0 <= now - observed <= MAX_QUOTA_AGE_SEC and not row.get("stale")
-             and reset is not None and 0 < reset and now < reset)
+    fresh = (pct is not None and observed is not None and observed > 0 and 0 <= now - observed <= MAX_QUOTA_AGE_SEC
+             and not row.get("stale") and reset is not None and 0 < reset and now < reset)
     return dict(pct=pct, observed_at=observed, reset_ts=reset, fresh=fresh)
-
 
 def _limiting_hint(rows):
     fresh = [row for row in rows if row["fresh"]]
@@ -368,33 +355,48 @@ def _resolve_target(primary, name, policy, caps):
     return dict(selected, fallbacks=fallbacks, skipped=skipped)
 
 
-def resolve_role(role, policy=None, capabilities=None, *, policy_path=None, state_path=None):
+def _panel_seat_meta(seat, order):
+    seat["order"], seat["blind_isolated"] = order, seat["channel"] in ("cli", "invoke_subagent")
+    seat["blind_reason"] = "independent_concurrent_call" if seat["blind_isolated"] else "shared_swarm_board"
+    return seat
+
+def _resolve_panel(config, policy, caps, count):
+    enabled = [seat for seat in config["seats"] if seat.get("enabled", True)]
+    skipped = []
+    if count is None:
+        seats = [_panel_seat_meta(_resolve_target(seat, "panel", policy, caps), i) for i, seat in enumerate(enabled, 1)]
+    else:
+        if type(count) is not int or count < 1:
+            raise ValueError("panel count must be a positive integer")
+        seats = []
+        for i, seat in enumerate(enabled, 1):
+            res = _resolve_target(seat, "panel", policy, caps)
+            if res["reason"] in ("primary", "fallback"):
+                seats.append(_panel_seat_meta(res, i))
+                if len(seats) >= count:
+                    break
+            else:
+                why = res["skipped"][0]["reason"] if res["skipped"] else "unavailable"
+                skipped.append(dict(order=i, channel=seat["channel"], engine=seat["engine"], model=seat["model"], reason=why))
+        while len(seats) < count:
+            seats.append(_panel_seat_meta(dict(next(_builtin_tails("panel", policy)), reason="builtin_fallback", fallbacks=[], skipped=[]), len(seats) + 1))
+    channels = {seat["channel"] for seat in seats}
+    out = dict(mode="panel", channel=next(iter(channels)) if len(channels) == 1 else "panel", read_only=True, seats=seats,
+               blind_isolated=bool(seats) and all(s["blind_isolated"] for s in seats),
+               reason=("shared_swarm_board" if "swarm" in channels else "panel_seats" if seats else "no_enabled_seats"))
+    return dict(out, skipped_seats=skipped) if skipped else out
+
+def resolve_role(role, policy=None, capabilities=None, *, policy_path=None, state_path=None, count=None):
     if role not in ROLE_READ_ONLY:
         raise ValueError("unknown dispatch role")
-    if policy is None:
-        policy = load_policy(policy_path)["policy"]
+    policy = load_policy(policy_path)["policy"] if policy is None else policy
     if not policy["enabled"]:
         return dict(mode="disabled", channel="direct", reason="dispatch_disabled")
-    if capabilities is None:
-        capabilities = probe_capabilities(state_path)
-    config = policy["roles"][role]
-    if role != "panel":
-        return _resolve_target(config["primary"], role, policy, capabilities)
-    seats = [_resolve_target(seat, role, policy, capabilities)
-             for seat in config["seats"] if seat.get("enabled", True)]
-    for seat in seats:
-        seat["blind_isolated"] = seat["channel"] in ("cli", "invoke_subagent")
-        seat["blind_reason"] = "independent_concurrent_call" if seat["blind_isolated"] else "shared_swarm_board"
-    channels = {seat["channel"] for seat in seats}
-    return dict(mode="panel", channel=next(iter(channels)) if len(channels) == 1 else "panel",
-                read_only=True, seats=seats, blind_isolated=bool(seats) and all(s["blind_isolated"] for s in seats),
-                reason=("shared_swarm_board" if "swarm" in channels else
-                        "panel_seats" if seats else "no_enabled_seats"))
-
+    caps = probe_capabilities(state_path) if capabilities is None else capabilities
+    cfg = policy["roles"][role]
+    return _resolve_panel(cfg, policy, caps, count) if role == "panel" else _resolve_target(cfg["primary"], role, policy, caps)
 
 def resolve_all(policy=None, capabilities=None, *, policy_path=None, state_path=None):
-    if policy is None:
-        policy = load_policy(policy_path)["policy"]
-    if capabilities is None:
-        capabilities = probe_capabilities(state_path)
-    return {role: resolve_role(role, policy, capabilities) for role in ROLE_READ_ONLY}
+    policy = load_policy(policy_path)["policy"] if policy is None else policy
+    caps = probe_capabilities(state_path) if capabilities is None else capabilities
+    return {role: resolve_role(role, policy, caps) for role in ROLE_READ_ONLY}

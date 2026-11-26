@@ -19,13 +19,14 @@ def main(argv=None):
     action.add_argument("--capabilities", action="store_true")
     parser.add_argument("--policy-path", type=Path)
     parser.add_argument("--state-path", type=Path)
+    parser.add_argument("--count", type=int, default=None)
     args = parser.parse_args(argv)
     if args.capabilities:
         result = dispatch_policy.probe_capabilities(state_path=args.state_path)
     elif args.all:
         result = dispatch_policy.resolve_all(policy_path=args.policy_path, state_path=args.state_path)
     else:
-        result = dispatch_policy.resolve_role(args.role, policy_path=args.policy_path, state_path=args.state_path)
+        result = dispatch_policy.resolve_role(args.role, policy_path=args.policy_path, state_path=args.state_path, count=args.count)
     print(json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
     return 0
 
