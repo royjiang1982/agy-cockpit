@@ -26,34 +26,12 @@
   const t = (engine, model, effort = '', channel = 'cli', extra = {}) => ({ channel, engine, model, effort, ...extra });
   const ROLE_CHOICES = {
     scout: [t('agy', 'gemini-4-hydrogen-high', 'high'), t('droid', 'gemini-3.8-flash', 'high'), t('agy', 'flash', '', 'invoke_subagent')],
-    standard: [
-      t('agy', 'gemini-4-neon-medium', 'medium'), t('agy', 'gemini-4-neon-high', 'high'),
-      t('droid', 'gemini-4-argon', 'medium'), t('agy', 'inherit', '', 'invoke_subagent'),
-      t('agy', 'Gemini 4 Neon (Medium)', '', 'swarm'),
-    ],
-    deep: [
-      t('codex', 'gpt-6.2-sol', 'high'), t('agy', 'gemini-4-neon-high', 'high'),
-      t('droid', 'gpt-6.2-sol', 'high'), t('agy', 'pro', '', 'invoke_subagent'),
-      t('agy', 'Gemini 4 Neon (Medium)', '', 'swarm'),
-    ],
-    expert: [
-      t('codex', 'gpt-6.2-astra', 'xhigh'), t('codex', 'gpt-6.2-sol', 'xhigh'),
-      t('agy', 'gemini-4-neon-xhigh', 'xhigh'), t('droid', 'gpt-6.2-astra', 'xhigh'),
-      t('agy', 'pro', '', 'invoke_subagent'), t('agy', 'Gemini 4 Neon (High)', '', 'swarm'),
-    ],
+    standard: [t('agy', 'gemini-4-neon-medium', 'medium'), t('agy', 'gemini-4-neon-high', 'high'), t('droid', 'gemini-4-argon', 'medium'), t('agy', 'inherit', '', 'invoke_subagent'), t('agy', 'Gemini 4 Neon (Medium)', '', 'swarm')],
+    deep: [t('codex', 'gpt-6.2-sol', 'high'), t('agy', 'gemini-4-neon-high', 'high'), t('droid', 'gpt-6.2-sol', 'high'), t('agy', 'pro', '', 'invoke_subagent'), t('agy', 'Gemini 4 Neon (Medium)', '', 'swarm')],
+    expert: [t('codex', 'gpt-6.2-astra', 'xhigh'), t('codex', 'gpt-6.2-sol', 'xhigh'), t('agy', 'gemini-4-neon-xhigh', 'xhigh'), t('droid', 'gpt-6.2-astra', 'xhigh'), t('agy', 'pro', '', 'invoke_subagent'), t('agy', 'Gemini 4 Neon (High)', '', 'swarm')],
   };
-  const FALLBACK_CHOICES = [
-    t('droid', 'gemini-3.8-flash', 'high'), t('droid', 'gemini-4-argon', 'medium'),
-    t('droid', 'gpt-6.2-sol', 'same'), t('droid', 'gpt-6.2-astra', 'xhigh'),
-    t('droid', 'claude-opus-5-5', 'high'), t('agy', 'gemini-4-neon-medium', 'medium'),
-    t('codex', 'gpt-6.2-sol', 'high'),
-  ];
-  const PANEL_SEATS = (on3, on4) => [
-    t('codex', 'gpt-6.2-astra', 'xhigh', 'cli', { enabled: true }),
-    t('agy', 'gemini-4-neon-xhigh', 'xhigh', 'cli', { enabled: true }),
-    t('agy', 'claude-opus-5-5-high', 'high', 'cli', { enabled: on3 }),
-    t('grok', 'grok-4.7', 'xhigh', 'cli', { enabled: on4 }),
-  ];
+  const FALLBACK_CHOICES = [t('droid', 'gemini-3.8-flash', 'high'), t('droid', 'gemini-4-argon', 'medium'), t('droid', 'gpt-6.2-sol', 'same'), t('droid', 'gpt-6.2-astra', 'xhigh'), t('droid', 'claude-opus-5-5', 'high'), t('agy', 'gemini-4-neon-medium', 'medium'), t('codex', 'gpt-6.2-sol', 'high')];
+  const PANEL_SEATS = (on3, on4) => [t('codex', 'gpt-6.2-astra', 'xhigh', 'cli', { enabled: true }), t('agy', 'gemini-4-neon-xhigh', 'xhigh', 'cli', { enabled: true }), t('agy', 'claude-opus-5-5-high', 'high', 'cli', { enabled: on3 }), t('grok', 'grok-4.7', 'xhigh', 'cli', { enabled: on4 })];
   const PANEL_MODES = {
     dual: { label: 'Astra + Neon', eng: '两方', meta: '两方盲审', brand: 'codex', seats: PANEL_SEATS(false, false) },
     quad: { label: '全引擎四方', eng: '四方', meta: '四方盲审', brand: 'grok', seats: PANEL_SEATS(true, true) },
