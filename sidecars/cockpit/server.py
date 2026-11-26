@@ -250,12 +250,18 @@ def _ui_asset() -> tuple[int, bytes]:
     global _HTML_CACHE
     with _HTML_LOCK:
         stat = INDEX_HTML_FILE.stat()
+        extra_paths = (SIDECAR_DIR / 'dispatch_drawer.css', SIDECAR_DIR / 'dispatch_drawer.js')
+        extra_sig = tuple((p.stat().st_mtime_ns, p.stat().st_size) if p.exists() else (0, 0) for p in extra_paths)
         csrf = dispatch_api.get_csrf_token().encode('ascii')
-        signature = (stat.st_mtime_ns, stat.st_size, csrf)
+        signature = (stat.st_mtime_ns, stat.st_size, extra_sig, csrf)
         if _HTML_CACHE is not None and _HTML_CACHE[0] == signature:
             return _HTML_CACHE[1:]
         raw = INDEX_HTML_FILE.read_bytes()
-        version = BASE_UI_VERSION * (1 << 32) + zlib.crc32(csrf, zlib.crc32(raw))
+        crc = zlib.crc32(csrf, zlib.crc32(raw))
+        for p in extra_paths:
+            if p.exists():
+                crc = zlib.crc32(p.read_bytes(), crc)
+        version = BASE_UI_VERSION * (1 << 32) + crc
         body = raw.replace(b'__UI_VERSION__', str(version).encode('ascii'))
         body = body.replace(b'__CSRF_TOKEN__', csrf)
         _HTML_CACHE = (signature, version, body)
