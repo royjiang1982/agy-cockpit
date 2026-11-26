@@ -33,6 +33,7 @@ from analyzer import (
 )
 from droid_acp_fallback import discovery_hints
 from metric_logs import parse_iso_ts
+from swarm_subagents import discover_swarm_stubs, finish_swarm_item, is_swarm_worker, merge_swarm_stub, native_stub_status, native_worker_status, swarm_dir_signature
 from metric_rates import speed
 from metric_codex import read_codex
 from metric_pi import read_pi
@@ -695,7 +696,7 @@ def discover_subagent_stubs(conv_id: str) -> list[dict]:
             matched_base = base
             break
     if db_path is None:
-        return []
+        return discover_swarm_stubs(conv_id, APP_DIRS)
 
     bdir = matched_base / "brain" / conv_id / ".system_generated"
     tasks_dir = bdir / "tasks"
@@ -709,7 +710,7 @@ def discover_subagent_stubs(conv_id: str) -> list[dict]:
     except Exception:
         pass
 
-    cache_key = (db_mtime, tasks_mtime)
+    cache_key = (db_mtime, tasks_mtime, swarm_dir_signature(conv_id, APP_DIRS))
     cached = _SUBAGENT_STUBS_CACHE.get(conv_id)
     dependencies = _stub_dependencies(conv_id, bdir, cached[1] if cached else [])
     if cached and cached[0] == cache_key and cached[3] == dependencies:
@@ -738,7 +739,7 @@ def discover_subagent_stubs(conv_id: str) -> list[dict]:
     except Exception:
         if cached:
             return [dict(stub) for stub in cached[1]]
-        return []
+        return discover_swarm_stubs(conv_id, APP_DIRS)
 
     found: dict[str, dict] = {}
     pi_meta_list: list[dict] | None = None
@@ -1166,6 +1167,8 @@ def discover_subagent_stubs(conv_id: str) -> list[dict]:
                     stub["has_done_marker"] = True
         except Exception:
             pass
+    for stub in discover_swarm_stubs(conv_id, APP_DIRS):
+        merge_swarm_stub(found, stub)
     stubs = list(found.values())
     dependencies = _stub_dependencies(conv_id, bdir, stubs)
     incomplete = incomplete or any(st["id"].startswith("pending-") for st in stubs)
@@ -1174,6 +1177,8 @@ def discover_subagent_stubs(conv_id: str) -> list[dict]:
 
 
 def _resolve_subagent_status(st: dict, sub_running: bool | None = None, sub_err: bool = False) -> str:
+    if st.get("killed"):
+        return "killed"
     step_st = int(st.get("step_status") or 3)
     has_done = bool(st.get("has_done_marker"))
     has_err = bool(st.get("has_err_marker")) or sub_err
@@ -1226,7 +1231,7 @@ def collect_subagents(
             if effort_hint and f"({effort_hint})" not in default_model:
                 default_model = f"{default_model} ({effort_hint})"
 
-        if agent in ("agy", "builtin"):
+        if agent in ("agy", "builtin", "swarm"):
             db_path: Path | None = None
             if not sub_id.startswith("pending-"):
                 for _, base in SUBAGENT_APP_DIRS:
@@ -1251,17 +1256,13 @@ def collect_subagents(
                     if not sub_data.get("empty"):
                         cum = sub_data["cumulative"]
                         m_info = sub_data["model"]
-                        sub_running = not bool(sub_data.get("is_idle", True))
-                        if int(sub_data.get("last_step_status") or 0) == 3 and not sub_running:
-                            st["has_done_marker"] = True
-                            st["has_err_marker"] = False
                         last_ts = max(step_ts, float(sub_data.get("last_end_ts") or 0.0))
                         items.append(
                             _make_sub_item(
                                 sub_id,
                                 agent,
                                 label,
-                                _resolve_subagent_status(st, sub_running=sub_running),
+                                native_worker_status(st, sub_data, _resolve_subagent_status),
                                 m_info.get("short") or m_info.get("name") or default_model,
                                 step_idx,
                                 last_ts,
@@ -1271,6 +1272,7 @@ def collect_subagents(
                             )
                         )
                         added = True
+                        finish_swarm_item(items[-1], st, _ANALYSIS_CACHE, conv_id, sub_data, canonical_model_label)
                 except Exception:
                     pass
             if not added and not sub_id.startswith("pending-"):
@@ -1294,8 +1296,9 @@ def collect_subagents(
                         )
                     )
                     added = True
-            if not added and is_parent_active:
-                items.append(_make_sub_item(sub_id, agent, label, "running", default_model, step_idx, step_ts))
+                    finish_swarm_item(items[-1], st, _ANALYSIS_CACHE, conv_id, fb, canonical_model_label)
+            if not added and (is_parent_active or is_swarm_worker(st) or (agent == "builtin" and db_path)):
+                items.append(_make_sub_item(sub_id, agent, label, native_stub_status(st, db_path, _resolve_subagent_status), default_model, step_idx, step_ts))
         elif agent == "codex":
             c_data = analyze_codex_thread(sub_id) if not sub_id.startswith("pending-") else None
             if c_data is not None and (c_data["calls"] > 0 or is_parent_active):

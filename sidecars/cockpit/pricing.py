@@ -6,6 +6,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from swarm_subagents import models_board_subagents
+
 CTX_WINDOW_MAX = 300_000
 PRICING_EPOCH = 6
 _CARBON_STANDARD_TS = datetime(2026, 12, 1, tzinfo=timezone.utc).timestamp()
@@ -510,7 +512,7 @@ def build_models_board(main_models: list[dict], sub_list: list[dict]) -> dict:
         b["cost"] += float(mm.get("cost") or 0.0)
 
     active_sub_count = 0
-    for s in sub_list:
+    for s in models_board_subagents(sub_list, canonical_model_label):
         if s.get("metrics_unavailable"):
             continue
         s_calls = int(s.get("calls") or 0)
