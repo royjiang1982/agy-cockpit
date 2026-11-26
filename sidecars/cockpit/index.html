@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="cockpit-csrf" content="__CSRF_TOKEN__" />
 <title>AGY Cockpit</title>
+<link rel="stylesheet" href="/static/dispatch_drawer.css?v=__UI_VERSION__" />
+<script defer src="/static/dispatch_drawer.js?v=__UI_VERSION__"></script>
 <style>
   :root {
     --bg: #141617;
@@ -628,12 +631,16 @@
   .cal-bar-lbl {
     font-size: 9px;
     line-height: 1.15;
+    min-height: 1.15em;
     color: var(--dim);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 100%;
   }
+  .cal-chart--month .cal-bar-lbl { overflow: visible; max-width: none; }
+  .cal-chart--month .cal-bar-col:first-child .cal-bar-lbl { align-self: flex-start; }
+  .cal-chart--month .cal-bar-col:last-child .cal-bar-lbl { align-self: flex-end; }
   .cal-bar-col.is-zero .cal-bar-lbl {
     opacity: 0.65;
   }
@@ -1235,7 +1242,7 @@
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 28%, transparent);
     animation: subpulse 1.3s ease-in-out infinite;
   }
-  .sub-dot.st-done {
+  .sub-dot.st-done, .sub-dot.st-killed, .sub-dot.st-waiting {
     background: var(--dim);
     opacity: 0.72;
   }
@@ -1260,10 +1267,14 @@
     background: color-mix(in srgb, var(--green) 14%, transparent);
     border: 1px solid color-mix(in srgb, var(--green) 32%, transparent);
   }
-  .sub-state-pill.st-done {
+  .sub-state-pill.st-done, .sub-state-pill.st-killed, .sub-state-pill.st-waiting {
     color: var(--dim);
     background: color-mix(in srgb, var(--dim) 12%, transparent);
     border: 1px solid color-mix(in srgb, var(--dim) 26%, transparent);
+  }
+  .sub-state-pill.st-killed::before {
+    content: '●';
+    margin-right: 3px;
   }
   .sub-state-pill.st-err {
     color: var(--red);
@@ -1748,6 +1759,7 @@
   </div>
   <span class="fb-caret" id="fbCaret">▴</span>
 </div>
+<button type="button" id="dispatchSettingsBtn" aria-label="派发设置" aria-haspopup="dialog" aria-controls="dispatchDrawer" aria-expanded="false" title="派发设置">⚙︎</button>
 
 <script>
   const storageFallback = new Map();
@@ -2246,7 +2258,7 @@
 
   const CAL_MODES = ['day', 'week', 'month'];
   const CAL_TAB_IDS = { day: 'calTabDay', week: 'calTabWeek', month: 'calTabMonth' };
-  const CAL_PERIOD_FALLBACK = { day: '近7天', week: '近7周', month: '近1年' };
+  const CAL_PERIOD_FALLBACK = { day: '近15天', week: '近15周', month: '近1年' };
   const calBox = document.getElementById('calBox');
   let calMode = safeGetStorage('sessionStorage', 'agy_cal_mode') || 'day';
   if (!CAL_MODES.includes(calMode)) calMode = 'day';
@@ -2292,14 +2304,27 @@
     const o = Number(b.out || 0);
     return b.total != null ? Number(b.total) : (p + o);
   }
-  function formatCalAxisLabel(mode, b) {
+  function formatCalAxisLabel(mode, b, idx, count) {
     const sub = String(b && b.sub_label || '');
     const lbl = String(b && b.label || '');
+    const dense = Number(count || 0) > 7;
     if (mode === 'day') {
+      if (dense) {
+        if (sub === '今日') return sub;
+        const m = calItemKey(b).match(/^\d{4}-\d{2}-(\d{1,2})$/);
+        return m ? String(parseInt(m[1], 10)) : (lbl || calItemKey(b));
+      }
       if (sub === '今日' || sub === '昨日') return sub;
       return lbl || calItemKey(b);
     }
     if (mode === 'week') {
+      if (dense) {
+        if (sub === '本周') return sub;
+        if (idx % 3 !== 0) return '';
+        const head = (lbl.split(/[–~-]/)[0] || '').trim();
+        const m = head.match(/^(\d{1,2})\/(\d{1,2})$/);
+        return m ? `${parseInt(m[1], 10)}/${parseInt(m[2], 10)}` : (head || lbl || calItemKey(b));
+      }
       if (sub === '本周' || sub === '上周') return sub;
       const head = lbl.split(/[–~-]/)[0];
       return (head && head.trim()) || lbl || calItemKey(b);
@@ -2445,7 +2470,7 @@
       return;
     }
 
-    const periodLabel = bucketData.period_label || CAL_PERIOD_FALLBACK[calMode] || '近7天';
+    const periodLabel = bucketData.period_label || CAL_PERIOD_FALLBACK[calMode] || '近15天';
     const sum = bucketData.summary || {};
     if (sumTitleEl) {
       sumTitleEl.textContent = `日历 (${periodLabel})`;
@@ -2463,12 +2488,13 @@
     }
 
     const currentKey = calItemKey(items[0]);
-    const monthAnchorKey = calMode === 'month' ? currentKey : '';
+    const isDense = calMode === 'month' || items.length > 7;
+    const monthAnchorKey = isDense ? currentKey : '';
     const ordered = items.slice().reverse();
     const maxTotal = ordered.reduce((mx, b) => Math.max(mx, calItemTotal(b)), 0);
     const BAR_MAX_PX = 54;
 
-    const barsHtml = ordered.map(b => {
+    const barsHtml = ordered.map((b, idx) => {
       const key = calItemKey(b);
       const turns = Number(b.turns || 0);
       const prompt = Number(b.prompt || 0);
@@ -2481,13 +2507,13 @@
       const barHeight = isZero || maxTotal <= 0
         ? 2
         : Math.max(4, Math.round((total / maxTotal) * BAR_MAX_PX));
-      const showVal = calMode === 'month'
+      const showVal = isDense
         ? (isMonthAnchor && (total > 0 || cost > 0))
         : (total > 0 || cost > 0);
       const valHtml = showVal
         ? `<span class="cal-bar-tok">${escHtml(fmtCalTok(total))}</span><span class="cal-bar-usd">${escHtml(fmtCalUsd(cost))}</span>`
         : '';
-      const axisLbl = formatCalAxisLabel(calMode, b);
+      const axisLbl = formatCalAxisLabel(calMode, b, idx, ordered.length);
       const fullPeriod = b.sub_label ? `${b.label || key} ${b.sub_label}` : `${b.label || key}`;
       const hitStr = (prompt > 0 && hitVal != null) ? `${hitVal.toFixed(1)}%` : '—';
       const aria = `${fullPeriod} · ${turns}轮 · 总量 ${fmtCalTok(total)} · 命中 ${hitStr} · ${fmtCalUsd(cost)}`;
@@ -2501,7 +2527,7 @@
       `;
     }).join('');
 
-    const chartCls = calMode === 'month'
+    const chartCls = isDense
       ? 'cal-chart cal-chart--month cal-chart--collapsed'
       : 'cal-chart cal-chart--collapsed';
     const panelHtml = `<div class="${chartCls}" role="group" aria-label="${escHtml(periodLabel)}用量柱状图">${barsHtml}</div>`;
@@ -2630,8 +2656,8 @@
     const speedSub = item.metrics_unavailable
       ? (unavailTxt || '暂无统计')
       : `${rateKind[item.tps_kind] || '无计时'} · 首字 ${metric(item.ttft, 1, 's')}`;
-    const stCls = item.status === 'running' ? 'st-run' : (item.status === 'error' ? 'st-err' : 'st-done');
-    const stLbl = item.status === 'running' ? '运行中' : (item.status === 'error' ? '失败' : '已完成');
+    const stCls = ({running: 'st-run', error: 'st-err', killed: 'st-killed', waiting: 'st-waiting'})[item.status] || 'st-done';
+    const stLbl = ({running: '运行中', error: '失败', killed: '已停止', waiting: '等待中'})[item.status] || '已完成';
     return `
       <div class="ct-hdr">
         <div class="ct-left">
@@ -3860,8 +3886,8 @@
         const modelTxt = fmtSubModel(item.model) || '—';
         const totTok = item.metrics_unavailable ? 0 : (Number(item.prompt || 0) + Number(item.out || 0));
         const pct = maxSubTok > 0 && totTok > 0 ? Math.max(3, Math.min(100, (totTok / maxSubTok) * 100)) : 0;
-        const stCls = item.status === 'running' ? 'st-run' : (item.status === 'error' ? 'st-err' : 'st-done');
-        const stLbl = item.status === 'running' ? '运行中' : (item.status === 'error' ? '失败' : '已完成');
+        const stCls = ({running: 'st-run', error: 'st-err', killed: 'st-killed', waiting: 'st-waiting'})[item.status] || 'st-done';
+        const stLbl = ({running: '运行中', error: '失败', killed: '已停止', waiting: '等待中'})[item.status] || '已完成';
         const statusHtml = `<span class="sub-dot ${stCls}" aria-label="${stLbl}" title="${stLbl}"></span>`;
         const rowCls = item.status === 'running' ? 'sub-bar-row is-running' : 'sub-bar-row';
         const subColor = modelBrandVar(`${item.model || ''} ${item.agent || ''}`);

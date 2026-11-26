@@ -75,6 +75,8 @@ from subagents import (  # noqa: E402
     analyze_pi_session,
     collect_subagents,
 )
+import dispatch_api
+from swarm_subagents import list_swarm_worker_ids
 from calendar_models import calendar_item, calendar_summary as _calendar_summary
 from cost_archive import CompactedRows
 from cost_compaction import should_rescan_transcript
@@ -92,6 +94,8 @@ WATCHED_PY_FILES = [
     SIDECAR_DIR / "subagents.py",
     SIDECAR_DIR / "rpc_quota.py",
     SIDECAR_DIR / "agy_quota.py",
+    *(SIDECAR_DIR / f"{name}.py" for name in ("dispatch_policy", "dispatch_api", "swarm_subagents", "test_dispatch_policy", "test_dispatch_api", "test_swarm_subagents")),
+    SIDECAR_DIR.parents[1] / "skills/cockpit-dispatch/scripts/resolve.py",
     SIDECAR_DIR / "droid_ledger.py",
     *(SIDECAR_DIR / f"{name}.py" for name in ("agy_cost_events", "cost_windows", "quota_sources", "grok_costs", "grok_timing", "cost_runtime", "annotation_index",
         "cost_migration", "cost_compaction", "cost_archive", "cost_updates", "calendar_models", "metric_rates", "metric_items", "metric_logs", "metric_pi", "metric_droid", "metric_codex", "metric_grok", "droid_acp_fallback")),
@@ -138,7 +142,7 @@ _WINDOW_COSTS: dict[str, float] = {
     "weekly": 0.0,
 }
 _LAST_COST_SCAN_TS: float = 0.0
-_HTML_CACHE: tuple[tuple[int, int], int, bytes] | None = None
+_HTML_CACHE: tuple[tuple[int, int, bytes], int, bytes] | None = None
 _HTML_LOCK = threading.RLock()
 _RELOADING = False
 _ACTIVE_BACKGROUND_JOBS = 0
@@ -246,12 +250,14 @@ def _ui_asset() -> tuple[int, bytes]:
     global _HTML_CACHE
     with _HTML_LOCK:
         stat = INDEX_HTML_FILE.stat()
-        signature = (stat.st_mtime_ns, stat.st_size)
+        csrf = dispatch_api.get_csrf_token().encode('ascii')
+        signature = (stat.st_mtime_ns, stat.st_size, csrf)
         if _HTML_CACHE is not None and _HTML_CACHE[0] == signature:
             return _HTML_CACHE[1:]
         raw = INDEX_HTML_FILE.read_bytes()
-        version = BASE_UI_VERSION * (1 << 32) + zlib.crc32(raw)
+        version = BASE_UI_VERSION * (1 << 32) + zlib.crc32(csrf, zlib.crc32(raw))
         body = raw.replace(b'__UI_VERSION__', str(version).encode('ascii'))
+        body = body.replace(b'__CSRF_TOKEN__', csrf)
         _HTML_CACHE = (signature, version, body)
         return version, body
 
@@ -360,7 +366,8 @@ def resolve_active_and_list(limit: int = 30, preferred_id: str = "") -> tuple[st
     # Retain explicitly requested archived sessions for pinned iframe analysis;
     # they never participate in normal listing or focus arbitration.
     preferred = next((x for x in items if x['id'] == preferred_id), None) if preferred_id else None
-    items = [x for x in items if not x['archived']]
+    swarm_workers = list_swarm_worker_ids(APP_DIRS)
+    items = [x for x in items if not x['archived'] and x['id'] not in swarm_workers]
 
     with _STATE_LOCK:
         prev_active = _CURRENT_ACTIVE_ID
@@ -434,7 +441,7 @@ def resolve_active_and_list(limit: int = 30, preferred_id: str = "") -> tuple[st
         x["sort_key"] = (is_active, is_app, ts)
 
     items.sort(key=lambda x: x["sort_key"], reverse=True)
-    if preferred is not None and preferred['archived']:
+    if preferred is not None and (preferred['archived'] or preferred_id in swarm_workers):
         items.insert(0, preferred)
     elif preferred_id:
         pref_idx = next((i for i, x in enumerate(items) if x["id"] == preferred_id), -1)
@@ -772,14 +779,14 @@ def _build_calendar(daily: dict[date, dict], now: float) -> dict:
     today = datetime.fromtimestamp(now).date()
     weekdays = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
     days = []
-    for offset in range(7):
+    for offset in range(15):
         day = today - timedelta(days=offset)
         days.append({"key": day.isoformat(), "label": day.strftime("%m-%d"),
                      "sub_label": "今日" if offset == 0 else "昨日" if offset == 1 else weekdays[day.weekday()],
                      **calendar_item([daily.get(day, {})])})
     this_monday = today - timedelta(days=today.weekday())
     weeks = []
-    for offset in range(7):
+    for offset in range(15):
         monday = this_monday - timedelta(days=7 * offset)
         sunday = monday + timedelta(days=6)
         b_end = min(sunday, today)
@@ -796,7 +803,7 @@ def _build_calendar(daily: dict[date, dict], now: float) -> dict:
                        **calendar_item(row for day, row in daily.items()
                                        if day.year == year and day.month == month and day <= today)})
     return {name: {"period_label": label, "summary": _calendar_summary(items), "items": items}
-            for name, label, items in (("day", "近7天", days), ("week", "近7周", weeks), ("month", "近1年", months))}
+            for name, label, items in (("day", "近15天", days), ("week", "近15周", weeks), ("month", "近1年", months))}
 
 
 def _get_live_calendar(now: float | None = None) -> dict:
@@ -1318,12 +1325,14 @@ class StatuslineHandler(BaseHTTPRequestHandler):
             if reloading:
                 self._respond(503, {'ok': False, 'state': 'reloading', 'msg': '服务重载中'})
                 return
-            host = urlparse('http://' + self.headers.get('Host', '')).hostname
+            host = None
+            with contextlib.suppress(ValueError):
+                host = urlparse('http://' + self.headers.get('Host', '')).hostname
             if host not in ('localhost', '127.0.0.1', '::1'):
                 self._respond(403, {'ok': False, 'state': 'invalid_host'})
                 return
             origin = self.headers.get('Origin')
-            if origin and origin != 'null':
+            if origin and origin != 'null' and not (self.command == 'POST' and self.path.startswith('/api/dispatch-')):
                 parsed_origin = urlparse(origin)
                 local = parsed_origin.scheme in ('http', 'https') and parsed_origin.hostname in ('localhost', '127.0.0.1', '::1')
                 plugin = parsed_origin.scheme == 'plugin' and bool(re.fullmatch(r'[a-zA-Z0-9_.-]+', parsed_origin.netloc or ''))
@@ -1348,6 +1357,9 @@ class StatuslineHandler(BaseHTTPRequestHandler):
                 raise ValueError('invalid conversation id')
         except ValueError:
             self._respond(400, {'ok': False, 'state': 'invalid_parameters'})
+            return
+        if parsed.path.startswith(('/api/dispatch-', '/static/dispatch_drawer.')):
+            dispatch_api.handle_dispatch_request(self, self.path.split('?', 1)[0], qs, sys.modules[__name__])
             return
         if parsed.path == '/api/handoff':
             self._handle_handoff(qs)

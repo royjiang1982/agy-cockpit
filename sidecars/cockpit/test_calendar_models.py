@@ -84,8 +84,10 @@ class CalendarModelTests(unittest.TestCase):
             self.assertNotIn("models", view["summary"])
             self.assertEqual(view["items"][-1]["models"], [])
         self.assertEqual(calendar["day"]["items"][2]["models"], [])
-        self.assertEqual(calendar["week"]["period_label"], "近7周")
-        self.assertEqual(len(calendar["week"]["items"]), 7)
+        self.assertEqual(calendar["day"]["period_label"], "近15天")
+        self.assertEqual(len(calendar["day"]["items"]), 15)
+        self.assertEqual(calendar["week"]["period_label"], "近15周")
+        self.assertEqual(len(calendar["week"]["items"]), 15)
         today_neon = calendar["day"]["items"][0]["models"][0]
         self.assertEqual(today_neon, dict(model="Neon", turns=8, **{"in": 600}, cache_write=0, cache=32000,
                                          out=2400, prompt=32600, total=35000, hit_pct=98.2, cost=.251))
