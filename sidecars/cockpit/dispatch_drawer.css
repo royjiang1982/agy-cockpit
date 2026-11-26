@@ -21,6 +21,7 @@
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; font-size: 11px; line-height: 1.35;
 }
 #dispatchDrawer button { font-family: inherit; }
+#dispatchDrawer [hidden] { display: none !important; }
 #dispatchDrawer[open] { display: flex; flex-direction: column; animation: ds-in .14s ease-out; }
 #dispatchDrawer::backdrop { background: rgba(0, 0, 0, .38); backdrop-filter: blur(2px); }
 @keyframes ds-in { from { opacity: .68; } to { opacity: 1; } }

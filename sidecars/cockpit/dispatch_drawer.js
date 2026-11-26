@@ -4,7 +4,9 @@
   const trigger = document.getElementById('dispatchSettingsBtn');
   if (!trigger) return;
   const endpoint = '/api/dispatch-policy';
-  const csrf = document.querySelector('meta[name="cockpit-csrf"]')?.content || '';
+  const sidecarToken = (new URLSearchParams(window.location.search).get('token') || '').trim();
+  const withToken = url => !sidecarToken ? url : `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(sidecarToken)}`;
+  let csrf = document.querySelector('meta[name="cockpit-csrf"]')?.content || '';
   const ENG = {
     agy: { label: 'AGY', brand: 'agy', channel: 'cli' }, codex: { label: 'Codex', brand: 'codex', channel: 'cli' },
     droid: { label: 'Droid', brand: 'droid', channel: 'cli' }, grok: { label: 'Grok', brand: 'grok', channel: 'cli' },
@@ -318,16 +320,28 @@
   }
 
   async function api(url, opts) {
-    const res = await fetch(url, opts), data = await res.json().catch(() => null);
-    if (!res.ok || !data || data.ok === false) throw Object.assign(new Error(res.status === 403 ? '面板已重载，请刷新后重试' : (data?.error || `请求失败 (${res.status})`)), { status: res.status });
+    const res = await fetch(withToken(url), opts), data = await res.json().catch(() => null);
+    if (!res.ok || !data || data.ok === false) {
+      const err = data?.error || `请求失败 (${res.status})`;
+      const msg = res.status === 403 && err === 'invalid CSRF token' ? '面板已重载，请刷新后重试' : res.status === 403 ? `保存被拒绝 (${err})` : err;
+      throw Object.assign(new Error(msg), { status: res.status, code: err });
+    }
     return data;
+  }
+  async function refreshCsrf() {
+    const res = await fetch(withToken('/'), { cache: 'no-store' });
+    const m = res.ok && (await res.text()).match(/<meta\s+name="cockpit-csrf"\s+content="([^"]+)"/i);
+    if (!m?.[1]) return false;
+    csrf = m[1];
+    const tag = document.querySelector('meta[name="cockpit-csrf"]');
+    if (tag) tag.content = csrf;
+    return true;
   }
   async function load() {
     busy = true; sync(); setMsg('读取中…');
     try {
       saved = await api(endpoint + '?resolve=1', { cache: 'no-store' });
-      draft = structuredClone(saved.policy);
-      dirty = false; conflicted = false; reloadBtn.hidden = true;
+      draft = structuredClone(saved.policy); dirty = false; conflicted = false; reloadBtn.hidden = true;
       render(); setMsg(''); return true;
     } catch (e) { setMsg(e.message, 'err'); return false; }
     finally { busy = false; sync(); }
@@ -336,12 +350,10 @@
     if (!saved) return;
     if (isReset && !saved.exists) { draft = structuredClone(saved.policy); dirty = false; view = { type: 'home' }; render(); setMsg('已还原', 'ok'); return; }
     busy = true; sync(); setMsg(isReset ? '恢复中…' : '保存中…');
+    const url = isReset ? endpoint + '/reset' : endpoint, payload = JSON.stringify(isReset ? { revision: saved.policy.revision } : draft);
+    const post = () => api(url, { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json', 'X-Cockpit-CSRF': csrf }, body: payload });
     try {
-      await api(isReset ? endpoint + '/reset' : endpoint, {
-        method: 'POST', cache: 'no-store',
-        headers: { 'Content-Type': 'application/json', 'X-Cockpit-CSRF': csrf },
-        body: JSON.stringify(isReset ? { revision: saved.policy.revision } : draft),
-      });
+      try { await post(); } catch (e) { if (e.status === 403 && e.code === 'invalid CSRF token' && await refreshCsrf()) await post(); else throw e; }
       if (await load()) setMsg(isReset ? '已恢复默认' : '已保存', 'ok');
     } catch (e) {
       if (e.status === 409) { conflicted = true; reloadBtn.hidden = false; setMsg('配置已在别处变更，请点「重载」获取最新版本', 'err'); }
