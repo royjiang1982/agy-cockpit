@@ -319,6 +319,9 @@
   }
 
   form.addEventListener('submit', ev => { ev.preventDefault(); write(false); });
+  trigger.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' || ev.key === ' ') ev.stopPropagation();
+  });
   trigger.addEventListener('click', ev => {
     ev.stopPropagation();
     if (drawer.open) return;

@@ -1,25 +1,32 @@
-/* Keep the two bottom-bar actions separate in the accessibility tree. */
-#footBar { padding-inline-end: 37px; }
+/* Inline settings trigger inside the Subagents section header. */
+.sub-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
 #dispatchSettingsBtn {
-  position: fixed;
-  z-index: 31;
-  inset-inline-end: 7px;
-  bottom: 3px;
-  width: 23px;
-  height: 21px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--pill-bg);
   color: var(--muted);
   font-family: inherit;
-  font-size: 13px;
+  font-size: 9.5px;
+  font-weight: 600;
   line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
+  transition: color .12s ease, border-color .12s ease, background-color .12s ease;
 }
 #dispatchSettingsBtn:hover,
 #dispatchSettingsBtn[aria-expanded="true"] {
-  background: var(--pill-bg);
+  background: var(--badge-bg);
+  border-color: var(--badge-border);
   color: var(--cyan-text);
 }
 #dispatchSettingsBtn:focus-visible,
