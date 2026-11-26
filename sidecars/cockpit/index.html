@@ -1662,7 +1662,7 @@
   </div>
 
   <!-- Layer 3.5: Collapsible Per-Turn History -->
-  <details class="turns-box" id="turnBox">
+  <details class="turns-box" id="turnBox" open>
     <summary class="turns-summary">
       <span id="turnSummary">逐轮明细</span>
       <span class="cal-tabs turn-tabs" role="tablist" aria-label="逐轮指标切换">
@@ -1677,7 +1677,7 @@
   </details>
 
   <!-- Layer 4: Collapsible Models & API Cost Board (Current Session + Subagents) -->
-  <details class="turns-box" id="modelBox">
+  <details class="turns-box" id="modelBox" open>
     <summary>
       <span id="modelSummary">模型看板</span>
       <span class="mono c-dim" id="modelBadge">--</span>
@@ -1687,8 +1687,8 @@
   </details>
 
   <!-- Layer 5: Collapsible Subagent Token Consumption -->
-  <section class="turns-box" id="subBox">
-    <div class="sub-box-summary" id="subBoxSummary" role="button" tabindex="0" aria-expanded="false">
+  <section class="turns-box" id="subBox" open>
+    <div class="sub-box-summary" id="subBoxSummary" role="button" tabindex="0" aria-expanded="true">
       <span id="subSummary">子代理</span>
       <span class="mono c-dim" id="subBadge">未派出</span>
     </div>
@@ -1699,7 +1699,7 @@
   </section>
 
   <!-- Layer 6: Collapsible Calendar Usage Statistics (Day | Week | Month) -->
-  <details class="turns-box" id="calBox">
+  <details class="turns-box" id="calBox" open>
     <summary class="turns-summary">
       <span id="calSummary">日历</span>
       <span class="cal-tabs" role="tablist" aria-label="日历维度切换">
@@ -2219,9 +2219,8 @@
     if (!el) return;
     const key = 'agy_open_' + boxId;
     const legacyKey = boxId + 'Open';
-    if (safeGetStorage('sessionStorage', key) === '1' || safeGetStorage('sessionStorage', legacyKey) === '1') {
-      el.open = true;
-    }
+    const saved = safeGetStorage('sessionStorage', key) ?? safeGetStorage('sessionStorage', legacyKey);
+    el.open = saved !== '0';
     el.addEventListener('toggle', () => {
       const v = el.open ? '1' : '0';
       safeSetStorage('sessionStorage', key, v);
@@ -2244,9 +2243,8 @@
         safeSetStorage('sessionStorage', legacyKey, v);
       }
     }
-    if (safeGetStorage('sessionStorage', key) === '1' || safeGetStorage('sessionStorage', legacyKey) === '1') {
-      setSubBoxOpen(true, false);
-    }
+    const saved = safeGetStorage('sessionStorage', key) ?? safeGetStorage('sessionStorage', legacyKey);
+    setSubBoxOpen(saved !== '0', false);
     hdr.addEventListener('click', () => setSubBoxOpen(!el.hasAttribute('open'), true));
     hdr.addEventListener('keydown', e => {
       if (e.key === 'Enter' || e.key === ' ') {
