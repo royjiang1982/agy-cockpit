@@ -14,17 +14,17 @@
 /* Bottom sheet matching .quota-drawer surface & elevation */
 #dispatchDrawer {
   position: fixed; inset: auto 0 27px; width: min(100%, 440px); max-width: 100%; max-height: min(82vh, 520px);
-  margin: 0 auto; padding: 0; overflow: hidden;
-  border: 0; border-top: 1px solid var(--border); border-radius: 10px 10px 0 0;
+  margin: 0 auto; padding: 0; overflow: visible;
+  border: 1px solid var(--border); border-bottom: 0; border-radius: 10px 10px 0 0;
   background: var(--card); color: var(--text);
-  box-shadow: 0 -12px 32px rgba(0, 0, 0, .44), inset 0 1px 0 rgba(255, 255, 255, .05);
+  box-shadow: 0 -12px 32px rgba(0, 0, 0, .42), inset 0 1px 0 rgba(255, 255, 255, .05);
   font: 11px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
 }
-#dispatchDrawer[open] { display: flex; flex-direction: column; animation: ds-in .16s cubic-bezier(.2,.8,.2,1); }
+#dispatchDrawer[open] { display: flex; flex-direction: column; animation: ds-in .14s ease-out; }
 #dispatchDrawer::backdrop { background: rgba(0, 0, 0, .38); backdrop-filter: blur(2px); }
-@keyframes ds-in { from { transform: translateY(10px); opacity: .72; } to { transform: translateY(0); opacity: 1; } }
+@keyframes ds-in { from { opacity: .68; } to { opacity: 1; } }
 @keyframes ds-pop { from { opacity: 0; transform: translateY(-3px) scale(.98); } to { opacity: 1; transform: none; } }
-#dispatchDrawer form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+#dispatchDrawer form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; overflow: hidden; border-radius: 0; }
 
 /* Header (matches .qd-head) */
 .ds-head {
@@ -69,7 +69,7 @@
 .ds-fields:disabled { opacity: .58; }
 .ds-dimmed { opacity: .42; pointer-events: none; }
 
-/* Apple/Linear-style Segmented Control */
+/* Apple/Linear-style Segmented Control (works cleanly in dark & light themes) */
 .ds-seg {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 2px;
   border-radius: 7px; background: var(--track-bg);
@@ -82,17 +82,18 @@
 .ds-seg button:hover:not(:disabled):not(.is-on) { color: var(--text); }
 .ds-seg button:disabled { opacity: .34; cursor: not-allowed; }
 .ds-seg button.is-on {
-  background: var(--card-hi); color: var(--text);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .26), inset 0 1px 0 rgba(255, 255, 255, .07);
+  background: var(--popover-bg); color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .2), inset 0 1px 0 rgba(255, 255, 255, .07);
 }
 
-/* Inset grouped card (matches .qd-card) */
+/* Inset grouped card (matches .qd-card, symmetric 10px optical grid) */
 .ds-card { background: var(--card-hi); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .ds-card-hdr { padding: 6px 10px 3px; font-size: 9.5px; font-weight: 600; color: var(--dim); letter-spacing: .02em; }
 .ds-item {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  min-height: 32px; padding: 4px 6px 4px 10px; transition: background-color .1s;
+  min-height: 32px; padding: 4px 10px; transition: background-color .1s;
 }
+.ds-item-click { cursor: pointer; user-select: none; }
 .ds-item:hover { background: color-mix(in srgb, var(--text) 2.5%, transparent); }
 .ds-item + .ds-item { border-top: 1px solid var(--divider); }
 .ds-item-col { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
@@ -102,8 +103,8 @@
 
 /* Borderless inline picker trigger */
 .ds-pick {
-  display: inline-flex; align-items: center; gap: 5px; max-width: 72%; min-width: 0;
-  height: 24px; padding: 0 7px; border: 0; border-radius: 5px;
+  display: inline-flex; align-items: center; gap: 5px; max-width: 74%; min-width: 0;
+  height: 24px; margin-right: -6px; padding: 0 6px; border: 0; border-radius: 5px;
   background: transparent; color: var(--text); font: 500 10.5px/1 inherit;
   cursor: pointer; transition: background-color .12s, color .12s;
 }
@@ -130,7 +131,7 @@
 
 /* Floating custom popover menu */
 .ds-menu {
-  position: fixed; z-index: 60; min-width: 196px; max-width: 268px; max-height: 224px;
+  position: fixed; z-index: 60; min-width: 196px; max-width: 268px;
   overflow-y: auto; padding: 4px; border-radius: 8px;
   background: var(--popover-bg); border: 1px solid var(--popover-border);
   box-shadow: var(--popover-shadow); scrollbar-width: thin;
@@ -194,7 +195,7 @@
 .ds-step span { min-width: 30px; text-align: center; font: 600 10px/1 "SF Mono", Menlo, monospace; color: var(--text); }
 .ds-step.is-off { opacity: .36; pointer-events: none; }
 
-/* Footer */
+/* Footer (theme-safe accent Save button) */
 .ds-foot {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 8px 10px; border-top: 1px solid var(--divider); flex-shrink: 0;
@@ -214,6 +215,13 @@
   background: var(--badge-bg); color: var(--cyan-text); font: 600 10.5px/1 inherit; cursor: pointer;
   transition: background-color .12s, border-color .12s, color .12s, opacity .12s;
 }
-.ds-save:not(:disabled) { background: var(--cyan); border-color: var(--cyan); color: #0b0f14; }
-.ds-save:hover:not(:disabled) { filter: brightness(1.08); }
+.ds-save:not(:disabled) {
+  background: color-mix(in srgb, var(--cyan) 22%, transparent);
+  border-color: color-mix(in srgb, var(--cyan) 54%, transparent);
+  color: var(--cyan-text);
+}
+.ds-save:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cyan) 30%, transparent);
+  border-color: var(--cyan);
+}
 .ds-save:disabled { opacity: .34; cursor: default; }

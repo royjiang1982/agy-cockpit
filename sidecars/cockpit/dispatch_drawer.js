@@ -7,6 +7,7 @@
   const csrf = document.querySelector('meta[name="cockpit-csrf"]')?.content || '';
   const ENG = { agy: 'AGY', codex: 'Codex', droid: 'Droid', grok: 'Grok', pi: 'Pi' };
   const EFF = { '': '', low: '低', medium: '中', high: '高', xhigh: '极高', same: '同档' };
+  const SKIP_WHY = { quota_low: '配额低', cli_unavailable: '未装', external_disabled: 'CLI已关', swarm_disabled: 'Swarm已关' };
   const MODEL_NAMES = {
     'gemini-4-hydrogen-high': 'Hydrogen', 'gemini-4-neon-medium': 'Neon',
     'gemini-4-neon-high': 'Neon', 'gemini-4-neon-xhigh': 'Neon',
@@ -124,9 +125,11 @@
     form);
   document.body.append(drawer);
 
-  function closeMenu() {
+  function closeMenu(restoreFocus = false) {
+    const ret = activeAnchor;
     if (activeMenu) { activeMenu.remove(); activeMenu = null; }
     if (activeAnchor) { activeAnchor.setAttribute('aria-expanded', 'false'); activeAnchor = null; }
+    if (restoreFocus) ret?.focus();
   }
   function openMenu(anchor, items, curVal, onPick) {
     if (activeAnchor === anchor) { closeMenu(); return; }
@@ -152,9 +155,14 @@
     });
     drawer.append(menu);
     const r = anchor.getBoundingClientRect(), dr = drawer.getBoundingClientRect();
-    const mh = menu.offsetHeight || 160, mw = menu.offsetWidth || 204;
+    const availBelow = window.innerHeight - r.bottom - 34, availAbove = r.top - 10;
+    const rawH = menu.scrollHeight || 160, mw = menu.offsetWidth || 204;
+    const goDown = availBelow >= Math.min(rawH, 168) || availBelow >= availAbove;
+    const maxH = Math.max(96, Math.min(240, goDown ? availBelow : availAbove));
+    menu.style.maxHeight = `${maxH}px`;
+    const mh = Math.min(rawH, maxH);
     menu.style.left = `${Math.max(dr.left + 8, Math.min(r.right - mw, dr.right - mw - 8))}px`;
-    menu.style.top = `${(dr.bottom - r.bottom - 8) >= Math.min(mh, 120) ? r.bottom + 4 : Math.max(dr.top + 8, r.top - mh - 4)}px`;
+    menu.style.top = `${goDown ? r.bottom + 4 : Math.max(8, r.top - mh - 4)}px`;
     activeMenu = menu; activeAnchor = anchor;
     anchor.setAttribute('aria-expanded', 'true');
     (opts.find(o => o.classList.contains('is-cur')) || opts[0])?.focus();
@@ -190,10 +198,16 @@
     reloadBtn.disabled = busy;
   }
   function markDirty() { dirty = true; if (!conflicted) setMsg('未保存', 'warn'); sync(); }
+  function hasCliRole(p) {
+    return ROLES.some(([r]) => p.roles[r].primary.channel === 'cli')
+      || (p.roles.panel.seats || []).some(s => s.enabled !== false && s.channel === 'cli');
+  }
   function activeMode() {
     if (!draft || !draft.enabled) return '';
     if (!draft.external_enabled) return 'native';
-    if (!draft.codex_fast && draft.quota_fallback?.enabled && draft.quota_fallback.threshold_pct >= 15) return 'eco';
+    if (!hasCliRole(draft)) return '';
+    if (!draft.codex_fast && draft.quota_fallback?.enabled && draft.quota_fallback.threshold_pct >= 15
+      && draft.roles.scout.primary.channel === 'invoke_subagent') return 'eco';
     return 'auto';
   }
   function advSummaryText(p) {
@@ -229,6 +243,7 @@
 
   function render() {
     if (!draft) return;
+    const prevScroll = bodyEl.scrollTop;
     closeMenu();
     const p = draft, has = avail(), mode = activeMode();
     if (saved.read_only_warning) {
@@ -245,8 +260,11 @@
     const roleCard = el('div', { className: p.enabled ? 'ds-card' : 'ds-card ds-dimmed' });
     for (const [role, name] of ROLES) {
       const cur = p.roles[role].primary, res = saved.resolved?.[role];
-      const note = !dirty && p.enabled && res && (res.reason === 'fallback' || res.reason === 'builtin_fallback')
-        ? el('span', { className: 'ds-hint' }, `↪ 生效：${fmtOption(res).eng} ${fmtOption(res).text}`) : '';
+      let note = '';
+      if (!dirty && p.enabled && res && (res.reason === 'fallback' || res.reason === 'builtin_fallback')) {
+        const f = fmtOption(res), why = SKIP_WHY[res.skipped?.[0]?.reason];
+        note = el('span', { className: 'ds-hint' }, `${why ? why + ' → ' : '↪ 生效：'}${f.eng} ${f.text}`);
+      }
       roleCard.append(el('div', { className: 'ds-item' },
         el('div', { className: 'ds-item-col' }, el('span', { className: 'ds-lbl' }, name), note),
         makePicker(name, fmtOption(cur, has), buildMenuItems(cur, ROLE_CHOICES[role]), tKey(cur), v => {
@@ -272,25 +290,31 @@
         markDirty(); render();
       })));
 
+    const advSumEl = el('span', { className: 'ds-adv-sum' }, advSummaryText(p));
     const mkToggleRow = (label, checked, onSet, extra = null) => {
       const cb = el('input', { type: 'checkbox', className: 'ds-switch', checked, 'aria-label': label });
       cb.addEventListener('change', () => { onSet(cb.checked); markDirty(); render(); });
-      return el('div', { className: 'ds-item' }, el('span', { className: 'ds-lbl-sub' }, label),
-        extra ? el('div', { className: 'ds-thr-wrap' }, extra, cb) : cb);
+      if (!extra) return el('label', { className: 'ds-item ds-item-click' }, el('span', { className: 'ds-lbl-sub' }, label), cb);
+      return el('div', { className: 'ds-item' }, el('span', { className: 'ds-lbl-sub' }, label), el('div', { className: 'ds-thr-wrap' }, extra, cb));
     };
     const swCard = el('div', { className: 'ds-card' }, mkToggleRow('外部 CLI 引擎', p.external_enabled, v => { p.external_enabled = v; }));
     if (p.external_enabled) swCard.append(mkToggleRow('Codex Fast 模式', p.codex_fast, v => { p.codex_fast = v; }));
     swCard.append(mkToggleRow('允许 Swarm 协作', p.allow_swarm, v => { p.allow_swarm = v; }));
     if (p.external_enabled) {
-      const thr = p.quota_fallback.threshold_pct;
-      const stepBtn = (txt, delta, dis) => {
-        const b = el('button', { type: 'button', disabled: dis, 'aria-label': delta < 0 ? '降低阈值' : '提高阈值' }, txt);
-        b.addEventListener('click', () => { p.quota_fallback.threshold_pct = Math.min(50, Math.max(0, p.quota_fallback.threshold_pct + delta)); markDirty(); render(); });
-        return b;
+      const thrVal = el('span', {}, `≤${p.quota_fallback.threshold_pct}%`);
+      const minus = el('button', { type: 'button', disabled: p.quota_fallback.threshold_pct <= 0, 'aria-label': '降低阈值' }, '−');
+      const plus = el('button', { type: 'button', disabled: p.quota_fallback.threshold_pct >= 50, 'aria-label': '提高阈值' }, '+');
+      const nudge = delta => {
+        const next = Math.min(50, Math.max(0, p.quota_fallback.threshold_pct + delta));
+        if (next === p.quota_fallback.threshold_pct) return;
+        p.quota_fallback.threshold_pct = next;
+        thrVal.textContent = `≤${next}%`; minus.disabled = next <= 0; plus.disabled = next >= 50;
+        advSumEl.textContent = advSummaryText(p); markDirty();
       };
+      minus.addEventListener('click', () => nudge(-5));
+      plus.addEventListener('click', () => nudge(5));
       swCard.append(mkToggleRow('低配额自动回退', p.quota_fallback.enabled, v => { p.quota_fallback.enabled = v; },
-        el('div', { className: p.quota_fallback.enabled ? 'ds-step' : 'ds-step is-off' },
-          stepBtn('−', -5, thr <= 0), el('span', {}, `≤${thr}%`), stepBtn('+', 5, thr >= 50))));
+        el('div', { className: p.quota_fallback.enabled ? 'ds-step' : 'ds-step is-off' }, minus, thrVal, plus)));
     }
 
     const advKids = [swCard];
@@ -312,15 +336,17 @@
       advKids.push(fbCard);
     }
 
-    const adv = el('details', { className: 'ds-adv', open: advOpen },
-      el('summary', {}, el('span', {}, '回退与开关'), el('span', { className: 'ds-adv-sum' }, advSummaryText(p))),
+    const adv = el('details', { className: p.enabled ? 'ds-adv' : 'ds-adv ds-dimmed', open: advOpen },
+      el('summary', {}, el('span', {}, '回退与开关'), advSumEl),
       el('div', { className: 'ds-adv-body' }, ...advKids));
     adv.addEventListener('toggle', () => { advOpen = adv.open; });
 
     const kids = [seg];
     if (!p.enabled) kids.push(el('div', { className: 'ds-banner' }, '派发已暂停，任务将由主代理直接执行。'));
+    else if (!p.external_enabled && hasCliRole(p)) kids.push(el('div', { className: 'ds-banner' }, '外部 CLI 已关闭，下方 CLI 角色将自动回退至内置通道。'));
     kids.push(roleCard, adv);
     fields.replaceChildren(...kids);
+    bodyEl.scrollTop = prevScroll;
     sync();
   }
 
@@ -339,7 +365,8 @@
       draft = structuredClone(saved.policy);
       dirty = false; conflicted = false; reloadBtn.hidden = true;
       render(); setMsg('');
-    } catch (e) { setMsg(e.message, 'err'); }
+      return true;
+    } catch (e) { setMsg(e.message, 'err'); return false; }
     finally { busy = false; sync(); }
   }
   async function write(isReset) {
@@ -352,8 +379,7 @@
         headers: { 'Content-Type': 'application/json', 'X-Cockpit-CSRF': csrf },
         body: JSON.stringify(isReset ? { revision: saved.policy.revision } : draft),
       });
-      await load();
-      setMsg(isReset ? '已恢复默认' : '已保存', 'ok');
+      if (await load()) setMsg(isReset ? '已恢复默认' : '已保存', 'ok');
     } catch (e) {
       if (e.status === 409) { conflicted = true; reloadBtn.hidden = false; setMsg('配置已在别处变更，请点「重载」获取最新版本', 'err'); }
       else setMsg(e.message, 'err');
@@ -361,8 +387,8 @@
   }
 
   masterCb.addEventListener('change', () => { if (!draft) return; draft.enabled = masterCb.checked; markDirty(); render(); });
-  bodyEl.addEventListener('scroll', closeMenu, { passive: true });
-  window.addEventListener('resize', closeMenu);
+  bodyEl.addEventListener('scroll', () => closeMenu(), { passive: true });
+  window.addEventListener('resize', () => closeMenu());
   closeBtn.addEventListener('click', () => { closeMenu(); drawer.close(); });
   reloadBtn.addEventListener('click', () => load());
   resetBtn.addEventListener('click', () => write(true));
@@ -377,7 +403,7 @@
     if (!dirty && !conflicted) load();
   });
   drawer.addEventListener('click', e => {
-    if (activeMenu && !activeMenu.contains(e.target) && !activeAnchor?.contains(e.target)) closeMenu();
+    if (activeMenu && !activeMenu.contains(e.target) && !activeAnchor?.contains(e.target)) { closeMenu(); return; }
     if (e.target !== drawer) return;
     const r = drawer.getBoundingClientRect();
     if (e.clientX < r.left || e.clientX >= r.right || e.clientY < r.top || e.clientY >= r.bottom) drawer.close();
@@ -385,7 +411,7 @@
   drawer.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
     e.stopPropagation(); e.preventDefault();
-    if (activeMenu) closeMenu(); else drawer.close();
+    if (activeMenu) closeMenu(true); else drawer.close();
   });
   drawer.addEventListener('close', () => { closeMenu(); trigger.setAttribute('aria-expanded', 'false'); trigger.focus(); });
   sync();
