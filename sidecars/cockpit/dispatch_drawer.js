@@ -17,61 +17,18 @@
   const E3 = ['low', 'medium', 'high'], E4 = ['low', 'medium', 'high', 'xhigh'];
   const E4M = ['low', 'medium', 'high', 'max'], E5 = ['low', 'medium', 'high', 'xhigh', 'max'], E6 = [...E5, 'ultra'];
 
-  const mkAgy = (id, label, prefix, efforts, brand = 'agy') => ({
-    id, label, brand, efforts,
-    toModel: e => `${prefix}-${e || efforts[efforts.length - 1]}`,
-    match: m => m === prefix || m.startsWith(prefix + '-'),
-  });
-  const mkSwarm = (id, label, base, efforts, brand = 'swarm') => ({
-    id, label, brand, efforts, swarmBase: base,
-    toModel: e => `${base} (${SWARM_TIER[e] || 'High'})`,
-    match: m => m.toLowerCase().startsWith(base.toLowerCase()),
-  });
-
+  const mkAgy = (id, label, prefix, efforts, brand = 'agy') => ({ id, label, brand, efforts, toModel: e => `${prefix}-${e || efforts[efforts.length - 1]}`, match: m => m === prefix || m.startsWith(prefix + '-') });
+  const mkSwarm = (id, label, base, efforts, brand = 'swarm') => ({ id, label, brand, efforts, swarmBase: base, toModel: e => `${base} (${SWARM_TIER[e] || 'High'})`, match: m => m.toLowerCase().startsWith(base.toLowerCase()) });
+  const m = (id, label, efforts, brand) => (brand ? { id, label, efforts, brand } : { id, label, efforts });
   const CATALOG = {
-    agy: [
-      mkAgy('hydrogen', 'Hydrogen', 'gemini-4-hydrogen', E4),
-      mkAgy('neon', 'Neon', 'gemini-4-neon', E4),
-      mkAgy('argon', 'Argon', 'gemini-4-argon', E3),
-      mkAgy('carbon', 'Carbon', 'gemini-4-carbon', E3),
-      mkAgy('flash38', 'Flash 3.8', 'gemini-3.8-flash', E3),
-      mkAgy('opus55', 'Opus 5.5', 'claude-opus-5-5', E4M, 'claude'),
-      mkAgy('sonnet55', 'Sonnet 5.5', 'claude-sonnet-5-5', E4M, 'claude'),
-    ],
-    codex: [
-      { id: 'gpt-6.2-sol', label: 'gpt-6.2-sol', efforts: E6 },
-      { id: 'gpt-6.2-astra', label: 'gpt-6.2-astra', efforts: E6 },
-      { id: 'gpt-6.1-terra', label: 'gpt-6.1-terra', efforts: E6 },
-      { id: 'gpt-6-luna', label: 'gpt-6-luna', efforts: E5 },
-    ],
-    grok: [
-      { id: 'grok-4.7', label: 'grok-4.7', efforts: E4 },
-      { id: 'grok-4.7-build-fast', label: 'grok-4.7-fast', efforts: E4 },
-      { id: 'grok-4.6', label: 'grok-4.6', efforts: E4 },
-      { id: 'grok-4.5', label: 'grok-4.5', efforts: E4 },
-    ],
-    // Droid lists only models mirrored from other engines (AGY + Codex), no extras.
-    droid: [
-      { id: 'gemini-3.8-flash', label: 'Flash 3.8', brand: 'agy', efforts: E3 },
-      { id: 'gemini-4-argon', label: 'Argon', brand: 'agy', efforts: E3 },
-      { id: 'claude-opus-5-5', label: 'Opus 5.5', brand: 'claude', efforts: E4M },
-      { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', brand: 'claude', efforts: E4M },
-      { id: 'gpt-6.2-sol', label: 'gpt-6.2-sol', brand: 'codex', efforts: E6 },
-      { id: 'gpt-6.2-astra', label: 'gpt-6.2-astra', brand: 'codex', efforts: E6 },
-      { id: 'gpt-6.1-terra', label: 'gpt-6.1-terra', brand: 'codex', efforts: E6 },
-      { id: 'gpt-6-luna', label: 'gpt-6-luna', brand: 'codex', efforts: E5 },
-    ],
-    native_ro: [{ id: 'flash', label: 'Flash', efforts: [] }],
-    native_rw: [{ id: 'inherit', label: '继承主模型', efforts: [] }, { id: 'pro', label: 'Pro', efforts: [] }],
-    swarm: [
-      mkSwarm('s_hydrogen', 'Hydrogen', 'Gemini 4 Hydrogen', E4, 'agy'),
-      mkSwarm('s_neon', 'Neon', 'Gemini 4 Neon', E4, 'agy'),
-      mkSwarm('s_argon', 'Argon', 'Gemini 4 Argon', E3, 'agy'),
-      mkSwarm('s_carbon', 'Carbon', 'Gemini 4 Carbon', E3, 'agy'),
-      mkSwarm('s_flash38', 'Flash 3.8', 'Gemini 3.8 Flash', E3, 'agy'),
-      mkSwarm('s_opus55', 'Opus 5.5', 'Claude Opus 5.5', E4M, 'claude'),
-      mkSwarm('s_sonnet55', 'Sonnet 5.5', 'Claude Sonnet 5.5', E4M, 'claude'),
-    ],
+    agy: [mkAgy('hydrogen', 'Hydrogen', 'gemini-4-hydrogen', E4), mkAgy('neon', 'Neon', 'gemini-4-neon', E4), mkAgy('argon', 'Argon', 'gemini-4-argon', E3), mkAgy('carbon', 'Carbon', 'gemini-4-carbon', E3), mkAgy('flash38', 'Flash 3.8', 'gemini-3.8-flash', E3), mkAgy('opus55', 'Opus 5.5', 'claude-opus-5-5', E4M, 'claude'), mkAgy('sonnet55', 'Sonnet 5.5', 'claude-sonnet-5-5', E4M, 'claude')],
+    codex: [m('gpt-6.2-sol', 'gpt-6.2-sol', E6), m('gpt-6.2-astra', 'gpt-6.2-astra', E6), m('gpt-6.1-terra', 'gpt-6.1-terra', E6), m('gpt-6-luna', 'gpt-6-luna', E5)],
+    grok: [m('grok-4.7', 'grok-4.7', E4), m('grok-4.7-build-fast', 'grok-4.7-fast', E4), m('grok-4.6', 'grok-4.6', E4), m('grok-4.5', 'grok-4.5', E4)],
+    // Droid mirrors only models present in other engines (AGY + Codex), no extras.
+    droid: [m('gemini-3.8-flash', 'Flash 3.8', E3, 'agy'), m('gemini-4-argon', 'Argon', E3, 'agy'), m('claude-opus-5-5', 'Opus 5.5', E4M, 'claude'), m('claude-sonnet-5-5', 'Sonnet 5.5', E4M, 'claude'), m('gpt-6.2-sol', 'gpt-6.2-sol', E6, 'codex'), m('gpt-6.2-astra', 'gpt-6.2-astra', E6, 'codex'), m('gpt-6.1-terra', 'gpt-6.1-terra', E6, 'codex'), m('gpt-6-luna', 'gpt-6-luna', E5, 'codex')],
+    native_ro: [m('flash', 'Flash', [])],
+    native_rw: [m('inherit', '继承主模型', []), m('pro', 'Pro', [])],
+    swarm: [mkSwarm('s_hydrogen', 'Hydrogen', 'Gemini 4 Hydrogen', E4, 'agy'), mkSwarm('s_neon', 'Neon', 'Gemini 4 Neon', E4, 'agy'), mkSwarm('s_argon', 'Argon', 'Gemini 4 Argon', E3, 'agy'), mkSwarm('s_carbon', 'Carbon', 'Gemini 4 Carbon', E3, 'agy'), mkSwarm('s_flash38', 'Flash 3.8', 'Gemini 3.8 Flash', E3, 'agy'), mkSwarm('s_opus55', 'Opus 5.5', 'Claude Opus 5.5', E4M, 'claude'), mkSwarm('s_sonnet55', 'Sonnet 5.5', 'Claude Sonnet 5.5', E4M, 'claude')],
   };
   const t = (engine, model, effort = '', channel = 'cli', extra = {}) => ({ channel, engine, model, effort, ...extra });
   const DEFAULT_SEAT_POOL = [
