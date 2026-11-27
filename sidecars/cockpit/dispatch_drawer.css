@@ -11,20 +11,20 @@
 #dispatchSettingsBtn:focus-visible,
 #dispatchDrawer :focus-visible { outline: 1.5px solid var(--cyan-text); outline-offset: 1px; }
 
-/* Bottom sheet matching .quota-drawer surface & elevation */
+/* Centered modal dialog matching Cockpit's dark/light popover surface */
 #dispatchDrawer {
-  position: fixed; inset: auto 0 27px; width: min(100%, 440px); max-width: 100%; max-height: min(84vh, 560px);
-  margin: 0 auto; padding: 0; overflow: hidden;
-  border: 1px solid var(--border); border-bottom: 0; border-radius: 10px 10px 0 0;
+  position: fixed; inset: 0; width: min(calc(100% - 16px), 420px); max-width: calc(100% - 16px); max-height: min(84vh, 540px);
+  margin: auto; padding: 0; overflow: hidden;
+  border: 1px solid var(--popover-border); border-radius: 10px;
   background: var(--card); color: var(--text);
-  box-shadow: 0 -12px 32px rgba(0, 0, 0, .42), inset 0 1px 0 rgba(255, 255, 255, .05);
+  box-shadow: var(--popover-shadow);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; font-size: 11px; line-height: 1.35;
 }
 #dispatchDrawer button { font-family: inherit; }
 #dispatchDrawer [hidden] { display: none !important; }
-#dispatchDrawer[open] { display: flex; flex-direction: column; animation: ds-in .14s ease-out; }
-#dispatchDrawer::backdrop { background: rgba(0, 0, 0, .38); backdrop-filter: blur(2px); }
-@keyframes ds-in { from { opacity: .68; } to { opacity: 1; } }
+#dispatchDrawer[open] { display: flex; flex-direction: column; animation: ds-in .14s cubic-bezier(.2,.8,.2,1); }
+#dispatchDrawer::backdrop { background: rgba(0, 0, 0, .42); backdrop-filter: blur(2px); }
+@keyframes ds-in { from { opacity: .68; transform: scale(.97); } to { opacity: 1; transform: none; } }
 @keyframes ds-view { from { opacity: .6; transform: translateX(6px); } to { opacity: 1; transform: none; } }
 #dispatchDrawer form { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; overflow: hidden; }
 
