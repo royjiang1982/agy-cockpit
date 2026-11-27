@@ -39,7 +39,6 @@ from analyzer import (  # noqa: E402
     get_db_mtime,
     connect_readonly,
     read_annotations,
-    read_conversation_annotation,
     snapshot_builtin_model_enum,
 )
 from pricing import (  # noqa: E402

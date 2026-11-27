@@ -7,15 +7,12 @@ from metric_rates import grok_remaining
 import concurrent.futures
 import contextlib
 import fcntl
-import http.client
 import json
 import os
 import pty
 import re
 import select
 import shutil
-import socket
-import sqlite3
 import struct
 import subprocess
 import tempfile
@@ -23,15 +20,12 @@ import termios
 import threading
 import signal
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 from analyzer import HOME, cached_paths, log_lines, serialized
 from agy_quota import fetch_agy_quota
 from quota_sources import codex_rpc_windows as _extract_codex_rpc_windows, codex_rollout_windows
-from droid_ledger import parse_droid_reset_sec, droid_reset_precision, droid_probe_due, anchor_droid_quota
+from droid_ledger import parse_droid_reset_sec, droid_reset_precision, anchor_droid_quota
 from subagents import CODEX_SESSIONS_DIR, FACTORY_SESSIONS_DIR, GROK_SESSIONS_DIR, parse_iso_ts
 
 _PROBE_LOCK = threading.RLock()

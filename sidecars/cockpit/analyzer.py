@@ -487,13 +487,6 @@ def parse_annotation_text(text: str) -> dict:
     return result
 
 
-def read_conversation_annotation(db_path: str | Path) -> dict:
-    """Uncached read for mutation guards and archive/title confirmation."""
-    path = Path(db_path)
-    annotation = path.parent.parent / 'annotations' / f'{path.stem}.pbtxt'
-    return parse_annotation_text(annotation.read_text(encoding='utf-8')) if annotation.exists() else {}
-
-
 @serialized(lambda: "annotations")
 def read_annotations() -> tuple[dict[str, str], dict[str, float], dict[str, int]]:
     """Read conversation titles, exact `last_user_view_time`, and `.pbtxt` nanosecond mtimes."""
