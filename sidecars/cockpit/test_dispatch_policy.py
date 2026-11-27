@@ -218,6 +218,7 @@ class DispatchPolicyTests(unittest.TestCase):
         self.assertTrue(caps["quota"]["agy"]["fresh"])
         self.assertEqual(caps["quota"]["agy"]["pct"], 0)
         p = dp.default_policy()
+        p["fallbacks"] = {}  # Isolate AGY quota-family checks from Droid fallback chains.
         primary = p["roles"]["scout"]["primary"]
         names = {
             "gemini": ("gemini-4-orchestrator", "Neon High", "argon", "Carbon (Medium)", "hydrogen", "Flash"),
@@ -363,3 +364,30 @@ class DispatchPolicyTests(unittest.TestCase):
                           ("cli", "grok", "grok-4.7"), ("invoke_subagent", "agy", "flash")])
         with self.assertRaises(ValueError):
             dp.resolve_role("panel", p, caps, count=0)
+
+    def test_versionless_families_auto_resolve_to_latest_cached_models(self):
+        import dispatch_models as dm
+        codex_cache = self.policy_path.with_name("codex_models.json")
+        grok_cache = self.policy_path.with_name("grok_models.json")
+        agy_state = self.policy_path.with_name("agy_state.json")
+        codex_cache.write_text(json.dumps({"models": [{"slug": "gpt-6.2-astra"}, {"slug": "gpt-6.5-astra"}, {"slug": "gpt-6.4-sol"}]}))
+        grok_cache.write_text(json.dumps({"models": {"grok-4.7": {}, "grok-5.1": {}, "grok-5.1-build-fast": {}}}))
+        agy_state.write_text(json.dumps({"dynamic_models": {"1900": ["Gemini 4.5 Neon (High)"], "1901": ["Claude Opus 6.0"]}}))
+        with patch.object(dm, "_CODEX_CACHE", codex_cache), patch.object(dm, "_GROK_CACHE", grok_cache), \
+             patch.object(dm, "_AGY_STATE", agy_state):
+            self.assertEqual(dm.resolve_model_id("codex", "astra"), "gpt-6.5-astra")
+            self.assertEqual(dm.resolve_model_id("codex", "sol"), "gpt-6.4-sol")
+            self.assertEqual(dm.resolve_model_id("grok", "grok"), "grok-5.1")
+            self.assertEqual(dm.resolve_model_id("grok", "grok-fast"), "grok-5.1-build-fast")
+            self.assertEqual(dm.resolve_model_id("agy", "neon", "high"), "gemini-4.5-neon-high")
+            self.assertEqual(dm.resolve_model_id("agy", "opus", "max"), "claude-opus-6-0-max")
+            self.assertEqual(dm.resolve_model_id("droid", "astra"), "gpt-6.5-astra")
+            self.assertEqual(dm.resolve_model_id("codex", "gpt-6.2-sol"), "gpt-6.2-sol")
+            p = dp.default_policy()
+            p["roles"]["deep"]["primary"] = {"channel": "cli", "engine": "codex", "model": "sol", "effort": "high"}
+            p["roles"]["standard"]["primary"] = {"channel": "cli", "engine": "agy", "model": "neon", "effort": "medium"}
+            p["fallbacks"]["codex:sol"] = [{"channel": "cli", "engine": "droid", "model": "sol", "effort": "same", "enabled": True}]
+            caps = {"available_engines": ["agy", "codex", "droid"], "quota": {"codex": {"fresh": True, "pct": 0}}}
+            self.assertEqual(dp.resolve_role("standard", p, caps)["model"], "gemini-4.5-neon-medium")
+            deep = dp.resolve_role("deep", p, caps)
+            self.assertEqual((deep["engine"], deep["model"], deep["effort"]), ("droid", "gpt-6.4-sol", "high"))

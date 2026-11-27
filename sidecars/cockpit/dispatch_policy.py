@@ -13,6 +13,8 @@ import threading
 import time
 from pathlib import Path
 
+import dispatch_models
+
 DATA_DIR = Path.home() / ".gemini/antigravity/sidecar_data/statusline"
 STATE_PATH = DATA_DIR / "state.json"
 SCHEMA_VERSION = 1
@@ -295,23 +297,22 @@ def _agy_quota_family(model):
     return "gemini" if names.intersection(("gemini", "neon", "argon", "carbon", "hydrogen", "flash")) else None
 
 def _selection(target, name, policy, caps):
-    channel, engine, model = (target[key] for key in ("channel", "engine", "model"))
+    channel, engine, raw_model, effort = (target[key] for key in ("channel", "engine", "model", "effort"))
     if not target.get("enabled", True):
         return None, "candidate_disabled"
+    model = dispatch_models.resolve_model_id(engine, raw_model, effort) if channel == "cli" else raw_model
     if channel == "cli":
         if not policy["external_enabled"]:
             return None, "external_disabled"
         if engine not in caps.get("available_engines", ()):
             return None, "cli_unavailable"
-        quota = caps.get("quota", {}).get(engine, {})
-        if engine == "agy":
-            quota = caps.get("agy_quota", {}).get(_agy_quota_family(model), {})
+        quota = caps.get("agy_quota", {}).get(_agy_quota_family(model), {}) if engine == "agy" else caps.get("quota", {}).get(engine, {})
         cutoff = policy["quota_fallback"]
         if cutoff["enabled"] and quota.get("fresh") and quota["pct"] <= cutoff["threshold_pct"]:
             return None, "quota_low"
     elif channel == "swarm" and not policy["allow_swarm"]:
         return None, "swarm_disabled"
-    selected = dict(target, mode=channel, read_only=ROLE_READ_ONLY[name])
+    selected = dict(target, model=model, mode=channel, read_only=ROLE_READ_ONLY[name])
     selected.pop("enabled", None)
     if channel == "cli" and engine == "codex":
         selected["codex_fast"] = policy["codex_fast"]
@@ -319,32 +320,28 @@ def _selection(target, name, policy, caps):
         selected["type"] = "research" if ROLE_READ_ONLY[name] else "self"
     return selected, None
 
-
 def _builtin_tails(name, policy):
     if name in ("deep", "expert") and policy["allow_swarm"]:
-        tier = "Medium" if name == "deep" else "High"
-        yield dict(mode="swarm", channel="swarm", engine="agy", model=f"Gemini 4 Neon ({tier})",
+        yield dict(mode="swarm", channel="swarm", engine="agy", model=f"Gemini 4 Neon ({'Medium' if name == 'deep' else 'High'})",
                    effort="", read_only=False, requires_model_check=True)
     model = {"scout": "flash", "standard": "inherit", "panel": "flash"}.get(name, "pro")
     yield dict(mode="invoke_subagent", channel="invoke_subagent", engine="agy", model=model,
                effort="", type="research" if ROLE_READ_ONLY[name] else "self", read_only=ROLE_READ_ONLY[name])
 
-
 def _resolve_target(primary, name, policy, caps):
-    key = f"{primary['engine']}:{primary['model']}"
-    available, skipped = [], []
     effort = "" if primary["effort"] == "same" else primary["effort"]
-    for i, target in enumerate([primary, *policy["fallbacks"].get(key, [])]):
+    resolved_model = dispatch_models.resolve_model_id(primary["engine"], primary["model"], effort) if primary["channel"] == "cli" else primary["model"]
+    chain = next((policy["fallbacks"][k] for k in dispatch_models.fallback_lookup_keys(primary["engine"], primary["model"], resolved_model) if k in policy["fallbacks"]), [])
+    available, skipped = [], []
+    for i, target in enumerate([primary, *chain]):
         candidate = dict(target, effort=effort) if target["effort"] == "same" else target
         result, why = _selection(candidate, name, policy, caps)
         if result is None:
             skipped.append(dict(channel=target["channel"], engine=target["engine"], model=target["model"], reason=why))
-        elif not any(all(prior[key] == result[key] for key in ("channel", "engine", "model", "effort"))
-                     for prior in available):
+        elif not any(all(prior[k] == result[k] for k in ("channel", "engine", "model", "effort")) for prior in available):
             available.append(dict(result, reason="primary" if i == 0 else "fallback"))
     for tail in _builtin_tails(name, policy):
-        if not any(all(prior[key] == tail[key] for key in ("channel", "engine", "model", "effort"))
-                   for prior in available):
+        if not any(all(prior[k] == tail[k] for k in ("channel", "engine", "model", "effort")) for prior in available):
             available.append(dict(tail, reason="builtin_fallback"))
     selected, *fallbacks = available
     return dict(selected, fallbacks=fallbacks, skipped=skipped)
