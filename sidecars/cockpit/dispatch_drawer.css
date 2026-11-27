@@ -13,7 +13,7 @@
 
 /* Centered modal dialog matching Cockpit's dark/light popover surface */
 #dispatchDrawer {
-  position: fixed; inset: 0; width: min(calc(100% - 16px), 420px); max-width: calc(100% - 16px); max-height: min(84vh, 540px);
+  position: fixed; inset: 0; width: min(calc(100% - 16px), 420px); max-width: calc(100% - 16px); height: fit-content; max-height: min(84vh, 540px);
   margin: auto; padding: 0; overflow: hidden;
   border: 1px solid var(--popover-border); border-radius: 10px;
   background: var(--card); color: var(--text);
