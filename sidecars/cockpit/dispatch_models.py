@@ -1,12 +1,14 @@
 """Auto-resolve versionless model family names to the latest concrete CLI model IDs."""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
 import queue
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -19,8 +21,9 @@ _AGY_STATE = Path.home() / ".gemini/antigravity/sidecar_data/statusline/view_sta
 _FACTORY_CACHE_DIR = Path.home() / ".factory/cache/connected-model-provider-models"
 _LOCK = threading.Lock()
 _FILE_CACHE: dict[Path, tuple[tuple[int, int], object]] = {}
-_CODEX_RPC_CACHE: tuple[float, list[str]] | None = None
+_CODEX_RPC_CACHE: tuple[float, list[str] | None] | None = None
 _CODEX_RPC_TTL_SEC = 300.0
+_CODEX_RPC_FAIL_TTL_SEC = 60.0
 
 _CODEX_DEFAULTS = {"sol": "gpt-6.2-sol", "astra": "gpt-6.2-astra", "terra": "gpt-6.1-terra", "luna": "gpt-6-luna"}
 _GROK_DEFAULTS = {"grok": "grok-4.7", "grok-fast": "grok-4.7-build-fast"}
@@ -75,12 +78,18 @@ def _fetch_codex_models_rpc(timeout: float = 5.0) -> list[str] | None:
     global _CODEX_RPC_CACHE
     now = time.monotonic()
     with _LOCK:
-        if _CODEX_RPC_CACHE is not None and (now - _CODEX_RPC_CACHE[0]) < _CODEX_RPC_TTL_SEC:
-            return list(_CODEX_RPC_CACHE[1])
+        if _CODEX_RPC_CACHE is not None:
+            cached_ts, cached_val = _CODEX_RPC_CACHE
+            ttl = _CODEX_RPC_TTL_SEC if cached_val is not None else _CODEX_RPC_FAIL_TTL_SEC
+            if (now - cached_ts) < ttl:
+                return list(cached_val) if cached_val is not None else None
     codex_bin = _find_codex_bin()
     if not codex_bin:
+        with _LOCK:
+            _CODEX_RPC_CACHE = (time.monotonic(), None)
         return None
     proc = None
+    result: list[str] | None = None
     try:
         with tempfile.TemporaryDirectory(prefix="agy-cockpit-codex-models-") as td:
             proc = subprocess.Popen(
@@ -93,6 +102,7 @@ def _fetch_codex_models_rpc(timeout: float = 5.0) -> list[str] | None:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                start_new_session=True,
             )
             out_q: "queue.Queue[str | None]" = queue.Queue()
 
@@ -133,44 +143,36 @@ def _fetch_codex_models_rpc(timeout: float = 5.0) -> list[str] | None:
             _send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                    "params": {"clientInfo": {"name": "agy-cockpit", "version": "1.0"}, "capabilities": {"experimentalApi": True}}})
             init = _wait_id(1)
-            if not init or "error" in init:
-                return None
-            _send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
-            _send({"jsonrpc": "2.0", "id": 2, "method": "model/list", "params": {}})
-            rep = _wait_id(2)
-            res = rep.get("result") if isinstance(rep, dict) and isinstance(rep.get("result"), dict) else None
-            data = res.get("data") if isinstance(res, dict) else None
-            if not isinstance(data, list):
-                return None
-            slugs = [
-                str(item.get("id") or item.get("model") or "").strip()
-                for item in data
-                if isinstance(item, dict) and item.get("hidden") is not True
-            ]
-            slugs = [s for s in slugs if s]
-            if slugs:
-                with _LOCK:
-                    _CODEX_RPC_CACHE = (time.monotonic(), list(slugs))
-                return slugs
+            if init and "error" not in init:
+                _send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+                _send({"jsonrpc": "2.0", "id": 2, "method": "model/list", "params": {}})
+                rep = _wait_id(2)
+                res = rep.get("result") if isinstance(rep, dict) and isinstance(rep.get("result"), dict) else None
+                data = res.get("data") if isinstance(res, dict) else None
+                if isinstance(data, list):
+                    slugs = [
+                        str(item.get("id") or item.get("model") or "").strip()
+                        for item in data
+                        if isinstance(item, dict) and item.get("hidden") is not True
+                    ]
+                    slugs = [s for s in slugs if s]
+                    if slugs:
+                        result = slugs
     except Exception:
-        return None
+        result = None
     finally:
         if proc is not None:
             for p in (proc.stdin, proc.stdout):
                 if p:
-                    try:
+                    with contextlib.suppress(Exception):
                         p.close()
-                    except Exception:
-                        pass
-            try:
-                proc.terminate()
-                proc.wait(timeout=1.5)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-    return None
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=1.0)
+        with _LOCK:
+            _CODEX_RPC_CACHE = (time.monotonic(), list(result) if result is not None else None)
+    return result
 
 
 def _latest_codex(cache_path: Path | None = None) -> dict[str, str]:

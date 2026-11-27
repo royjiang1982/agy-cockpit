@@ -410,3 +410,9 @@ class DispatchPolicyTests(unittest.TestCase):
         with patch.object(dm, "_fetch_codex_models_rpc", return_value=["gpt-6.8-sol", "gpt-6.7-astra"]):
             self.assertEqual(dm.resolve_model_id("codex", "sol"), "gpt-6.8-sol")
             self.assertEqual(dm.resolve_model_id("codex", "astra"), "gpt-6.7-astra")
+        with patch.object(dm, "_CODEX_RPC_CACHE", None), \
+             patch.object(dm, "_find_codex_bin", return_value="codex"), \
+             patch.object(dm.subprocess, "Popen", side_effect=OSError("boom")) as popen:
+            self.assertIsNone(dm._fetch_codex_models_rpc())
+            self.assertIsNone(dm._fetch_codex_models_rpc())
+            self.assertEqual(popen.call_count, 1)
