@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -23,7 +24,9 @@ from droid_ledger import DroidLedger
 
 
 NOW = 1_800_000_000.0
-QUOTA = {'3p-5h': {'reset_ts': NOW + 3600, 'observed_at': NOW - 60, 'rem_frac': 0.4}}
+BID = '3p-5h'
+QUOTA = {BID: {'reset_ts': NOW + 3600, 'observed_at': NOW - 60, 'rem_frac': 0.4}}
+REFRESHED_QUOTA = {BID: dict(QUOTA[BID], observed_at=NOW - 10, rem_frac=0.3)}
 
 
 def legacy_aggregate(files, quota, now):
@@ -65,6 +68,7 @@ class CostRuntimeTests(unittest.TestCase):
         }
         for name, value in {
             '_COST_RUNTIME': self.runtime, '_COST_CACHE_FILE': self.path, '_COST_CACHE_LOADED': True,
+            'STATE_FILE': tmp / 'view_state.json', '_LAST_QUOTA_FETCH_TS': NOW - 60,
             '_COST_GENERATION': 0, '_COST_FILE_EVENTS': self.events, '_PENDING_REBUILD': set(),
             '_DB_APPLIED_BUILTIN_ENUM': {}, '_DROID_LEDGER': DroidLedger(),
             '_CALENDAR_DAYS': {}, '_CALENDAR_CACHE': {}, '_WINDOW_COSTS': {}, '_WINDOW_ESTIMATES': {},
@@ -78,9 +82,9 @@ class CostRuntimeTests(unittest.TestCase):
     def update(self, name, cost=0.25):
         server._update_conv_cost_events(name, NOW, [(NOW - 600, cost, 'claude', '1:25:4:2:1799999400', 25, 4, 2, 1)])
 
-    def assert_aggregate_matches_legacy(self):
+    def assert_aggregate_matches_legacy(self, quota=QUOTA):
         rows = [(key, events) for key, (_, events) in self.events.items()]
-        daily, totals, estimates = legacy_aggregate(rows, QUOTA, NOW)
+        daily, totals, estimates = legacy_aggregate(rows, quota, NOW)
         self.assertEqual(without_models(server._CALENDAR_DAYS), daily)
         self.assertEqual(server._WINDOW_COSTS, totals)
         self.assertEqual(server._WINDOW_ESTIMATES, estimates)
@@ -113,20 +117,96 @@ class CostRuntimeTests(unittest.TestCase):
             server._refresh_window_costs()
             self.assertEqual(aggregate.call_count, 3)
 
-    def test_generation_changed_during_aggregation_stays_dirty(self):
-        self.update('main')
+    def prepare_quota_refresh(self):
+        # Already in the cost snapshot but newer than the old quota observation.
+        server._update_conv_cost_events('between', NOW, [(NOW - 30, 0.5, 'claude')])
+        server._recompute_window_costs_from_memory()
+        self.stack.enter_context(patch.object(server, 'fetch_quota_buckets_with_meta',
+                                              return_value=(REFRESHED_QUOTA, {'ok': True})))
+        self.stack.enter_context(patch.object(server, '_find_cli_bin', return_value=None))
+
+    def test_generation_changed_during_quota_recompute_keeps_estimate_and_stays_dirty(self):
+        self.prepare_quota_refresh()
+        generation = server._COST_GENERATION
         original = self.runtime._rows.aggregate
 
         def update_after_snapshot(*args):
+            self.assertFalse(server._COST_LOCK.locked())
             self.update('child')
             return original(*args)
 
         with patch.object(self.runtime._rows, 'aggregate', side_effect=update_after_snapshot):
-            server._refresh_window_costs()
-        self.assertEqual(server._WINDOW_COSTS, {})  # Superseded snapshot was not published.
+            server._refresh_quota()
+        self.assertEqual(server._COST_GENERATION, generation + 1)
+        self.assertEqual(self.runtime._display_generation, generation)
+        current = server._get_live_quota()[BID]
+        self.assertEqual(current['observed_at'], REFRESHED_QUOTA[BID]['observed_at'])
+        self.assertIs(current['estimate_ok'], True)
+        self.assertAlmostEqual(current['estimate_usd'], 1.33)
+
         self.tick += 1.0
         server._refresh_window_costs()
-        self.assert_aggregate_matches_legacy()
+        self.assertEqual(self.runtime._display_generation, server._COST_GENERATION)
+        self.assert_aggregate_matches_legacy(REFRESHED_QUOTA)
+        current = server._get_live_quota()[BID]
+        self.assertIs(current['estimate_ok'], True)
+        self.assertAlmostEqual(current['estimate_usd'], 1.58)
+
+    def test_quota_read_during_refresh_keeps_previous_cost_snapshot(self):
+        self.prepare_quota_refresh()
+        before, old_fetched_at = server._get_live_quota_snapshot()
+        self.assertIs(before[BID]['estimate_ok'], True)
+        self.assertAlmostEqual(before[BID]['estimate_usd'], 0.83)
+        self.assertEqual(old_fetched_at, NOW - 60)
+        entered, may_continue = threading.Event(), threading.Event()
+        original = self.runtime._rows.aggregate
+        reader, state_lock = threading.current_thread(), server._STATE_LOCK
+
+        def pause_after_snapshot(*args):
+            entered.set()
+            if not may_continue.wait(4):
+                raise TimeoutError('test quota refresh stalled')
+            return original(*args)
+
+        def publish_on_reader_unlock(*_):
+            state_lock.release()
+            if threading.current_thread() is reader:
+                may_continue.set()
+                refresh.result(timeout=4)
+
+        with patch.object(self.runtime._rows, 'aggregate', side_effect=pause_after_snapshot), \
+                ThreadPoolExecutor(max_workers=1) as worker:
+            refresh = worker.submit(server._refresh_quota)
+            try:
+                self.assertTrue(entered.wait(4))
+                self.assertEqual(server._get_live_quota_snapshot(), (before, old_fetched_at))
+                # Publish between the reader's first unlock and any later cache read.
+                with patch.object(server, '_STATE_LOCK') as reader_lock:
+                    reader_lock.__enter__.side_effect = state_lock.acquire
+                    reader_lock.__exit__.side_effect = publish_on_reader_unlock
+                    self.assertEqual(server._get_live_quota_snapshot(), (before, old_fetched_at))
+            finally:
+                may_continue.set()
+            self.assertTrue(refresh.result(timeout=4)['refreshed'])
+
+        after, fetched_at = server._get_live_quota_snapshot()
+        self.assertEqual(after[BID]['observed_at'], REFRESHED_QUOTA[BID]['observed_at'])
+        self.assertIs(after[BID]['estimate_ok'], True)
+        self.assertAlmostEqual(after[BID]['estimate_usd'], 1.33)
+        self.assertEqual(fetched_at, NOW)
+
+    def test_failed_quota_aggregation_does_not_publish_or_save(self):
+        self.prepare_quota_refresh()
+        before = server._get_live_quota_snapshot()
+        quota, estimates = server._QUOTA_CACHE, server._WINDOW_ESTIMATES
+        with patch.object(self.runtime._rows, 'aggregate', side_effect=RuntimeError('aggregation failed')), \
+                patch.object(server, '_save_persisted_state') as save:
+            with self.assertRaisesRegex(RuntimeError, 'aggregation failed'):
+                server._refresh_quota()
+        self.assertIs(server._QUOTA_CACHE, quota)
+        self.assertIs(server._WINDOW_ESTIMATES, estimates)
+        self.assertEqual(server._get_live_quota_snapshot(), before)
+        save.assert_not_called()
 
     def test_serialization_and_replace_release_reader_lock_and_keep_newer_generation_dirty(self):
         self.events['pi:long'] = (NOW, [(NOW - i, 0.0123456789, 'other') for i in range(257)])

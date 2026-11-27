@@ -78,7 +78,7 @@ from cost_compaction import should_rescan_transcript
 from cost_updates import commit_scan_updates, prepare_scan_updates, scan_droid_file, update_db
 from droid_ledger import DroidLedger
 from cost_runtime import CostRuntime, NormalizedCostRows
-from cost_windows import attach_quota_costs, merge_quota_cache, quota_status_fields
+from cost_windows import attach_quota_costs, quota_status_fields
 
 BASE_UI_VERSION = 29
 INDEX_HTML_FILE = SIDECAR_DIR / "index.html"
@@ -122,6 +122,7 @@ _APPLIED_PRICING_EPOCH: int = PRICING_EPOCH
 _COST_CACHE_LOADED: bool = False
 _CALENDAR_DAYS: dict[date, dict] = {}
 _CALENDAR_CACHE: dict = {}
+# Published with _QUOTA_CACHE under _STATE_LOCK.
 _WINDOW_ESTIMATES = {}
 _WINDOW_COSTS: dict[str, float] = {
     "gemini-5h": 0.0,
@@ -758,7 +759,6 @@ def _refresh_quota(
     *,
     only_if_stale: bool = False,
 ) -> dict:
-    global _QUOTA_CACHE, _LAST_QUOTA_FETCH_TS
     with _QUOTA_REFRESH_LOCK:
         now = time.time()
         if only_if_stale and _quota_cache_fresh(now):
@@ -778,23 +778,23 @@ def _refresh_quota(
         )
         agy_ok = bool(agy_meta.get("ok", True)) or agy_meta.get("reason") == "not_installed"
         if parsed:
+            _COST_RUNTIME.refresh_quota(sys.modules[__name__], parsed, mark_fresh=agy_ok and has_bucket_data)
             with _STATE_LOCK:
-                _QUOTA_CACHE = merge_quota_cache(_QUOTA_CACHE, parsed)
-                if agy_ok and has_bucket_data:
-                    _LAST_QUOTA_FETCH_TS = time.time()
                 _save_persisted_state()
-            if _COST_CACHE_LOADED:
-                _recompute_window_costs_from_memory()
         return {**agy_meta, "refreshed": True}
 
 
 def _get_live_quota() -> dict[str, dict]:
-    now = time.time()
+    return _get_live_quota_snapshot()[0]
+
+
+def _get_live_quota_snapshot() -> tuple[dict[str, dict], float]:
     out: dict[str, dict] = {}
     with _STATE_LOCK:
         snap = dict(_QUOTA_CACHE)
-    with _COST_LOCK:
         window_costs, estimates = dict(_WINDOW_COSTS), dict(_WINDOW_ESTIMATES)
+        fetched_at = _LAST_QUOTA_FETCH_TS
+    now = time.time()
     has_codex = _find_cli_bin("codex") is not None
     has_droid = _find_cli_bin("droid") is not None
     has_grok = _find_cli_bin("grok") is not None
@@ -822,7 +822,7 @@ def _get_live_quota() -> dict[str, dict]:
     if has_grok:
         out["grok-installed"] = {"installed": True}
         active_bids.append("grok-weekly")
-    return attach_quota_costs(out, active_bids, window_costs)
+    return attach_quota_costs(out, active_bids, window_costs), fetched_at
 
 
 def _analyze_with_hooks(
@@ -990,8 +990,7 @@ class StatuslineHandler(BaseHTTPRequestHandler):
                     agy_force_refresh=True,
                     only_if_stale=only_if_stale,
                 )
-            with _STATE_LOCK:
-                fetched_at = _LAST_QUOTA_FETCH_TS
+            quota, fetched_at = _get_live_quota_snapshot()
             self._respond(200, {
                 'ok': bool(agy_meta.get('ok', True)),
                 'refreshed': bool(agy_meta.get('refreshed', False)),
@@ -999,7 +998,7 @@ class StatuslineHandler(BaseHTTPRequestHandler):
                 'reason': str(agy_meta.get('reason') or ''),
                 'quota_fetched_at': fetched_at,
                 'quota_cache_ttl_sec': _QUOTA_CACHE_TTL_SEC,
-                'quota': _get_live_quota(),
+                'quota': quota,
             })
             return
 
@@ -1047,12 +1046,11 @@ class StatuslineHandler(BaseHTTPRequestHandler):
                 active = {key: value for key, value in active.items() if key != "cost_events"}
                 active['archived'] = bool(target and target.get('archived'))
 
-            with _STATE_LOCK:
-                fetched_at = _LAST_QUOTA_FETCH_TS
+            quota, fetched_at = _get_live_quota_snapshot()
             self._respond(200, {
                 "ui_version": _current_ui_version(),
                 "theme": get_live_theme(),
-                "quota": _get_live_quota(),
+                "quota": quota,
                 "quota_fetched_at": fetched_at,
                 "quota_cache_ttl_sec": _QUOTA_CACHE_TTL_SEC,
                 "calendar": _get_live_calendar(),

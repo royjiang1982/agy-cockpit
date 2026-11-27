@@ -14,7 +14,7 @@ from cost_archive import (ARCHIVE_MAPS, NormalizedCostRows, cost_ticks, load_cac
                           persisted_compaction, timezone_key as _timezone_key)
 from cost_compaction import plan_compaction, safe_cutoffs, source_exists
 from cost_migration import legacy_droid_keys, pending_keys
-from cost_windows import EVENT_TIMING_REV, WindowCosts, cached_event_mtime, valid_event_time
+from cost_windows import EVENT_TIMING_REV, WindowCosts, cached_event_mtime, merge_quota_cache, valid_event_time
 
 
 class CostRows:
@@ -165,23 +165,46 @@ class CostRuntime:
         with self._recompute_lock:
             with state._STATE_LOCK:
                 quota = state._QUOTA_CACHE  # The server replaces this dict on refresh.
-            with state._COST_LOCK:
-                generation = state._COST_GENERATION
-                age = time.monotonic() - self._last_recompute
-                dirty = self._display_generation != generation or self._display_quota is not quota
-                if not force and age < 15.0 and (not dirty or age < 0.75):
-                    return
-                # Lists are replaced, not mutated, by the ingestion paths.
-                files = [(key, rows) for key, (_, rows) in state._COST_FILE_EVENTS.items()]
-            now = time.time()
-            daily, totals, estimates = self._rows.aggregate(files, quota, now, state._normalize_cost_event)
-            calendar = state._build_calendar(daily, now)
-            self._last_recompute = time.monotonic()
-            with state._COST_LOCK:
-                if generation == state._COST_GENERATION:
-                    state._CALENDAR_DAYS, state._CALENDAR_CACHE = daily, calendar
-                    state._WINDOW_COSTS, state._WINDOW_ESTIMATES = totals, estimates
-                    self._display_generation, self._display_quota = generation, quota
+            costs = self._recompute_costs(state, quota, force=force)
+            if costs is not None:
+                with state._STATE_LOCK:
+                    state._WINDOW_COSTS, state._WINDOW_ESTIMATES = costs
+                self._last_recompute = time.monotonic()
+
+    def refresh_quota(self, state, parsed: dict[str, dict], *, mark_fresh: bool):
+        with self._recompute_lock:
+            with state._STATE_LOCK:
+                quota = merge_quota_cache(state._QUOTA_CACHE, parsed)
+            costs = self._recompute_costs(state, quota, force=True) if state._COST_CACHE_LOADED else None
+            # Keep serving the previous pair until the new one is ready.
+            with state._STATE_LOCK:
+                state._QUOTA_CACHE = quota
+                if costs is not None:
+                    state._WINDOW_COSTS, state._WINDOW_ESTIMATES = costs
+                if mark_fresh:
+                    state._LAST_QUOTA_FETCH_TS = time.time()
+            if costs is not None:
+                self._last_recompute = time.monotonic()
+
+    def _recompute_costs(self, state, quota, *, force):
+        # Called by the serialized publishers; the source rows can still change.
+        with state._COST_LOCK:
+            generation = state._COST_GENERATION
+            age = time.monotonic() - self._last_recompute
+            dirty = self._display_generation != generation or self._display_quota is not quota
+            if not force and age < 15.0 and (not dirty or age < 0.75):
+                return None
+            # Lists are replaced, not mutated, by the ingestion paths.
+            files = [(key, rows) for key, (_, rows) in state._COST_FILE_EVENTS.items()]
+        now = time.time()
+        daily, totals, estimates = self._rows.aggregate(files, quota, now, state._normalize_cost_event)
+        calendar = state._build_calendar(daily, now)
+        with state._COST_LOCK:
+            state._CALENDAR_DAYS, state._CALENDAR_CACHE = daily, calendar
+            # Record the snapshot's generation, not the source's current one, so
+            # the next eligible tick picks up rows written during aggregation.
+            self._display_generation, self._display_quota = generation, quota
+        return totals, estimates
 
     def compact(self, state, now):
         # The scan runs on the worker, not the status path. Compute outside the
