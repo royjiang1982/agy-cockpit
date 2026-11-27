@@ -2,16 +2,25 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import queue
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
+import time
 
 _CODEX_CACHE = Path.home() / ".codex/models_cache.json"
+_DEFAULT_CODEX_CACHE = _CODEX_CACHE
 _GROK_CACHE = Path.home() / ".grok/models_cache.json"
 _AGY_STATE = Path.home() / ".gemini/antigravity/sidecar_data/statusline/view_state.json"
 _FACTORY_CACHE_DIR = Path.home() / ".factory/cache/connected-model-provider-models"
 _LOCK = threading.Lock()
 _FILE_CACHE: dict[Path, tuple[tuple[int, int], object]] = {}
+_CODEX_RPC_CACHE: tuple[float, list[str]] | None = None
+_CODEX_RPC_TTL_SEC = 300.0
 
 _CODEX_DEFAULTS = {"sol": "gpt-6.2-sol", "astra": "gpt-6.2-astra", "terra": "gpt-6.1-terra", "luna": "gpt-6-luna"}
 _GROK_DEFAULTS = {"grok": "grok-4.7", "grok-fast": "grok-4.7-build-fast"}
@@ -51,21 +60,140 @@ def _read_json_cached(path: Path):
             return None
 
 
+def _find_codex_bin() -> str | None:
+    found = shutil.which("codex")
+    if found:
+        return found
+    for d in (Path.home() / ".local/bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin")):
+        cand = d / "codex"
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return None
+
+
+def _fetch_codex_models_rpc(timeout: float = 5.0) -> list[str] | None:
+    global _CODEX_RPC_CACHE
+    now = time.monotonic()
+    with _LOCK:
+        if _CODEX_RPC_CACHE is not None and (now - _CODEX_RPC_CACHE[0]) < _CODEX_RPC_TTL_SEC:
+            return list(_CODEX_RPC_CACHE[1])
+    codex_bin = _find_codex_bin()
+    if not codex_bin:
+        return None
+    proc = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="agy-cockpit-codex-models-") as td:
+            proc = subprocess.Popen(
+                [codex_bin, "app-server", "--stdio"],
+                cwd=td,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+            out_q: "queue.Queue[str | None]" = queue.Queue()
+
+            def _pump() -> None:
+                try:
+                    if proc.stdout is not None:
+                        for ln in proc.stdout:
+                            out_q.put(ln)
+                finally:
+                    out_q.put(None)
+
+            threading.Thread(target=_pump, daemon=True).start()
+            assert proc.stdin is not None
+            deadline = time.monotonic() + max(2.0, float(timeout))
+
+            def _wait_id(target_id: int) -> dict | None:
+                while True:
+                    rem = deadline - time.monotonic()
+                    if rem <= 0:
+                        return None
+                    try:
+                        ln = out_q.get(timeout=rem)
+                    except queue.Empty:
+                        return None
+                    if ln is None:
+                        return None
+                    try:
+                        msg = json.loads(ln)
+                    except Exception:
+                        continue
+                    if isinstance(msg, dict) and msg.get("id") == target_id:
+                        return msg
+
+            def _send(obj: dict) -> None:
+                proc.stdin.write(json.dumps(obj) + "\n")
+                proc.stdin.flush()
+
+            _send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                   "params": {"clientInfo": {"name": "agy-cockpit", "version": "1.0"}, "capabilities": {"experimentalApi": True}}})
+            init = _wait_id(1)
+            if not init or "error" in init:
+                return None
+            _send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+            _send({"jsonrpc": "2.0", "id": 2, "method": "model/list", "params": {}})
+            rep = _wait_id(2)
+            res = rep.get("result") if isinstance(rep, dict) and isinstance(rep.get("result"), dict) else None
+            data = res.get("data") if isinstance(res, dict) else None
+            if not isinstance(data, list):
+                return None
+            slugs = [
+                str(item.get("id") or item.get("model") or "").strip()
+                for item in data
+                if isinstance(item, dict) and item.get("hidden") is not True
+            ]
+            slugs = [s for s in slugs if s]
+            if slugs:
+                with _LOCK:
+                    _CODEX_RPC_CACHE = (time.monotonic(), list(slugs))
+                return slugs
+    except Exception:
+        return None
+    finally:
+        if proc is not None:
+            for p in (proc.stdin, proc.stdout):
+                if p:
+                    try:
+                        p.close()
+                    except Exception:
+                        pass
+            try:
+                proc.terminate()
+                proc.wait(timeout=1.5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+    return None
+
+
 def _latest_codex(cache_path: Path | None = None) -> dict[str, str]:
     best: dict[str, tuple[tuple[int, ...], str]] = {
         fam: (_ver_tuple(slug), slug) for fam, slug in _CODEX_DEFAULTS.items()
     }
-    doc = _read_json_cached(cache_path or _CODEX_CACHE)
-    models = doc.get("models") if isinstance(doc, dict) else None
-    if isinstance(models, list):
-        for item in models:
-            slug = item.get("slug") if isinstance(item, dict) else None
-            m = _RE_CODEX.fullmatch(slug) if isinstance(slug, str) else None
-            if not m:
-                continue
-            ver, fam = _ver_tuple(m.group(1)), m.group(2)
-            if fam in best and ver > best[fam][0]:
-                best[fam] = (ver, slug)
+    slugs: list[str] = []
+    if cache_path is None and _CODEX_CACHE == _DEFAULT_CODEX_CACHE:
+        rpc_slugs = _fetch_codex_models_rpc()
+        if rpc_slugs:
+            slugs = rpc_slugs
+    if not slugs:
+        doc = _read_json_cached(cache_path or _CODEX_CACHE)
+        models = doc.get("models") if isinstance(doc, dict) else None
+        if isinstance(models, list):
+            slugs = [item.get("slug") for item in models if isinstance(item, dict) and isinstance(item.get("slug"), str)]
+    for slug in slugs:
+        m = _RE_CODEX.fullmatch(slug)
+        if not m:
+            continue
+        ver, fam = _ver_tuple(m.group(1)), m.group(2)
+        if fam in best and ver > best[fam][0]:
+            best[fam] = (ver, slug)
     return {fam: slug for fam, (_, slug) in best.items()}
 
 

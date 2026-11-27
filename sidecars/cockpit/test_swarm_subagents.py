@@ -43,7 +43,7 @@ class SwarmSubagentsTests(unittest.TestCase):
         for module, values in (
             (server, {"APP_DIRS": self.app_dirs, "_CONVERSATION_INDEX_CACHE": None,
                       "_CURRENT_ACTIVE_ID": "", "_PREV_VTIMES": {}, "_PREV_PBTXT_MTIMES_NS": {},
-                      "_PREV_MAX_VTIME": 0.0, "_HANDOFF_FOCUS": None}),
+                      "_PREV_MAX_VTIME": 0.0}),
             (subagents, {"APP_DIRS": self.app_dirs, "SUBAGENT_APP_DIRS": self.app_dirs,
                          "_SUBAGENT_STUBS_CACHE": analyzer.BoundedCache(16),
                          "_COMPLETED_STEP_STUBS": analyzer.BoundedCache(16),

@@ -259,7 +259,7 @@ class AnnotationIndexTests(unittest.TestCase):
         for name, value in {
             'APP_DIRS': analyzer.APP_DIRS, '_CONVERSATION_INDEX_CACHE': None,
             '_CURRENT_ACTIVE_ID': '', '_PREV_VTIMES': {}, '_PREV_PBTXT_MTIMES_NS': {},
-            '_PREV_MAX_VTIME': 0.0, '_HANDOFF_FOCUS': None,
+            '_PREV_MAX_VTIME': 0.0,
         }.items():
             self.stack.enter_context(patch.object(server, name, value))
         self.stack.enter_context(patch.object(server, '_save_persisted_state'))

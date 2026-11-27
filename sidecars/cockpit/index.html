@@ -3729,10 +3729,7 @@
       // Layer 1: Header + Cache TTL (optional when header card is hidden)
       const cTitleEl = document.getElementById('cTitle');
       if (cTitleEl) {
-        cTitleEl.textContent = st.title +
-          (st.archived ? ' · 已归档' :
-           st.handoff && st.handoff.state === 'needs_manual_archive' ? ' · 旧会话待手动归档' :
-           st.handoff && !st.handoff.completed ? ' · 交接中' : '');
+        cTitleEl.textContent = st.title + (st.archived ? ' · 已归档' : '');
       }
       const mBadgeEl = document.getElementById('mBadge');
       if (mBadgeEl) mBadgeEl.textContent = m.short || m.name;

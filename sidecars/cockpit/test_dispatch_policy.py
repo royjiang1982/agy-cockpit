@@ -404,3 +404,9 @@ class DispatchPolicyTests(unittest.TestCase):
             self.assertEqual(dp.resolve_role("standard", p, caps)["model"], "gemini-4.5-neon-medium")
             deep = dp.resolve_role("deep", p, caps)
             self.assertEqual((deep["engine"], deep["model"], deep["effort"]), ("droid", "gpt-6.4-sol", "high"))
+
+    def test_codex_model_discovery_prefers_app_server_rpc(self):
+        import dispatch_models as dm
+        with patch.object(dm, "_fetch_codex_models_rpc", return_value=["gpt-6.8-sol", "gpt-6.7-astra"]):
+            self.assertEqual(dm.resolve_model_id("codex", "sol"), "gpt-6.8-sol")
+            self.assertEqual(dm.resolve_model_id("codex", "astra"), "gpt-6.7-astra")

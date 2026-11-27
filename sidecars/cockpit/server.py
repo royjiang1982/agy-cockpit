@@ -57,9 +57,6 @@ from rpc_quota import (  # noqa: E402
     fetch_quota_buckets_with_meta,
     get_live_theme,
     sync_ls_model_configs,
-    extract_handoff_metadata, find_native_cascade_endpoint, get_native_cascade_summaries,
-    start_native_cascade, send_native_cascade_message, update_conversation_annotations,
-    inspect_cascade_idle, NativeRPCError,
     active_probe_count, pause_probes, resume_probes, terminate_active_probes,
 )
 from subagents import (  # noqa: E402
@@ -155,7 +152,6 @@ _INDEX_LOCK = threading.RLock()
 _SERVER_INSTANCE: ThreadingHTTPServer | None = None
 _HTTP_REQ_LOCK = threading.Lock()
 _ACTIVE_HTTP_REQUESTS: int = 0
-_HANDOFF_FOCUS: tuple[str, float, frozenset[str]] | None = None
 
 
 def _snapshot_py_mtimes() -> dict[str, float]:
@@ -194,24 +190,19 @@ def _hot_reload_if_changed() -> bool:
         return False
     if any(time.time() - mt < 0.15 for mt in cur.values() if mt > 0):
         return False
-    # Use the same lock order at both checks. Submissions register background
-    # activity before endpoint discovery; registered-but-not-started workers also
-    # count as active. A long handoff must not repeatedly close the HTTP gate.
-    with _HANDOFF_CONTROLLER.lock:
-        with _HTTP_REQ_LOCK:
-            if _ACTIVE_BACKGROUND_JOBS or _HANDOFF_CONTROLLER.has_active_threads():
-                return False
+    with _HTTP_REQ_LOCK:
+        if _ACTIVE_BACKGROUND_JOBS:
+            return False
     try:
         for path in WATCHED_PY_FILES:
             compile(path.read_bytes(), str(path), 'exec')
     except (OSError, SyntaxError):
         _LOG.exception('hot reload preflight failed')
         return False
-    with _HANDOFF_CONTROLLER.lock:
-        with _HTTP_REQ_LOCK:
-            if _ACTIVE_BACKGROUND_JOBS or _HANDOFF_CONTROLLER.has_active_threads():
-                return False
-            _RELOADING = True
+    with _HTTP_REQ_LOCK:
+        if _ACTIVE_BACKGROUND_JOBS:
+            return False
+        _RELOADING = True
     pause_probes()
     listen_fd = -1
     try:
@@ -333,7 +324,7 @@ def _save_persisted_state() -> bool:
 
 def resolve_active_and_list(limit: int = 30, preferred_id: str = "") -> tuple[str, list[dict]]:
     """Detect the focused App conversation and return it ahead of the truncated list."""
-    global _PREV_VTIMES, _PREV_PBTXT_MTIMES_NS, _CURRENT_ACTIVE_ID, _PREV_MAX_VTIME, _HANDOFF_FOCUS
+    global _PREV_VTIMES, _PREV_PBTXT_MTIMES_NS, _CURRENT_ACTIVE_ID, _PREV_MAX_VTIME
     titles, view_times, pbtxt_mtimes_ns = read_annotations()
     global _CONVERSATION_INDEX_CACHE
     with _INDEX_LOCK:
@@ -428,14 +419,6 @@ def resolve_active_and_list(limit: int = 30, preferred_id: str = "") -> tuple[st
             snap_changed = bool(_PREV_VTIMES or _PREV_PBTXT_MTIMES_NS)
             _PREV_VTIMES, _PREV_PBTXT_MTIMES_NS, _PREV_MAX_VTIME = {}, {}, 0.0
 
-        if _HANDOFF_FOCUS:
-            focus_id, baseline, excluded = _HANDOFF_FOCUS
-            other_views = (stamp for cid, stamp in app_vtimes.items() if cid not in excluded)
-            if focus_id in valid_ids and max(other_views, default=0.0) <= baseline:
-                _CURRENT_ACTIVE_ID = focus_id
-            else:
-                _HANDOFF_FOCUS = None
-
         if snap_changed or _CURRENT_ACTIVE_ID != prev_active:
             _save_persisted_state()
         active_id = _CURRENT_ACTIVE_ID
@@ -454,314 +437,6 @@ def resolve_active_and_list(limit: int = 30, preferred_id: str = "") -> tuple[st
         if pref_idx > 0:
             items.insert(0, items.pop(pref_idx))
     return active_id, items[:limit]
-
-
-class HandoffController:
-    """Durable, per-old-id jobs. Only this resident process may finalize archives."""
-
-    TERMINAL = {'done', 'failed', 'unknown', 'needs_manual_archive'}
-    INITIALIZING = {'creating', 'created', 'sending', 'waiting_new_reply'}
-
-    def __init__(self, poll_interval=1.0, timeout=600.0):
-        self.lock = threading.RLock()
-        self.jobs: dict[str, dict] = {}
-        self.threads: dict[str, threading.Thread] = {}
-        self.preparing: set[str] = set()
-        self.loaded = False
-        self.poll_interval, self.timeout = poll_interval, timeout
-
-    def _load(self):
-        if self.loaded:
-            return
-        path = STATE_FILE.parent / 'handoff_jobs.json'
-        if path.exists():
-            raw = json.loads(path.read_text(encoding='utf-8'))
-            if raw.get('schema_version') != 1 or not isinstance(raw.get('jobs'), dict):
-                raise ValueError('无法识别 handoff 作业文件')
-            self.jobs = raw['jobs']
-            for job in self.jobs.values():
-                if job['state'] not in self.TERMINAL:
-                    # A lost Send/Start response has no server idempotency key.
-                    # Restart never resends or archives based on stale evidence.
-                    if job.get('seed_verified'):
-                        job.update(state='needs_manual_archive', error='Sidecar 已重启，请核对新会话；未重发或自动归档')
-                    else:
-                        job.update(state='unknown', error='Sidecar 已重启，交接正文送达未确认；请核对新会话')
-        self.loaded = True
-
-    def _save(self):
-        directory = STATE_FILE.parent
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / 'handoff_jobs.json'
-        temporary = directory / 'handoff_jobs.json.tmp'
-        with temporary.open('w', encoding='utf-8') as stream:
-            json.dump({'schema_version': 1, 'jobs': self.jobs}, stream, ensure_ascii=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-
-    def _transition(self, job_id, state, **fields):
-        with self.lock:
-            self.jobs[job_id].update(state=state, updated_at=time.time(), **fields)
-            self._save()
-            with (STATE_FILE.parent / 'handoff.log').open('a', encoding='utf-8') as stream:
-                # No summary, CSRF credential or raw configuration is logged.
-                stream.write(json.dumps({'job_id': job_id, 'state': state, **fields},
-                                        ensure_ascii=False) + '\n')
-
-    def _latest(self, field, identifier):
-        matches = [job for job in reversed(self.jobs.values()) if job[field] == identifier]
-        return max(matches, key=lambda j: (j.get('created_at', 0), j.get('updated_at', 0)),
-                   default=None)
-
-    def get(self, identifier, *, for_status=False):
-        with self.lock:
-            self._load()
-            job = self.jobs.get(identifier) or self._latest('old_id', identifier)
-            if job is None:
-                job = self._latest('new_id', identifier)
-                # Once injection is complete, this job's archive state belongs
-                # to its old_id. Do not attach that warning to the new session.
-                if for_status and job and job['state'] not in self.INITIALIZING:
-                    return None
-            if job is None:
-                return None
-            return {**job, 'ok': job['state'] not in ('failed', 'unknown'),
-                    'completed': job['state'] in self.TERMINAL,
-                    'conversation_url': f"conversation://{job['new_id']}"}
-
-    def busy(self, conv_id):
-        with self.lock:
-            self._load()
-            return conv_id in self.preparing or any(
-                (j['old_id'] == conv_id and j['state'] not in self.TERMINAL) or
-                (j['new_id'] == conv_id and j['state'] in self.INITIALIZING)
-                for j in self.jobs.values())
-
-    def has_active_threads(self):
-        with self.lock:
-            # A worker registered before Thread.start() must protect that gap.
-            return bool(self.preparing or self.threads)
-
-    def _make_room(self):
-        while len(self.jobs) >= 256:
-            finished = [job for job in self.jobs.values()
-                        if job['state'] in ('done', 'failed') and job['job_id'] not in self.threads]
-            if not finished:
-                raise ValueError('交接作业记录已满，请先核对未完成或结果不确定的作业')
-            oldest = min(finished, key=lambda j: (j.get('created_at', 0), j.get('updated_at', 0)))
-            del self.jobs[oldest['job_id']]
-
-    def _focus_new(self, job_id):
-        global _CURRENT_ACTIVE_ID, _HANDOFF_FOCUS
-        with self.lock:
-            job = dict(self.jobs[job_id])
-            if self._latest('old_id', job['new_id']) is not None:
-                # A -> B finishing late must not pull focus back from B -> C.
-                return
-            excluded = frozenset({job['old_id']} | {
-                j['old_id'] for j in self.jobs.values()
-                if j['state'] in ('waiting_old_idle', 'archiving')})
-        _, view_times, _ = read_annotations()
-        baseline = max((stamp for cid, stamp in view_times.items() if cid not in excluded), default=0.0)
-        with self.lock:
-            if self._latest('old_id', job['new_id']) is not None:
-                return
-            with _STATE_LOCK:
-                _CURRENT_ACTIVE_ID = job['new_id']
-                _HANDOFF_FOCUS = (job['new_id'], baseline, excluded)
-                if not _save_persisted_state():
-                    raise OSError('无法保存新会话焦点')
-
-    def submit(self, old_id, markdown, title=None, expected_step_idx=None):
-        # Register before discovery/StartCascade, and keep the lease until the
-        # worker is registered and started. Reload cannot interrupt the handoff
-        # between successful creation and _run entering its background context.
-        with _background_job() as admitted:
-            if not admitted:
-                raise ValueError('服务正在重载或停止，请稍后提交交接')
-            return self._submit(old_id, markdown, title, expected_step_idx)
-
-    def _submit(self, old_id, markdown, title=None, expected_step_idx=None):
-        app_base = next((base for source, base in APP_DIRS if source == 'App'), None)
-        db = app_base / 'conversations' / f'{old_id}.db' if app_base else None
-        if db is None or not db.is_file():
-            raise FileNotFoundError('未找到 App 会话')
-        digest = hashlib.sha256(markdown.encode('utf-8')).hexdigest()
-        with self.lock:
-            self._load()
-            previous = self._latest('old_id', old_id)
-            if (previous and previous['state'] in ('failed', 'unknown')
-                    and not (app_base / 'conversations' / f"{previous['new_id']}.db").exists()):
-                del self.jobs[previous['job_id']]
-                self._save()
-                previous = None
-            if previous:
-                if previous['summary_sha256'] == digest and (title is None or previous['title'] == title):
-                    return self.get(previous['job_id'])
-                raise ValueError('此旧会话已有交接作业，请查询原 job_id')
-            incoming = self._latest('new_id', old_id)
-            if old_id in self.preparing or (incoming and incoming['state'] in self.INITIALIZING):
-                raise ValueError('会话正在初始化或准备交接，请稍后重试')
-            self.preparing.add(old_id)
-        job_id = None
-        try:
-            annotation = read_conversation_annotation(db)
-            if annotation.get('archived'):
-                raise ValueError('旧会话已归档')
-            context = extract_handoff_metadata(db)
-            snapshot = context['snapshot_step_idx']
-            if expected_step_idx is not None:
-                if expected_step_idx > snapshot or context['last_user_step_idx'] > expected_step_idx:
-                    raise ValueError('交接摘要已过期：会话新增用户输入或 step 范围不匹配')
-            titles, _, _ = read_annotations()
-            resolved_title = title or annotation.get('title') or titles.get(old_id) or old_id[:8]
-            # Discovery is readonly. Its failure leaves no immutable job, so a
-            # later submit may safely retry without inventing a second cascade.
-            endpoint = find_native_cascade_endpoint(old_id)
-            with self.lock:
-                self._make_room()
-                job_id, new_id = str(uuid.uuid4()), str(uuid.uuid4())
-                self.jobs[job_id] = {
-                    'job_id': job_id, 'old_id': old_id, 'new_id': new_id, 'title': resolved_title,
-                    'summary_sha256': digest, 'snapshot_step_idx': snapshot,
-                    'seed_sent': False, 'seed_verified': False,
-                    'state': 'creating', 'created_at': time.time(), 'updated_at': time.time(),
-                }
-                self._save()  # Reserve IDs before the first possible side effect.
-            start_native_cascade(new_id, context, endpoint=endpoint)
-            warning = {}
-            try:
-                update_conversation_annotations(new_id, title=resolved_title, endpoint=endpoint)
-            except Exception as exc:
-                # Creation is confirmed; an initial rename error must not leave
-                # the new conversation unseeded. _run sets the title again.
-                warning['warning'] = f'首次命名未确认，将在交接回复后重设：{exc}'
-            self._transition(job_id, 'created', **warning)
-            response = self.get(job_id)
-            thread = threading.Thread(
-                target=self._run, args=(job_id, db, context, endpoint, markdown),
-                name=f'handoff-{job_id[:8]}', daemon=True)
-            with self.lock:
-                self.threads[job_id] = thread
-            thread.start()
-            return response
-        except Exception as exc:
-            if job_id is not None:
-                with self.lock:
-                    self.threads.pop(job_id, None)
-                extra = {'rejected': True} if getattr(exc, 'state', '') == 'rejected' else {}
-                self._transition(job_id, 'unknown' if getattr(exc, 'state', '') == 'unknown' else 'failed',
-                                 error=str(exc), **extra)
-            raise
-        finally:
-            with self.lock:
-                self.preparing.discard(old_id)
-
-    def _wait(self, predicate):
-        deadline = time.monotonic() + self.timeout
-        while not _STOP_EVENT.is_set():
-            result = predicate()
-            if result:
-                return result
-            if time.monotonic() >= deadline:
-                raise TimeoutError('等待会话确认或完全空闲超时')
-            if _STOP_EVENT.wait(self.poll_interval):
-                break
-        raise InterruptedError('Sidecar 正在停止，未继续归档')
-
-    def _inspect(self, db, endpoint, snapshot=None):
-        summary = get_native_cascade_summaries(endpoint).get(db.stem)
-        _, children = collect_subagents(db.stem)
-        return inspect_cascade_idle(db, snapshot_step_idx=snapshot,
-                                    runtime_summary=summary, subagents=children)
-
-    def _run(self, job_id, old_db, context, endpoint, markdown):
-        with _background_job() as admitted:
-            if not admitted:
-                self._transition(job_id, 'failed', error='服务正在重载或停止，未发送交接正文')
-                with self.lock:
-                    self.threads.pop(job_id, None)
-                return
-            seed_sent = False
-            seed_verified = False
-            try:
-                job = self.get(job_id)
-                new_db = old_db.with_name(f"{job['new_id']}.db")
-                marker = f"[handoff:{job_id}]"
-                text = (f"{marker}\n来源会话：{job['old_id']}\n"
-                        f"快照 step：{job['snapshot_step_idx']}\n\n{markdown}\n\n"
-                        "你是主代理（当前为会话交接首轮注入）。本轮仅简短回复确认已接收上下文并原地待命，"
-                        "不要在本轮调用任何工具、修改文件或派发子代理；待用户发出下一条消息后，按主代理规则正常执行与调度子代理。")
-                self._transition(job_id, 'sending')
-                send_native_cascade_message(
-                    job['new_id'],
-                    text,
-                    context['cascade_cfg'],
-                    endpoint=endpoint,
-                    token_threshold=200_000,
-                )
-                seed_sent = True
-                self._transition(job_id, 'waiting_new_reply', seed_sent=True)
-
-                def received():
-                    if not new_db.is_file():
-                        return False
-                    state = self._inspect(new_db, endpoint)
-                    if state['last_user_step_idx'] < 0 or not state['safe']:
-                        return False
-                    # Require the submitted message, not merely an unrelated idle DB.
-                    with contextlib.closing(connect_readonly(new_db)) as con:
-                        return bool(con.execute(
-                            'SELECT 1 FROM steps WHERE step_type=14 AND instr(step_payload,?)>0 LIMIT 1',
-                            (marker.encode('utf-8'),)).fetchone())
-
-                self._wait(received)
-                seed_verified = True
-                update_conversation_annotations(job['new_id'], title=job['title'], endpoint=endpoint)
-                self._wait(lambda: read_conversation_annotation(new_db).get('title') == job['title'])
-                self._transition(job_id, 'waiting_old_idle', seed_verified=True)
-                self._focus_new(job_id)
-                stable = [None]
-
-                def old_ready():
-                    state = self._inspect(old_db, endpoint, job['snapshot_step_idx'])
-                    if state['reason'] == 'new_user_input':
-                        raise ValueError('旧会话出现新的 user_input，已放弃自动归档')
-                    # Two stable observations, plus a final check immediately
-                    # before mutation. The LS offers no atomic if_idle condition.
-                    previous = stable[0]
-                    stable[0] = state['last_step_idx'] if state['safe'] else None
-                    return state if state['safe'] and previous == state['last_step_idx'] else False
-
-                confirmed = self._wait(old_ready)
-                self._transition(job_id, 'archiving')
-                latest = self._inspect(old_db, endpoint, job['snapshot_step_idx'])
-                if not latest['safe'] or latest['last_step_idx'] != confirmed['last_step_idx']:
-                    raise ValueError('归档前旧会话发生变化，已放弃自动归档')
-                if _STOP_EVENT.is_set():
-                    raise InterruptedError('Sidecar 正在停止')
-                update_conversation_annotations(job['old_id'], archived=True, endpoint=endpoint)
-                self._wait(lambda: read_conversation_annotation(old_db).get('archived') is True)
-                self._focus_new(job_id)
-                self._transition(job_id, 'done')
-            except NativeRPCError as exc:
-                if exc.state == 'unknown':
-                    target_state = 'unknown'
-                elif not seed_verified:
-                    target_state = 'failed' if not seed_sent else 'unknown'
-                else:
-                    target_state = 'needs_manual_archive'
-                self._transition(job_id, target_state, error=str(exc))
-            except Exception as exc:
-                target_state = 'needs_manual_archive' if seed_verified else ('unknown' if seed_sent else 'failed')
-                self._transition(job_id, target_state, error=str(exc))
-            finally:
-                with self.lock:
-                    self.threads.pop(job_id, None)
-
-
-_HANDOFF_CONTROLLER = HandoffController()
 
 
 def _normalize_cost_event(item) -> CostEvent:
@@ -1252,76 +927,6 @@ class StatuslineHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._dispatch()
 
-    def _handle_handoff(self, qs):
-        if self.command == 'GET':
-            identifier = (qs.get('id') or [''])[0]
-            if not identifier:
-                self._respond(400, {'ok': False, 'state': 'invalid_parameters', 'error': '缺少 id'})
-                return
-            job = _HANDOFF_CONTROLLER.get(identifier)
-            self._respond(200 if job else 404, job or {'ok': False, 'state': 'not_found'})
-            return
-        if self.command != 'POST':
-            self._respond(405, {'ok': False, 'state': 'method_not_allowed'})
-            return
-        # CLI loopback requests have no Origin. A sandboxed web document's
-        # opaque Origin is not equivalent to a trusted local CLI.
-        if self.headers.get('Origin') == 'null':
-            self._respond(403, {'ok': False, 'state': 'invalid_origin'})
-            return
-        if self.headers.get_content_type() != 'application/json' or self.headers.get('Transfer-Encoding'):
-            self._respond(400, {'ok': False, 'state': 'invalid_parameters', 'error': '需要 JSON 请求体'})
-            return
-        try:
-            length = int(self.headers.get('Content-Length', '0'))
-            if not 1 <= length <= 768 * 1024:
-                raise ValueError('请求体长度无效')
-            def unique(pairs):
-                result = {}
-                for key, value in pairs:
-                    if key in result:
-                        raise ValueError('JSON 字段重复')
-                    result[key] = value
-                return result
-            raw = self.rfile.read(length)
-            if len(raw) != length:
-                raise ValueError('请求体不完整')
-            data = json.loads(raw, object_pairs_hook=unique)
-            if not isinstance(data, dict) or set(data) - {'old_id', 'handoff_markdown', 'title', 'expected_step_idx'}:
-                raise ValueError('JSON 字段无效')
-            old_id, markdown, title = data.get('old_id'), data.get('handoff_markdown'), data.get('title')
-            expected = data.get('expected_step_idx')
-            if not isinstance(old_id, str) or str(uuid.UUID(old_id)) != old_id:
-                raise ValueError('old_id 必须是规范 UUID')
-            if not isinstance(markdown, str) or not markdown.strip() or '\x00' in markdown:
-                raise ValueError('交接单必须是非空文本且不含 NUL')
-            md_bytes = len(markdown.encode('utf-8'))
-            non_ascii = sum(1 for ch in markdown if ord(ch) >= 128)
-            ascii_chars = len(markdown) - non_ascii
-            est_tokens = (ascii_chars + 3) // 4 + (non_ascii * 2 + 2) // 3
-            if md_bytes > 96 * 1024 or est_tokens > 24_000:
-                raise ValueError(
-                    f'交接单超出上下文预算（当前约 {est_tokens} tokens / {md_bytes} bytes；'
-                    '上限为 24,000 tokens 且不超过 96 KiB，以确保新会话总上下文 ≤50k tokens）'
-                )
-            if title is not None and (not isinstance(title, str) or not title.strip() or len(title) > 512 or any(c in title for c in '\x00\r\n')):
-                raise ValueError('title 无效')
-            if expected is not None and (type(expected) is not int or not 0 <= expected <= 2147483647):
-                raise ValueError('expected_step_idx 无效')
-        except (ValueError, TypeError, UnicodeError) as exc:
-            self._respond(400, {'ok': False, 'state': 'invalid_parameters', 'error': str(exc)})
-            return
-        try:
-            result = _HANDOFF_CONTROLLER.submit(old_id, markdown, title, expected)
-            self._respond(200, result)
-        except FileNotFoundError as exc:
-            self._respond(404, {'ok': False, 'state': 'not_found', 'error': str(exc)})
-        except ValueError as exc:
-            self._respond(409, {'ok': False, 'state': 'conflict', 'error': str(exc)})
-        except NativeRPCError as exc:
-            job = _HANDOFF_CONTROLLER.get(old_id)
-            self._respond(502, {**(job or {}), 'ok': False, 'state': exc.state, 'error': str(exc)})
-
     def _dispatch(self):
         global _ACTIVE_HTTP_REQUESTS
         with _HTTP_REQ_LOCK:
@@ -1366,9 +971,6 @@ class StatuslineHandler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith(('/api/dispatch-', '/static/dispatch_drawer.')):
             dispatch_api.handle_dispatch_request(self, self.path.split('?', 1)[0], qs, sys.modules[__name__])
-            return
-        if parsed.path == '/api/handoff':
-            self._handle_handoff(qs)
             return
         if parsed.path == '/api/config':
             if self.command not in ('GET', 'HEAD'):
@@ -1449,7 +1051,6 @@ class StatuslineHandler(BaseHTTPRequestHandler):
                     active = {**active, "live_status": {}}
                 active = {key: value for key, value in active.items() if key != "cost_events"}
                 active['archived'] = bool(target and target.get('archived'))
-                active['handoff'] = _HANDOFF_CONTROLLER.get(active['id'], for_status=True)
 
             with _STATE_LOCK:
                 fetched_at = _LAST_QUOTA_FETCH_TS
@@ -1600,10 +1201,6 @@ def main() -> None:
         terminate_active_probes()
         server.server_close()
         for worker in workers:
-            worker.join(timeout=1.0)
-        with _HANDOFF_CONTROLLER.lock:
-            handoffs = list(_HANDOFF_CONTROLLER.threads.values())
-        for worker in handoffs:
             worker.join(timeout=1.0)
         for sig, handler in previous.items():
             signal.signal(sig, handler)
