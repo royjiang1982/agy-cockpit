@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Regression checks across the handoff parser, daemon and installer."""
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -49,6 +49,82 @@ class HandoffTests(unittest.TestCase):
 
 
 class DaemonTests(unittest.TestCase):
+    def test_query_distinguishes_missing_socket_from_connection_error(self):
+        with mock.patch.object(daemon, "get_socket_path") as get_path:
+            get_path.return_value.exists.return_value = False
+            self.assertEqual(daemon.query_daemon("status"), {"ok": False, "status": "stopped"})
+            get_path.return_value.exists.return_value = True
+            with (
+                mock.patch.object(daemon, "_verify_socket_security"),
+                mock.patch.object(daemon.socket, "socket") as socket_factory,
+            ):
+                conn = socket_factory.return_value.__enter__.return_value
+                conn.connect.side_effect = ConnectionRefusedError("refused")
+                self.assertEqual(daemon.query_daemon("status"), {
+                    "ok": False, "status": "error", "error": "refused",
+                })
+
+    def test_status_and_stop_exit_codes(self):
+        for command, action in (("status", "status"), ("stop", "shutdown")):
+            for status, code in (("error", 1), ("stopped", 0)):
+                response = {"ok": False, "status": status}
+                stdout = io.StringIO()
+                with (
+                    self.subTest(command=command, status=status),
+                    mock.patch.object(daemon, "query_daemon", return_value=response) as query,
+                    redirect_stdout(stdout),
+                ):
+                    self.assertEqual(daemon.main([command]), code)
+                    query.assert_called_once_with(action)
+                    self.assertEqual(json.loads(stdout.getvalue()), response)
+
+    def test_restart_checks_replacement_daemon(self):
+        running = {"ok": True, "daemon_pid": 101}
+        replacement = {"ok": True, "daemon_pid": 102}
+        cases = (
+            (running, running, 1),
+            (running, replacement, 0),
+            (running, {"ok": False, "status": "error"}, 1),
+            ({"ok": False, "status": "stopped"}, replacement, 0),
+        )
+        for before, after, code in cases:
+            stdout, calls = io.StringIO(), mock.Mock()
+            still_running = after == running
+            with (
+                self.subTest(before=before, after=after),
+                mock.patch.object(daemon, "get_socket_path") as socket_path,
+                mock.patch.object(daemon, "_ping_daemon", return_value=still_running),
+                mock.patch.object(daemon.time, "monotonic", side_effect=(0.0, 0.1, 3.0)),
+                mock.patch.object(daemon.time, "sleep"),
+                mock.patch.object(daemon, "ensure_daemon_running") as ensure,
+                mock.patch.object(daemon, "query_daemon", side_effect=(before, {"ok": True}, after.copy())) as query,
+                redirect_stdout(stdout),
+            ):
+                socket_path.return_value.exists.return_value = still_running
+                calls.attach_mock(query, "query")
+                calls.attach_mock(ensure, "ensure")
+                self.assertEqual(daemon.main(["restart"]), code)
+                self.assertEqual(calls.mock_calls, [
+                    mock.call.query("status"), mock.call.query("shutdown"),
+                    mock.call.ensure(), mock.call.query("status"),
+                ])
+                got = json.loads(stdout.getvalue())
+                if code == 0:
+                    self.assertEqual(got, after)
+                else:
+                    self.assertFalse(got["ok"])
+                    self.assertTrue(got.get("error"))
+        # Error before restart fails immediately without pretending daemon was stopped.
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(daemon, "query_daemon", return_value={"ok": False, "status": "error", "error": "boom"}),
+            mock.patch.object(daemon, "ensure_daemon_running") as ensure,
+            redirect_stdout(stdout),
+        ):
+            self.assertEqual(daemon.main(["restart"]), 1)
+            ensure.assert_not_called()
+            self.assertEqual(json.loads(stdout.getvalue())["error"], "boom")
+
     def test_failure_to_write_ledger_keeps_successful_result(self):
         def stream(*args, **kwargs):
             return iter((

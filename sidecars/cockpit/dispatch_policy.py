@@ -31,21 +31,19 @@ MAX_PANEL_COUNT = 12
 _LOCK, _REAL_WHICH = threading.Lock(), shutil.which
 _BUNDLED_BIN = Path(__file__).resolve().parents[2] / "runtime" / "bin"
 _EXTRA_WRAPPER_DIRS = (Path.home() / ".gemini/config/bin", Path.home() / ".local/bin")
-_CLI_BIN_DIRS = (Path.home() / ".local/bin", Path.home() / ".grok/bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin"))
+_CLI_BIN_DIRS = (Path.home() / ".local/bin", Path.home() / ".grok/bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin"), Path("/usr/bin"), Path("/bin"))
 
 def _has_wrapper(engine):
     exe = f"sa-{engine}"
-    if shutil.which(exe):
-        return True
-    if shutil.which is not _REAL_WHICH or not os.environ.get("PATH"):
-        return False
-    env_bin = os.environ.get("SA_RUNTIME_BIN")
-    if env_bin:
-        return (Path(env_bin) / exe).is_file() and os.access(Path(env_bin) / exe, os.X_OK)
-    if any((d / exe).is_file() and os.access(d / exe, os.X_OK) for d in _EXTRA_WRAPPER_DIRS):
-        return True
-    return ((_BUNDLED_BIN / exe).is_file() and os.access(_BUNDLED_BIN / exe, os.X_OK)
-            and (bool(shutil.which(engine)) or any((d / engine).is_file() and os.access(d / engine, os.X_OK) for d in _CLI_BIN_DIRS)))
+    if not shutil.which(exe):
+        if shutil.which is not _REAL_WHICH or not os.environ.get("PATH"):
+            return False
+        env_bin = os.environ.get("SA_RUNTIME_BIN")
+        dirs = (Path(env_bin),) if env_bin else (*_EXTRA_WRAPPER_DIRS, _BUNDLED_BIN)
+        if not any((d / exe).is_file() and os.access(d / exe, os.X_OK) for d in dirs):
+            return False
+    return bool(shutil.which(engine)) or any(
+        (d / engine).is_file() and os.access(d / engine, os.X_OK) for d in _CLI_BIN_DIRS)
 
 class PolicyConflictError(Exception):
     """The revision has changed or the on-disk policy cannot be safely edited."""
@@ -66,17 +64,11 @@ def default_policy():
         _target("agy", "carbon", "high", enabled=True),
         _target("agy", "opus", "high", enabled=True),
     ])
-    fallback_specs = {
-        "agy:hydrogen": ("hydrogen", "same"),
-        "agy:neon": ("neon", "same"),
-        "agy:carbon": ("carbon", "same"),
-        "agy:opus": ("opus", "same"),
-        "codex:sol": ("sol", "same"),
-        "codex:astra": ("astra", "same"),
-    }
+    fallback_specs = {"agy": ("hydrogen", "neon", "carbon", "opus"), "codex": ("sol", "astra")}
     return dict(schema_version=SCHEMA_VERSION, revision=1, enabled=True, external_enabled=True,
                 allow_swarm=False, codex_fast=True, quota_fallback=dict(enabled=True, threshold_pct=5),
-                roles=roles, fallbacks={k: [_target("droid", *v, enabled=True)] for k, v in fallback_specs.items()})
+                roles=roles, fallbacks={f"{engine}:{model}": [_target("droid", model, "same", enabled=True)]
+                                       for engine, models in fallback_specs.items() for model in models})
 
 def _fields(obj, required, optional=()):
     if not isinstance(obj, dict) or not set(required) <= obj.keys() or obj.keys() - set(required) - set(optional):
@@ -250,7 +242,7 @@ def _limiting_hint(rows):
     return (min(fresh, key=lambda row: (row["pct"], -row["observed_at"])) if fresh else
             max(rows, key=lambda row: row["observed_at"] or 0, default=_quota_hint({}, 0)))
 def probe_capabilities(state_path=None, *, now=None):
-    """PATH-only wrapper discovery plus persisted (never polled) quota samples."""
+    """Executable discovery plus persisted (never polled) quota samples."""
     now = time.time() if now is None else now
     quota, agy_families = {engine: [] for engine in ENGINES}, {"gemini": [], "3p": []}
     for bucket, row in _quota_cache(state_path).items():
@@ -289,12 +281,14 @@ def _selection(target, policy, caps, state_path, *, read_only):
     channel, engine, raw_model, effort = (target[key] for key in ("channel", "engine", "model", "effort"))
     if not target.get("enabled", True):
         return None, "candidate_disabled"
-    model = dispatch_models.resolve_model_id(engine, raw_model, effort, agy_state_path=state_path) if channel == "cli" else raw_model
+    model = raw_model
     if channel == "cli":
         if not policy["external_enabled"]:
             return None, "external_disabled"
         if engine not in caps.get("available_engines", ()):
             return None, "cli_unavailable"
+        codex_rpc = policy["external_enabled"] and "codex" in caps.get("available_engines", ())
+        model = dispatch_models.resolve_model_id(engine, raw_model, effort, agy_state_path=state_path, allow_codex_rpc=codex_rpc)
         quota = caps.get("agy_quota", {}).get(_agy_quota_family(model), {}) if engine == "agy" else caps.get("quota", {}).get(engine, {})
         cutoff = policy["quota_fallback"]
         if cutoff["enabled"] and quota.get("fresh") and quota["pct"] <= cutoff["threshold_pct"]:
@@ -322,8 +316,12 @@ def _resolve_target(primary, name, policy, caps, state_path, *, read_only, blind
     swarm_skip = ("blind_requires_isolated" if blind else
                   "read_only_requires_isolated" if read_only and not ROLE_READ_ONLY[name] else None)
     effort = "" if primary["effort"] == "same" else primary["effort"]
-    resolved_model = dispatch_models.resolve_model_id(primary["engine"], primary["model"], effort, agy_state_path=state_path) if primary["channel"] == "cli" else primary["model"]
-    chain = next((policy["fallbacks"][k] for k in dispatch_models.fallback_lookup_keys(primary["engine"], primary["model"], resolved_model) if k in policy["fallbacks"]), [])
+    engine, raw_model = primary["engine"], primary["model"]
+    resolved_model = raw_model
+    if primary["channel"] == "cli" and policy["external_enabled"] and engine in caps.get("available_engines", ()):
+        resolved_model = dispatch_models.resolve_model_id(engine, raw_model, effort, agy_state_path=state_path, allow_codex_rpc="codex" in caps.get("available_engines", ()))
+    keys = dispatch_models.fallback_lookup_keys(engine, raw_model, resolved_model)
+    chain = next((policy["fallbacks"][k] for k in keys if k in policy["fallbacks"]), [])
     available, skipped = [], []
     for i, target in enumerate([primary, *chain]):
         candidate = dict(target, effort=effort) if target["effort"] == "same" else target

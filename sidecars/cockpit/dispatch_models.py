@@ -175,12 +175,12 @@ def _fetch_codex_models_rpc(timeout: float = 5.0) -> list[str] | None:
     return result
 
 
-def _latest_codex(cache_path: Path | None = None) -> dict[str, str]:
+def _latest_codex(cache_path: Path | None = None, *, allow_rpc: bool = True) -> dict[str, str]:
     best: dict[str, tuple[tuple[int, ...], str]] = {
         fam: (_ver_tuple(slug), slug) for fam, slug in _CODEX_DEFAULTS.items()
     }
     slugs: list[str] = []
-    if cache_path is None and _CODEX_CACHE == _DEFAULT_CODEX_CACHE:
+    if allow_rpc and cache_path is None and _CODEX_CACHE == _DEFAULT_CODEX_CACHE:
         rpc_slugs = _fetch_codex_models_rpc()
         if rpc_slugs:
             slugs = rpc_slugs
@@ -263,8 +263,13 @@ def _latest_agy(state_path: Path | None = None) -> dict[str, str]:
 
 
 def _latest_droid(codex_cache_path: Path | None = None, agy_state_path: Path | None = None,
-                  grok_cache_path: Path | None = None, factory_cache_dir: Path | None = None) -> dict[str, str]:
-    merged = {**_latest_agy(agy_state_path), **_latest_codex(codex_cache_path), **_latest_grok(grok_cache_path)}
+                  grok_cache_path: Path | None = None, factory_cache_dir: Path | None = None,
+                  *, allow_codex_rpc: bool = True) -> dict[str, str]:
+    merged = {
+        **_latest_agy(agy_state_path),
+        **_latest_codex(codex_cache_path, allow_rpc=allow_codex_rpc),
+        **_latest_grok(grok_cache_path),
+    }
     fdir = factory_cache_dir if factory_cache_dir is not None else _FACTORY_CACHE_DIR
     if fdir.is_dir():
         for path in sorted(fdir.glob("*.json"))[:4]:
@@ -324,11 +329,12 @@ def resolve_model_id(
     codex_cache_path: Path | None = None,
     grok_cache_path: Path | None = None,
     agy_state_path: Path | None = None,
+    allow_codex_rpc: bool = True,
 ) -> str:
     """Resolve a versionless family name to the latest concrete CLI model ID; keep explicit IDs verbatim."""
     low = (model or "").strip().lower()
     if engine == "codex" and low in _CODEX_DEFAULTS:
-        return _latest_codex(codex_cache_path)[low]
+        return _latest_codex(codex_cache_path, allow_rpc=allow_codex_rpc)[low]
     if engine == "grok" and low in _GROK_DEFAULTS:
         return _latest_grok(grok_cache_path)[low]
     if engine == "agy" and low in _AGY_DEFAULTS:
@@ -336,14 +342,21 @@ def resolve_model_id(
         eff = effort if effort and effort != "same" else _AGY_DEFAULT_EFFORT[low]
         return f"{base}-{eff}"
     if engine == "droid" and (low in _CODEX_DEFAULTS or low in _AGY_DEFAULTS or low in _GROK_DEFAULTS):
-        return _latest_droid(codex_cache_path, agy_state_path, grok_cache_path)[low]
+        return _latest_droid(codex_cache_path, agy_state_path, grok_cache_path, allow_codex_rpc=allow_codex_rpc)[low]
     return model
 
 
 def fallback_lookup_keys(engine: str, model: str, resolved_model: str) -> tuple[str, ...]:
-    """Ordered fallback dictionary keys: exact, resolved concrete ID, and versionless family."""
+    """Ordered fallback dictionary keys: exact, resolved concrete ID, offline default ID, and versionless family."""
+    fam = family_of(engine, model) or family_of(engine, resolved_model)
+    offline_id = None
+    if fam:
+        if engine == "codex":
+            offline_id = _CODEX_DEFAULTS.get(fam)
+        elif engine == "grok":
+            offline_id = _GROK_DEFAULTS.get(fam)
     keys: list[str] = []
-    for cand in (model, resolved_model, family_of(engine, model) or family_of(engine, resolved_model)):
+    for cand in (model, resolved_model, offline_id, fam):
         if cand:
             key = f"{engine}:{cand}"
             if key not in keys:

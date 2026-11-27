@@ -86,6 +86,7 @@ for raw in sys.stdin:
                         "toolCall": {"toolCallId": f"tc-{next_id}", "name": "run_command", "title": "step2"},
                         "options": [
                             {"optionId": "always-id", "kind": "allow_always", "name": "Always allow"},
+                            {"optionId": "second-once-id", "kind": "allow_once", "name": "Allow once"},
                             {"optionId": "reject-id", "kind": "reject_once", "name": "Reject"},
                         ],
                     },
@@ -159,7 +160,11 @@ for raw in sys.stdin:
                 },
             })
             continue
-        if "NO_ALLOW_OPTION" in text:
+        if text.endswith(("NO_ALLOW_OPTION", "ALWAYS_ONLY")):
+            option = (
+                {"optionId": "always-id", "kind": "allow_always", "name": "Always allow"} if text.endswith("ALWAYS_ONLY")
+                else {"optionId": "reject-id", "kind": "reject_once", "name": "Reject"}
+            )
             pending_perms[pid] = {"sid": sid, "prompt_id": rid, "sent_at": time.monotonic(), "remaining": 0}
             send({
                 "jsonrpc": "2.0",
@@ -168,7 +173,7 @@ for raw in sys.stdin:
                 "params": {
                     "sessionId": sid,
                     "toolCall": {"toolCallId": "tc-bad", "name": "run_command", "title": "bad"},
-                    "options": [{"optionId": "reject-id", "kind": "reject_once", "name": "Reject"}],
+                    "options": [option],
                 },
             })
             continue
@@ -230,7 +235,8 @@ def acp_approval_cases():
     assert pick_auto_allow_option([
         {"optionId": "a2", "kind": "allow_always"},
         {"optionId": "r1", "kind": "reject_once"},
-    ])["optionId"] == "a2"
+    ]) is None
+    assert pick_auto_allow_option([{"optionId": "a2", "kind": "allow_always"}]) is None
     assert pick_auto_allow_option([{"optionId": "r1", "kind": "reject_once"}]) is None
     assert pick_auto_allow_option([
         {"optionId": "dup", "kind": "allow_once"},
@@ -248,7 +254,7 @@ def acp_approval_cases():
             server = _write_fake_perm_server(tmp)
             env = os.environ.copy()
 
-            # 3a. Sequential multi-permission turn (allow_once then allow_always) keeps ResidentServer healthy
+            # 3a. Two one-time approvals keep the ResidentServer healthy
             log1 = tmp / "log1.json"
             cmd1 = [sys.executable, str(server), str(log1)]
             host = ResidentServer(cmd1, cwd=str(tmp), env=env, agent="agy")
@@ -261,7 +267,7 @@ def acp_approval_cases():
                 )
                 evs = [json.loads(line) for line in turn]
                 turn.close()
-                assert any(e.get("delta") == "approved:always-id" for e in evs), evs
+                assert any(e.get("delta") == "approved:second-once-id" for e in evs), evs
                 assert not host.closed and not host.retire_after_turn and host.process.poll() is None
 
                 entries = json.loads(log1.read_text(encoding="utf-8"))
@@ -271,7 +277,7 @@ def acp_approval_cases():
                 assert len(replies) == 2, replies
                 assert replies[0]["result"] == {"outcome": {"outcome": "selected", "optionId": "allow-once-id"}}
                 assert replies[0]["elapsed"] >= 0.10, replies[0]
-                assert replies[1]["result"] == {"outcome": {"outcome": "selected", "optionId": "always-id"}}
+                assert replies[1]["result"] == {"outcome": {"outcome": "selected", "optionId": "second-once-id"}}
                 assert replies[1]["elapsed"] >= 0.10, replies[1]
 
                 # 3b. interaction_* still emits native_question and is NEVER auto-approved
@@ -323,31 +329,34 @@ def acp_approval_cases():
             finally:
                 host2.shutdown()
 
-            # 3d. Missing allow option fails closed with cancelled and error
+            # 3d. A permanent-only or reject-only request is cancelled and reports an error
             acp_approvals.AUTO_APPROVE_DELAY_RANGE = (0.05, 0.08)
-            log3 = tmp / "log3.json"
-            cmd3 = [sys.executable, str(server), str(log3)]
-            host3 = ResidentServer(cmd3, cwd=str(tmp), env=env, agent="agy")
-            try:
-                turn_bad = AgyAcpStream(
-                    cmd3, cwd=str(tmp), env=env,
-                    bot={"model": "gemini-4-hydrogen-high"},
-                    prompt="NO_ALLOW_OPTION",
-                    resident=host3, is_subagent=True,
-                )
-                raised = ""
+            for prompt in ("NO_ALLOW_OPTION", "ALWAYS_ONLY"):
+                log3 = tmp / f"{prompt}.json"
+                cmd3 = [sys.executable, str(server), str(log3)]
+                host3 = ResidentServer(cmd3, cwd=str(tmp), env=env, agent="agy")
                 try:
-                    list(turn_bad)
-                except RuntimeError as exc:
-                    raised = str(exc)
+                    turn_bad = AgyAcpStream(
+                        cmd3, cwd=str(tmp), env=env,
+                        bot={"model": "gemini-4-hydrogen-high"},
+                        prompt=prompt,
+                        resident=host3, is_subagent=True,
+                    )
+                    raised = ""
+                    try:
+                        list(turn_bad)
+                    except RuntimeError as exc:
+                        raised = str(exc)
+                    finally:
+                        done = turn_bad._protocol_done.wait(2)
+                        turn_bad.close()
+                    assert "未提供可自动批准的权限选项" in raised, (prompt, raised)
+                    assert done, f"No prompt reply after permission cancellation: {prompt}"
+                    entries3 = json.loads(log3.read_text(encoding="utf-8"))
+                    replies3 = [e for e in entries3 if e["type"] == "perm_reply"]
+                    assert len(replies3) == 1 and replies3[0]["result"] == CANCELLED, (prompt, replies3)
                 finally:
-                    turn_bad.close()
-                assert "未提供可自动批准的权限选项" in raised, raised
-                entries3 = json.loads(log3.read_text(encoding="utf-8"))
-                replies3 = [e for e in entries3 if e["type"] == "perm_reply"]
-                assert len(replies3) == 1 and replies3[0]["result"] == CANCELLED, replies3
-            finally:
-                host3.shutdown()
+                    host3.shutdown()
 
             # 3e. Non-AGY ACP agents (e.g. droid) still fail closed on unexpected permission requests
             log4 = tmp / "log4.json"

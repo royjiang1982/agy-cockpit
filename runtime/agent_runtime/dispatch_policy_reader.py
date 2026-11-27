@@ -96,6 +96,19 @@ def _agy_family(model: str) -> Optional[str]:
     return (hit.group(1) or hit.group(2)) if hit else None
 
 
+def default_agy_fallback(model: str, effort: str = "") -> Tuple[str, str]:
+    """Use Cockpit's same-family, same-effort Droid default without importing the sidecar."""
+    family = _agy_family(model)
+    target = _DROID_FAMILY_DEFAULTS[family] if family in ("hydrogen", "neon", "carbon", "opus") else ""
+    _, sep, suffix = model.lower().rpartition("-")
+    if sep and suffix in ("low", "medium", "high", "xhigh", "extra", "max", "ultra"):
+        return target, suffix
+    req_effort = (effort or "").strip().lower()
+    if req_effort and req_effort != "same" and req_effort in _EFFORTS:
+        return target, req_effort
+    return target, "high" if family in ("hydrogen", "opus") else "medium"
+
+
 def _droid_fallback(policy, model):
     fallbacks = policy.get("fallbacks")
     if not isinstance(fallbacks, dict) or not _valid_model(model):

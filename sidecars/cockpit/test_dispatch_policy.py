@@ -160,6 +160,23 @@ class DispatchPolicyTests(unittest.TestCase):
         self.assertEqual(dp.resolve_role("scout", dp_off, caps),
                          {"mode": "disabled", "channel": "direct", "reason": "dispatch_disabled"})
 
+    def test_disabled_or_unavailable_cli_skips_model_resolution(self):
+        p = dp.default_policy()
+        p["roles"]["deep"]["primary"] = dp._target("codex", "sol", "high")
+        p["fallbacks"]["codex:sol"].append(dp._target("agy", "inherit", channel="invoke_subagent"))
+        for external_enabled, engines, reason in (
+            (False, ["codex", "droid"], "external_disabled"),
+            (True, [], "cli_unavailable"),
+        ):
+            with self.subTest(reason=reason), patch.object(dp.dispatch_models, "resolve_model_id") as resolve:
+                p["external_enabled"] = external_enabled
+                route = dp.resolve_role("deep", p, {"available_engines": engines})
+                resolve.assert_not_called()
+                self.assertEqual((route["channel"], route["model"], route["reason"]),
+                                 ("invoke_subagent", "inherit", "fallback"))
+                self.assertEqual([(item["engine"], item["reason"]) for item in route["skipped"]],
+                                 [("codex", reason), ("droid", reason)])
+
     def test_role_permissions_and_public_panel_seat(self):
         p = dict(dp.default_policy(), external_enabled=False, allow_swarm=True)
         cli = p["roles"]["scout"]["primary"].copy()
@@ -262,7 +279,8 @@ class DispatchPolicyTests(unittest.TestCase):
                     "codex-5h": sample,
                     "codex-weekly": dict(observed_at=recently, pct=99, reset_ts=NOW + 60, limit_id="other"),
                 }}))
-                with patch.object(dp.shutil, "which", side_effect=lambda exe: exe if exe in ("sa-codex", "sa-droid") else None):
+                binaries = {exe: exe for exe in ("sa-codex", "codex", "sa-droid", "droid")}
+                with patch.object(dp.shutil, "which", side_effect=binaries.get):
                     caps = dp.probe_capabilities(self.state_path, now=NOW)
                 self.assertEqual(caps["quota"]["codex"]["fresh"], fresh)
                 self.assertIsNone(caps["quota"]["pi"]["pct"])
@@ -416,20 +434,29 @@ class DispatchPolicyTests(unittest.TestCase):
                 self.assertEqual(bad.returncode, 2)
                 self.assertIn("can only be used with --role", bad.stderr)
 
+    def test_path_wrapper_requires_executable_official_cli(self):
+        cli = self.policy_path.with_name("codex")
+        with patch.object(dp, "_CLI_BIN_DIRS", (cli.parent,)), \
+             patch.object(dp.shutil, "which", side_effect={"sa-codex": "sa-codex"}.get):
+            self.assertFalse(dp._has_wrapper("codex"))
+            cli.touch()
+            cli.chmod(0o644)
+            self.assertFalse(dp._has_wrapper("codex"))
+            cli.chmod(0o755)
+            self.assertTrue(dp._has_wrapper("codex"))
+
     def test_wrapper_discovery_uses_runtime_bin_when_path_is_nonempty(self):
         fake_bin = self.policy_path.parent / "runtime-bin"
         fake_bin.mkdir()
-        exe = fake_bin / "sa-codex"
-        exe.write_text("#!/bin/sh\nexit 0\n")
-        exe.chmod(0o755)
-        with patch.object(dp, "_EXTRA_WRAPPER_DIRS", ()), \
-             patch.dict(os.environ, {"PATH": "/nonexistent", "SA_RUNTIME_BIN": str(fake_bin)}):
-            caps = dp.probe_capabilities(self.state_path)
-            self.assertEqual(caps["available_engines"], ["codex"])
-        with patch.object(dp, "_EXTRA_WRAPPER_DIRS", ()), \
-             patch.dict(os.environ, {"PATH": "", "SA_RUNTIME_BIN": str(fake_bin)}):
-            caps = dp.probe_capabilities(self.state_path)
-            self.assertEqual(caps["available_engines"], [])
+        for name in ("sa-codex", "codex"):
+            exe = fake_bin / name
+            exe.write_text("#!/bin/sh\nexit 0\n")
+            exe.chmod(0o755)
+        with patch.object(dp, "_CLI_BIN_DIRS", (fake_bin,)), \
+             patch.dict(os.environ, {"PATH": str(fake_bin / "missing"), "SA_RUNTIME_BIN": str(fake_bin)}):
+            self.assertEqual(dp.probe_capabilities(self.state_path)["available_engines"], ["codex"])
+            with patch.dict(os.environ, {"PATH": ""}):
+                self.assertEqual(dp.probe_capabilities(self.state_path)["available_engines"], [])
 
     def test_panel_ordered_count_skips_unavailable_seats_and_backfills(self):
         p = dp.default_policy()

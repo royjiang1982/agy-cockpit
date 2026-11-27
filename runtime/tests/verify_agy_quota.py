@@ -62,10 +62,18 @@ def unit(good):
             good.set(frac)
             assert pf()["should_fallback"] == expected
         good.set(0)
-        for model, prompt, target, effort in [(OPUS, "task", "claude-opus-5-5", "high"),
-                (CARBON, "task", "gemini-4-argon", "medium"), (NEON, "task", "gemini-4-argon", "medium"),
-                ("gemini-4-neon-medium", "task", "gemini-4-argon", "medium"), (HYDROGEN, "只读禁令", "gemini-3.8-flash", "high"),
-                (HYDROGEN, "纯只读侦察", "gemini-3.8-flash", "high"), (HYDROGEN, "task", "gemini-4-argon", "medium")]:
+        for model, prompt, target, effort in [
+            (OPUS, "task", "claude-opus-5-5", "high"),
+            ("claude-opus-5-5-max", "task", "claude-opus-5-5", "max"),
+            (CARBON, "task", "gemini-4-carbon", "medium"),
+            ("gemini-4-carbon-ultra", "task", "gemini-4-carbon", "ultra"),
+            (NEON, "task", "gemini-4-neon", "xhigh"),
+            ("gemini-4-neon", "task", "gemini-4-neon", "medium"),
+            ("gemini-4-neon-medium", "task", "gemini-4-neon", "medium"),
+            (HYDROGEN, "只读禁令", "gemini-4-hydrogen", "high"),
+            (HYDROGEN, "纯只读侦察", "gemini-4-hydrogen", "high"),
+            (HYDROGEN, "task", "gemini-4-hydrogen", "high"),
+        ]:
             for mode, translated in [("plan", "spec"), ("", "auto-high")]:
                 result = pf(model, prompt=prompt, mode=mode)
                 assert (result["agent"], result["model"], result["effort"], result["mode"]) == ("droid", target, effort, translated)
@@ -332,8 +340,8 @@ def history_merge_test():
 
 def main():
     clean = {k: v for k, v in os.environ.items() if not k.startswith("SA_AGY_")}
-    clean["SA_DISPATCH_POLICY_PATH"] = os.devnull
-    with patch.dict(os.environ, clean, clear=True), tempfile.TemporaryDirectory() as td, \
+    with tempfile.TemporaryDirectory() as td, \
+            patch.dict(os.environ, dict(clean, SA_DISPATCH_POLICY_PATH=str(Path(td) / "dispatch-policy.json")), clear=True), \
             patch.object(q, "find_cli_binary", return_value="/mock/droid"):
         good = UsageFixture()
         unit(good)

@@ -126,6 +126,44 @@ class GuardTests(unittest.TestCase):
                 with self.subTest(platform=platform, command=command):
                     self.assertFalse(blocked(platform, command))
 
+    def test_git_branch_operations(self):
+        mutations = (
+            'git checkout -b x', 'git checkout -B x', 'git checkout --orphan x',
+            'git checkout -t origin/x', 'git checkout --track origin/x', 'git checkout main',
+            'git switch -c x', 'git switch -C x', 'git switch --create x',
+            'git switch --force-create x', 'git switch --orphan x', 'git switch main',
+            'git branch new-feat', 'git branch new-feat main', 'git branch -- new-feat',
+            'git branch --delete x', 'git branch --move a b', 'git branch -c a b',
+            'git branch -C a b', 'git branch --copy a b', 'git branch --force x',
+            'git branch -f x', 'git branch -u origin/main', 'git branch --set-upstream-to=origin/main',
+            'git branch --unset-upstream', 'git branch --edit-description',
+            'git branch -avd x', 'git branch --list x --delete', 'git branch -v new-feat',
+            'git branch --color always', 'git branch --sort -refname new-feat',
+            'git branch --format "--list" new-feat',
+            'git branch --format "(team)" new-feat',
+            'git worktree lock x', 'git worktree unlock x', 'git worktree repair',
+        )
+        queries = (
+            'git branch', 'git branch -a', 'git branch --all', 'git branch -r',
+            'git branch --remotes', 'git branch -vv', 'git branch --verbose', 'git branch --no-verbose',
+            'git branch -vv 2>/dev/null', 'git branch --list "(team)"',
+            'git branch --show-current', 'git branch --list "feat/*"',
+            'git branch -ril "feat/*"', 'git branch --list -- "-d"',
+            'git branch --contains HEAD "feat/*"', 'git branch --no-contains=HEAD',
+            'git branch --merged main', 'git branch --no-merged=main', 'git branch --points-at HEAD',
+            'git branch --sort -refname --format "%(refname:short)"',
+            'git branch --sort=refname --format="%(refname:short)"',
+            'git branch --color=auto --abbrev=8 --ignore-case',
+            'git branch --no-color --no-abbrev --no-column', 'git branch --column=plain',
+            'git checkout -h', 'git checkout --help', 'git switch -h', 'git switch --help',
+            'git worktree list', 'git worktree list --porcelain',
+        )
+        for platform in ('agy', 'codex', 'grok'):
+            for expected, commands in ((True, mutations), (False, queries)):
+                for command in commands:
+                    with self.subTest(platform=platform, command=command):
+                        self.assertEqual(blocked(platform, command), expected)
+
     def test_tool_adapters_and_parent(self):
         for platform, name in (('agy', 'invoke_subagent'), ('codex', 'spawn_agent'), ('grok', 'spawn_subagent')):
             self.assertTrue(blocked(platform, name=name))

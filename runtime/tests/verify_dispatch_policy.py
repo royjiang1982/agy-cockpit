@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT.parent / "sidecars/cockpit"))
+import dispatch_policy as cockpit
 from agent_runtime import agy_quota as quota, daemon, dispatch_policy_reader as reader
 
 MODEL = "gemini-4-neon-medium"
@@ -185,7 +187,7 @@ class DispatchPolicyTests(unittest.TestCase):
             return request["model"], request["effort"]
 
         self.assertEqual(target(), ("custom-droid", "medium"))
-        self.assertEqual(target("gemini-4-neon-xhigh"), ("gemini-4-argon", "medium"))
+        self.assertEqual(target("gemini-4-neon-xhigh"), ("gemini-4-neon", "xhigh"))
         with patch.dict(os.environ, SA_AGY_FALLBACK_MODEL="env-droid"):
             self.assertEqual(target(), ("env-droid", "medium"))
         self.write(fallbacks={f"agy:{MODEL}": [candidate(effort="xhigh")]})
@@ -193,7 +195,7 @@ class DispatchPolicyTests(unittest.TestCase):
         with patch.dict(os.environ, SA_AGY_FALLBACK_EFFORT="low"):
             self.assertEqual(target(), ("custom-droid", "low"))
         with patch.dict(os.environ, SA_AGY_FALLBACK_MODEL=""):
-            self.assertEqual(target(), ("gemini-4-argon", "medium"))
+            self.assertEqual(target(), ("gemini-4-neon", "medium"))
         for model in ("provider/mo.del:v-2", "Model Name (Preview)"):
             with self.subTest(model=model):
                 self.write(fallbacks={f"agy:{MODEL}": [candidate(model, "")]})
@@ -233,7 +235,29 @@ class DispatchPolicyTests(unittest.TestCase):
 
     @patch.object(quota, "find_cli_binary", return_value="/mock/droid")
     @patch.object(quota, "_quota_for_model", return_value=dict(rem_frac=0, reset_ts=0))
-    def test_missing_or_invalid_chain_preserves_hardcoded_fallback(self, _snapshot, _find):
+    def test_missing_file_fallback_matches_cockpit_default_policy(self, _snapshot, _find):
+        self.assertFalse(self.path.exists())
+        policy = cockpit.default_policy()
+        caps = {"available_engines": ["droid"]}
+        models = cockpit.dispatch_models
+        missing = self.path.with_name("no-cache")
+        with patch.multiple(models, _CODEX_CACHE=missing, _GROK_CACHE=missing, _FACTORY_CACHE_DIR=missing):
+            for family in ("hydrogen", "neon", "carbon", "opus"):
+                base = models._AGY_DEFAULTS[family]
+                for suffix in ("", "low", "medium", "high", "xhigh", "max", "ultra"):
+                    model = f"{base}-{suffix}" if suffix else base
+                    with self.subTest(model=model):
+                        effort = suffix or models._AGY_DEFAULT_EFFORT[family]
+                        policy["roles"]["scout"]["primary"] = cockpit._target("agy", model, effort)
+                        selected = cockpit.resolve_role("scout", policy, caps, state_path=missing)
+                        self.assertEqual(selected["engine"], "droid")
+                        result = quota.preflight_agy_request(model=model, prompt="task")
+                        self.assertEqual((result["agent"], result["model"], result["effort"]),
+                                         (selected["engine"], selected["model"], selected["effort"]))
+
+    @patch.object(quota, "find_cli_binary", return_value="/mock/droid")
+    @patch.object(quota, "_quota_for_model", return_value=dict(rem_frac=0, reset_ts=0))
+    def test_missing_or_invalid_chain_preserves_default_fallback(self, _snapshot, _find):
         for raw in (None, b'{"fallbacks":{}}', b'{"schema_version":1,"fallbacks":{}}',
                     json.dumps(dict(schema_version=1, fallbacks={f"agy:{MODEL}": False})).encode()):
             with self.subTest(raw=raw):
@@ -244,7 +268,7 @@ class DispatchPolicyTests(unittest.TestCase):
                 self.assertIsNone(policy.fallback)
                 result = quota.preflight_agy_request(model=MODEL, prompt="task")
                 self.assertEqual((result["agent"], result["model"], result["effort"]),
-                                 ("droid", "gemini-4-argon", "medium"))
+                                 ("droid", "gemini-4-neon", "medium"))
 
     @patch.object(quota, "_quota_for_model", return_value=dict(rem_frac=0, reset_ts=0))
     def test_low_quota_without_droid_leaves_agy_and_session_unchanged(self, _snapshot):

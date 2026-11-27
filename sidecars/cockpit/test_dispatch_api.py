@@ -28,7 +28,7 @@ class DispatchAPITests(unittest.TestCase):
             patch.object(server, "STATE_FILE", self.state), patch.object(server, "INDEX_HTML_FILE", html),
             patch.object(server, "_HTML_CACHE", None), patch.object(server, "_touch_ui_activity"),
             patch.object(dispatch_api, "_STATIC_DIR", self.root),
-            patch.object(dispatch_policy.shutil, "which", side_effect=lambda exe: exe if exe in ("sa-agy", "sa-codex") else None),
+            patch.object(dispatch_policy.shutil, "which", side_effect=lambda exe: exe if exe in ("sa-agy", "agy", "sa-codex", "codex") else None),
             patch.dict(os.environ, {"SA_DISPATCH_POLICY_PATH": ""}),
         )
         for context in patches:

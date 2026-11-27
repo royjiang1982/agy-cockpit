@@ -25,11 +25,7 @@ def pick_auto_allow_option(options):
     valid = valid_options(options)
     if not valid or len({o["optionId"] for o in valid}) != len(valid):
         return None
-    for preferred in ("allow_once", "allow_always"):
-        found = next((o for o in valid if o["kind"] == preferred), None)
-        if found:
-            return found
-    return None
+    return next((o for o in valid if o["kind"] == "allow_once"), None)
 
 
 def _available_modes(session):

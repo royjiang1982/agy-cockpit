@@ -59,6 +59,42 @@ _TAMPER_CMD_RE = re.compile(
 )
 
 
+def _git_branch_mutates(rest):
+    """Allow known query options, but not bare operands without a query mode."""
+    if rest in (['-h'], ['--help']):
+        return False
+    query_flags = {'--list', '--show-current'}
+    query_filters = {'--contains', '--no-contains', '--merged', '--no-merged', '--points-at'}
+    read_flags = {'--all', '--remotes', '--verbose', '--no-verbose', '--no-color', '--no-abbrev',
+                  '--no-column', '--ignore-case', '--quiet', '--omit-empty'}
+    args = iter(rest)
+    query = operand = False
+    for arg in args:
+        if re.match(r'^(?:\d*[<>]+|&>)', arg):
+            if re.fullmatch(r'(?:\d*[<>]+|&>)', arg):
+                next(args, None)
+            continue
+        if arg == '--':
+            operand = operand or next(args, None) is not None
+            break
+        if arg == '-' or not arg.startswith('-'):
+            operand = True
+        elif not arg.startswith('--'):
+            if any(flag not in 'arlviq' for flag in arg[1:]):
+                return True
+            query |= 'l' in arg[1:]
+        else:
+            option, eq, _ = arg.partition('=')
+            if option in query_filters or (option in query_flags and not eq):
+                query = True
+            elif option in ('--sort', '--format'):
+                if not eq:
+                    next(args, None)  # Required value can itself start with '-'.
+            elif option not in ('--color', '--abbrev', '--column') and (eq or option not in read_flags):
+                return True
+    return operand and not query
+
+
 def restricted(command, base_dir=None):
     """Conservative static inspection; never evaluate shell input."""
     heredoc = _load_mod('sa-guard-heredoc.py')
@@ -107,18 +143,16 @@ def restricted(command, base_dir=None):
         if name in _AGENT_CLIS:
             return True
         sens, guard, sub_fn = _bind(match.start('cmd'))
-        tail = command[match.end():]
-        # Keep quoted spaces intact. Stop at actual shell command separators.
-        lexer = shlex.shlex(tail, posix=True, punctuation_chars=';&|()\n')
+        # Bound tail using scan_cmd (quoted separators are masked) so quoted tokens like "(team)" stay intact.
+        m_end = re.search(r'[;&|()\n]', scan_cmd[match.end():])
+        end_offset = m_end.start() if m_end else len(command) - match.end()
+        tail = command[match.end():match.end() + end_offset]
+        lexer = shlex.shlex(tail, posix=True)
         lexer.whitespace = ' \t\r'
         lexer.whitespace_split = True
         args = []
-        sep_tok = ''
         try:
             for token in lexer:
-                if token and token[0] in ';&|()\n':
-                    sep_tok = token
-                    break
                 args.append(token)
         except ValueError:
             # Malformed/uncertain quoting must not disable the guard.
@@ -132,8 +166,7 @@ def restricted(command, base_dir=None):
                         return True
             if has_c:
                 # Inner -c string was validated verbatim; skip re-scanning inside its outer quotes.
-                pos = lexer.instream.tell() - (len(sep_tok) + 1 if sep_tok else 0)
-                skip_until = max(skip_until, match.end() + max(0, pos))
+                skip_until = max(skip_until, match.end() + end_offset)
                 continue
             sep_end = match.start() + (1 if match.start() < len(scan_cmd) and scan_cmd[match.start()] in '|&\n' else 0)
             pre_sep = scan_cmd[:sep_end].rstrip(' \t\r\n')
@@ -162,10 +195,10 @@ def restricted(command, base_dir=None):
                 continue
             sub, rest = args[0], args[1:]
             if (sub in ('commit', 'push', 'pull', 'merge', 'rebase', 'cherry-pick', 'am', 'tag', 'restore')
-                or sub == 'checkout' and '--' in rest
+                or sub in ('checkout', 'switch') and rest not in (['-h'], ['--help'])
                 or sub == 'stash' and (not rest or rest[0] not in ('list', 'show'))
-                or sub == 'worktree' and any(x in ('add', 'remove', 'prune', 'move') for x in rest)
-                or sub == 'branch' and any(re.match(r'^-[^-]*[dDmM]', x) for x in rest)
+                or sub == 'worktree' and any(x in ('add', 'remove', 'prune', 'move', 'lock', 'unlock', 'repair') for x in rest)
+                or sub == 'branch' and _git_branch_mutates(rest)
                 or sub == 'reset' and '--hard' in rest
                 or sub == 'clean' and any(x == '--force' or re.match(r'^-[^-]*f', x) for x in rest)):
                 return True
