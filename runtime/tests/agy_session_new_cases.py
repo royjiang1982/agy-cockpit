@@ -265,14 +265,14 @@ def agy_session_new_cases():
         os.environ.pop("SA_AGY_APP_DATA_DIR", None)
         assert agy_app_data_dir() == DEFAULT_AGY_APP_DATA_DIR
         assert agy_server_command(["agy"]) == [
-            "agy", "acp", "--dangerously-skip-permissions", "--app-data-dir", DEFAULT_AGY_APP_DATA_DIR,
+            "agy", "acp", "--app-data-dir", DEFAULT_AGY_APP_DATA_DIR,
         ]
         os.environ["SA_AGY_APP_DATA_DIR"] = "custom-subagent"
         assert agy_server_command(["agy"]) == [
-            "agy", "acp", "--dangerously-skip-permissions", "--app-data-dir", "custom-subagent",
+            "agy", "acp", "--app-data-dir", "custom-subagent",
         ]
         os.environ["SA_AGY_APP_DATA_DIR"] = ""
-        assert agy_server_command(["agy"]) == ["agy", "acp", "--dangerously-skip-permissions"]
+        assert agy_server_command(["agy"]) == ["agy", "acp"]
         os.environ["SA_AGY_APP_DATA_DIR"] = "../bad/path"
         assert agy_app_data_dir() == DEFAULT_AGY_APP_DATA_DIR
         os.environ["SA_AGY_APP_DATA_DIR"] = "--injected"

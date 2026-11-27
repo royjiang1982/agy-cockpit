@@ -1215,7 +1215,7 @@ def test_real_cli_resident_handshakes():
     cwd = "/Users/royjiang/Dev"
 
     for agent, cmd_builder in [
-        ("agy", lambda b: [b, "acp", "--dangerously-skip-permissions"]),
+        ("agy", lambda b: [b, "acp"]),
         ("codex", lambda b: [b, "--dangerously-bypass-hook-trust", "app-server", "--stdio"]),
         ("droid", lambda b: [b, "exec", "--auto", "high", "-o", "acp"]),
         ("grok", lambda b: [b, "agent", "--always-approve", "stdio"]),
@@ -1245,10 +1245,12 @@ if __name__ == "__main__":
     from performance_cases import cli_emission_cases, client_transition_cases
     from p2_cases import session_cases, codex_cases
     from agy_session_new_cases import agy_session_new_cases
+    from acp_approval_cases import acp_approval_cases
     from host_reaper_cases import host_reaper_cases
     session_cases()
     codex_cases()
     agy_session_new_cases()
+    acp_approval_cases()
     host_reaper_cases()
     cli_emission_cases()
     client_transition_cases()

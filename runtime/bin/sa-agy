@@ -16,7 +16,7 @@ def main() -> int:
     parser.add_argument("-p", "--prompt", default=None)
     parser.add_argument("-m", "--model", default="gemini-4-hydrogen-high")
     parser.add_argument("--conversation", "-r", default="")
-    parser.add_argument("--mode", default="accept-edits")
+    parser.add_argument("--mode", default="auto")
     parser.add_argument("--output-format", default="stream-json")
     parser.add_argument("--print-response-only", action="store_true")
     parser.add_argument("positional", nargs="*")
@@ -24,7 +24,10 @@ def main() -> int:
     prompt = args.prompt if args.prompt is not None else " ".join(args.positional)
     if not prompt or not prompt.strip():
         parser.error("任务书（--prompt）不能为空")
-    mode = "plan" if args.mode == "plan" else "accept-edits"
+    raw_mode = str(args.mode or "auto").strip().lower()
+    mode = "auto" if raw_mode in ("", "auto", "turbo") else (
+        raw_mode if raw_mode in ("accept-edits", "default", "plan") else "auto"
+    )
     return run_subagent_client(
         log_file=args.log_file,
         agent="agy",

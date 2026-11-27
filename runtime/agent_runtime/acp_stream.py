@@ -7,6 +7,7 @@ import queue
 import subprocess
 import threading
 
+from .acp_approvals import AcpAutoApprover, resolve_agy_mode
 from .native_questions import NativeQuestions
 from .proc_utils import agy_app_data_dir, split_model_effort
 from .resident import ResidentServer, ResidentTurn, SteeringRejected, SteeringUnknown
@@ -14,7 +15,7 @@ from .resident import ResidentServer, ResidentTurn, SteeringRejected, SteeringUn
 
 def agy_server_command(cmd):
     binary = cmd[0] if cmd else "agy"
-    base = [binary, "acp", "--dangerously-skip-permissions"]
+    base = [binary, "acp"]
     app_dir = agy_app_data_dir()
     if app_dir:
         base.extend(["--app-data-dir", app_dir])
@@ -123,6 +124,9 @@ class AcpStream(ResidentTurn):
         self.questions = NativeQuestions(self.agent, self._write, self._events.put)
         self._closed = threading.Event()
         self._finished = threading.Event()
+        self.approvals = AcpAutoApprover(
+            self._write, lambda: self._closed.is_set() or self._finished.is_set(), self._finish
+        )
         self._prompt_sent = False
         self._prompt_id = None
         self._active_prompts = set()
@@ -165,6 +169,7 @@ class AcpStream(ResidentTurn):
         return self.returncode
 
     def cancel(self):
+        self.approvals.cancel_all(send_cancel=not self._closed.is_set())
         if self.session_id and self._prompt_sent and not self._finished.is_set():
             self._write({"method": "session/cancel", "params": {"sessionId": self.session_id}})
 
@@ -174,6 +179,7 @@ class AcpStream(ResidentTurn):
             and not self._finished.is_set()
             and not self._closed.is_set()
             and not self.questions.waiting()
+            and not self.approvals.waiting()
         )
 
     def steer(self, message_id, text, images=()):
@@ -231,6 +237,7 @@ class AcpStream(ResidentTurn):
         self.process.kill()
 
     def close(self):
+        self.approvals.cancel_all(send_cancel=False)
         if self.is_resident_turn:
             return self._resident_close()
         self.questions.close()
@@ -317,6 +324,7 @@ class AcpStream(ResidentTurn):
             self._result = 1 if error else 0
             self._flush_redaction()
             self._finished.set()
+            self.approvals.cancel_all(send_cancel=False)
             self._maybe_clear_subagent_marker()
             self.questions.close()
             self._events.put({"type": "control_delivery", "state": self.delivery_state})
@@ -343,7 +351,7 @@ class AcpStream(ResidentTurn):
             if available and model not in available:
                 raise RuntimeError(f"当前 ACP 客户端不可使用模型 {model}，请选择可用模型")
             self._rpc("session/set_model", {"sessionId": self.session_id, "modelId": model})
-            mode = str(bot.get("mode") or "accept-edits")
+            mode = resolve_agy_mode(bot, session)
             self._rpc("session/set_mode", {"sessionId": self.session_id, "modeId": mode})
             return model
 
@@ -527,6 +535,13 @@ class AcpStream(ResidentTurn):
                                     ],
                                 },
                             )
+                            continue
+                        if self.agent == "agy":
+                            err = self.approvals.handle_permission(
+                                event, session_id=self.session_id, prompt_sent=self._prompt_sent
+                            )
+                            if err:
+                                self._finish(err)
                             continue
                         self._write({"id": event["id"], "result": {"outcome": {"outcome": "cancelled"}}})
                         self._finish(
