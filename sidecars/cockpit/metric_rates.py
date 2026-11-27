@@ -18,10 +18,38 @@ def speed(kind, out, dur, calls=0):
                 tps=out / dur if dur else None, tps_calls=calls if dur else 0)
 
 
+_MAX_PLAUSIBLE_DECODE_TPS = 600.0
+_MIN_STREAM_SAMPLE_SEC = 0.05
+
+
+def _decode_sample(call):
+    """Return (tokens, dur) for a genuine streaming decode observation, or None.
+
+    When a provider buffers thinking tokens before emitting the first visible chunk,
+    thinking time is absorbed into TTFT while `stream` only covers the short visible
+    tail. Using `out / stream` then inflates TPS by 5-10x. In that case, use `resp`
+    as the streamed numerator when plausible, or drop non-streaming burst samples.
+    """
+    if not call.get("is_streamed"):
+        return None
+    dur = number(call.get("stream"))
+    out = number(call.get("out"))
+    if not dur or dur < _MIN_STREAM_SAMPLE_SEC or out is None or out <= 0:
+        return None
+    if out / dur <= _MAX_PLAUSIBLE_DECODE_TPS:
+        return out, dur
+    think = number(call.get("think"))
+    resp = number(call.get("resp"))
+    ttft = number(call.get("ttft"))
+    if think and resp and ttft is not None and ttft > dur and (resp / dur) <= _MAX_PLAUSIBLE_DECODE_TPS:
+        return resp, dur
+    return None
+
+
 def db_perf(calls):
-    streams = [c for c in calls if c["is_streamed"]]
+    samples = [s for c in calls if (s := _decode_sample(c)) is not None]
     first = [c["ttft"] for c in calls if c["ttft"] is not None]
-    rate = speed("decode", sum(c["out"] for c in streams), sum(c["stream"] for c in streams), len(streams))
+    rate = speed("decode", sum(s[0] for s in samples), sum(s[1] for s in samples), len(samples))
     measured = [c for c in calls if c.get("end_ts", 0) > c.get("start_ts", 0) > 0 and not c.get("is_estimated")]
     request = speed("request", sum(c["out"] for c in measured),
                     sum(c["end_ts"] - c["start_ts"] for c in measured), len(measured))
