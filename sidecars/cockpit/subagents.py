@@ -42,6 +42,7 @@ from metric_grok import read_grok
 from agy_cost_events import step_update_time, transcript_model
 from metric_items import make_sub_item as _make_sub_item, summarize
 from pricing import MODEL_MAP, canonical_model_label, estimate_source, calc_call_cost, model_quota_family, short_model_hint
+from subagent_labels import dispatch_paths, dispatch_patterns, extract_cli_task_label, format_native_label
 
 CODEX_SESSIONS_DIR = HOME / ".codex" / "sessions"
 PI_SESSIONS_DIR = HOME / ".pi" / "agent" / "sessions"
@@ -53,12 +54,7 @@ RE_SA_VIEW = re.compile(rf"▶\s*(agy|codex|claude|pi|droid|grok)\s+会话\s+({U
 RE_CONV_ID = re.compile(rf'"conversation_id"\s*:\s*"({UUID_PAT})"')
 RE_SESSION_ID = re.compile(rf'"session_id"\s*:\s*"({UUID_PAT})"')
 RE_GROK_SESSION_ID = re.compile(rf'"sessionId"\s*:\s*"({UUID_PAT})"')
-RE_SA_RUN = re.compile(r"""sa-run\.sh\s+(?:(\d+)\s+([12])\s+)?([^\s"']+\.jsonl)\s+([^\s"']+)""")
-RE_AGY_RESUME = re.compile(rf"\b(?:agy|sa-agy)\s+--conversation\s+({UUID_PAT})")
-RE_CODEX_RESUME = re.compile(rf"\b(?:codex\s+exec\s+resume|sa-codex\s+resume)\s+({UUID_PAT})")
-RE_DROID_RESUME = re.compile(rf"\b(?:droid\s+exec|sa-droid)\b.*?\s-s\s+({UUID_PAT})")
-RE_GROK_RESUME = re.compile(rf"\b(?:grok|sa-grok)\b.*?\s(?:-r|--resume|-s|--session-id)\s+({UUID_PAT})")
-RE_PI_RESUME = re.compile(rf"\b(?:pi|sa-pi)\b.*?\s(?:-s|--session)\s+({UUID_PAT})")
+RE_SA_RUN, RE_AGY_RESUME, RE_CODEX_RESUME, RE_DROID_RESUME, RE_GROK_RESUME, RE_PI_RESUME = dispatch_patterns(UUID_PAT)
 RE_DIRECT_AGY = re.compile(r"(?:^|[\s/&;|])(?:agy\s+-p\b|sa-agy\b)")
 RE_DIRECT_CODEX = re.compile(r"(?:^|[\s/&;|])(?:codex\s+exec\b|sa-codex\b)")
 RE_DIRECT_PI = re.compile(r"(?:^|[\s/&;|])(?:pi\s+-p\b|sa-pi\b)")
@@ -598,7 +594,7 @@ def _parse_step127_subagents(payload: bytes, args: dict) -> list[tuple[str, str,
     out: list[tuple[str, str, str, str]] = []
     for i, (sid, tpath) in enumerate(spawned):
         sp = specs[i] if i < len(specs) and isinstance(specs[i], dict) else {}
-        role = str(sp.get("Role") or sp.get("TypeName") or "subagent")
+        role = format_native_label(str(sp.get("Role") or sp.get("TypeName") or "subagent"), str(sp.get("Prompt") or sp.get("Task") or ""))
         m_hint = str(sp.get("Model") or "")
         out.append((sid, role, m_hint, tpath))
     return out
@@ -859,7 +855,7 @@ def discover_subagent_stubs(conv_id: str) -> list[dict]:
                     found[sub_id] = {
                         "id": sub_id,
                         "agent": "builtin",
-                        "label": role,
+                        "label": format_native_label(role, str(args.get("Prompt") or args.get("Task") or "")),
                         "model_hint": str(args.get("Model") or ""),
                         "effort_hint": "",
                         "step_status": st_status,
@@ -885,21 +881,20 @@ def discover_subagent_stubs(conv_id: str) -> list[dict]:
                 continue
 
             m_cd = RE_CD_DIR.search(cmd)
-            cwd = m_cd.group(1).strip("\"'").replace("~", str(HOME)) if m_cd else str(args.get("Cwd") or (HOME / "Dev"))
+            cwd = str(Path(args.get("Cwd") or HOME / "Dev") / (m_cd[1].strip("\"'").replace("~", str(HOME)) if m_cd else ""))
             m_long = list(RE_MODEL_LONG.finditer(cmd))
             m_short = list(RE_MODEL_SHORT.finditer(cmd))
             model_hint = m_long[-1].group(1) if m_long else (m_short[-1].group(1) if m_short else "")
             m_eff = list(RE_EFFORT_ARG.finditer(cmd))
             effort_hint = (m_eff[-1].group(1) or m_eff[-1].group(2) or m_eff[-1].group(3)) if m_eff else ""
 
-            sa_matches = list(RE_SA_RUN.finditer(cmd))
+            sa_matches = list(RE_SA_RUN.finditer(cmd.split("--prompt", 1)[0]))
             prog = ""
             label = ""
             raw_file: Path | None = None
             if sa_matches:
                 m = sa_matches[-1]
-                raw_path_str = m.group(3).replace("~", str(HOME))
-                prog = Path(m.group(4)).name
+                raw_path_str, prog = dispatch_paths(m, HOME)
                 if prog.startswith("sa-"):
                     prog = prog[3:]
                 stem = Path(raw_path_str).stem
@@ -936,6 +931,7 @@ def discover_subagent_stubs(conv_id: str) -> list[dict]:
                     label = f"{prog}_{cat_stem}"
                 else:
                     label = f"{prog}-cli"
+            label = extract_cli_task_label(cmd, args, prog, label if raw_file else "", label.removeprefix(f"{prog}_") if not raw_file and label.startswith(f"{prog}_") else "")
 
             sub_id: str | None = None
             resume_id: str | None = None
@@ -1175,6 +1171,8 @@ def discover_subagent_stubs(conv_id: str) -> list[dict]:
     _SUBAGENT_STUBS_CACHE[conv_id] = (cache_key, stubs, time.monotonic(), dependencies, incomplete)
     return [dict(stub) for stub in stubs]
 
+
+discover_subagents = discover_subagent_stubs
 
 def _resolve_subagent_status(st: dict, sub_running: bool | None = None, sub_err: bool = False) -> str:
     if st.get("killed"):

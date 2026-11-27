@@ -61,6 +61,8 @@ python3 ~/.gemini/config/plugins/agy-cockpit/skills/cockpit-dispatch/scripts/res
 
 **统一执行格式**：`sa-run.sh` 是前台包装器，打印进度，每次截断覆盖同名 `.jsonl`；续接须换新日志文件名。后台与超时兜底由宿主工具负责（轻侦察 `120s` / 慢轨 `270s`），同回合先向用户简述分工，再切后台等待唤醒。
 
+`.jsonl` 日志文件名建议使用不超过 10 字的核心任务名，方便在 Cockpit 面板辨认。
+
 ```bash
 PLUGIN_BIN=~/.gemini/config/plugins/agy-cockpit/runtime/bin
 "$PLUGIN_BIN/sa-run.sh" tmp/<任务>/<名>.jsonl "$PLUGIN_BIN/sa-<engine>" <参数> --prompt "<任务书>"
@@ -103,6 +105,7 @@ PLUGIN_BIN=~/.gemini/config/plugins/agy-cockpit/runtime/bin
 
 ### B. 完整任务书（`standard` / `deep` / `expert`，须附文末「子代理须知」）
 - **身份声明**：开头显式标注「被派出子代理任务书（禁止派生子代理）」。
+- **Title**：可在 `## Title` 下一行写不超过 10 字的核心任务名，供 Cockpit 面板展示。
 - **Goal**：一句话写清要达成的可验证结果。
 - **Context**：已知资料、路径、约束决策、目标受众或口径定义。
 - **Constraints**：允许改动范围、单文件 ≤400 行抽独立叶子（历史大文件 ≤20 行接线）、禁区与最小必要原则。

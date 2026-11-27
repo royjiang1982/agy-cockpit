@@ -87,6 +87,7 @@ WATCHED_PY_FILES = [
     SIDECAR_DIR / "pricing.py",
     SIDECAR_DIR / "analyzer.py",
     SIDECAR_DIR / "subagents.py",
+    *(SIDECAR_DIR / f"{name}.py" for name in ("subagent_labels", "test_subagent_labels")),
     SIDECAR_DIR / "rpc_quota.py",
     SIDECAR_DIR / "agy_quota.py",
     *(SIDECAR_DIR / f"{name}.py" for name in ("dispatch_models", "dispatch_policy", "dispatch_api", "swarm_subagents", "test_dispatch_policy", "test_dispatch_api", "test_swarm_subagents")),
