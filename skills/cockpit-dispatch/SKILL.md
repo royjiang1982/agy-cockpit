@@ -9,7 +9,7 @@ description: >-
 # AGY Cockpit 通用子代理派发手册
 
 > **作用域与优先级守卫**：本 Skill 仅限主代理使用；子代理 / Swarm Worker（含 `SA_SUBAGENT=1` 或带任务书/brief）严禁派单。
-> 当 Cockpit 开启「接管子代理编排」（`enabled: true`）时，子代理编排路由以 Cockpit 解析结果为准，忽略用户或项目既有派发策略；关闭时（`mode == "disabled"`）切回用户或项目原有设置。用户与工作区的安全、凭据、Git 提交与验收红线始终最高优先，不得放宽。
+> 当 `resolve.py` 返回 `mode != "disabled"`（即 Cockpit 已开启「接管子代理编排」）时，子代理引擎/模型/席位路由以 Cockpit 解析结果为准，覆盖用户或项目既有路由配置；当 `mode == "disabled"` 时切回用户或项目原有设置。用户与工作区的安全、凭据、Git 提交、小修/准入与验收红线始终最高优先，不得放宽。
 
 ---
 
@@ -46,8 +46,8 @@ python3 ~/.gemini/config/plugins/agy-cockpit/skills/cockpit-dispatch/scripts/res
   - `Model` 使用解析返回的 `model`（`flash` / `inherit` / `pro`）。
 - 适合单步任务、快搜侦察，以及无外部引擎时的**真盲审独立多席位**（并发调用多个 `invoke_subagent`，各席互不可见）。
 
-### 2. `channel == "swarm"`（内置精确模型 / 公开协作增强）
-- **明确授权**：当用户在 Cockpit 设置中开启 `allow_swarm` 且 `resolve.py` 返回 `channel == "swarm"` 时，本 Skill 授权主代理按以下约束调用 `swarm` 工具：
+### 2. `channel == "swarm"`（可选公开协作增强）
+- **明确授权**：当策略 JSON 中显式开启 `allow_swarm: true` 且 `resolve.py` 返回 `channel == "swarm"` 时，本 Skill 授权主代理按以下约束调用 `swarm` 工具：
   1. 先调用 `swarm(action:"models", all:true)` 核实目标模型名确在本会话可用列表内；若不可用则顺延下一备用候选，**不猜近似名**。
   2. 为单角色精确模型任务调用 `swarm(action:"add", name:<role>, model:<model>, brief:<任务书>)`；编辑代码时多 Worker 并行须用 `workspace:"share"`。
   3. **运行中 Fallback 热切**：仅在目标 Worker 状态为 `waiting` 且因配额/限流受阻时，调用 `swarm(action:"model", name:..., model:<fallback_model>)` 保留对话历史续跑。
@@ -55,10 +55,14 @@ python3 ~/.gemini/config/plugins/agy-cockpit/skills/cockpit-dispatch/scripts/res
 - **盲审边界诚实声明**：Swarm 共享板对所有成员公开，用于多视角公开辩论与协作制作；若任务明确要求**互不见面的严格独立盲审**，禁止用 Swarm 共享板冒充，改用并发独立 `invoke_subagent` 或外部 CLI，做不到则明确汇报缺口。
 
 ### 3. `channel == "cli"`（外部常驻引擎增强）
-- 仅在 `resolve.py` 探测到本机 `PATH` 中已安装对应包装命令（如 `sa-agy` / `sa-codex` / `sa-droid` / `sa-grok`）时返回。
-- 主代理直接调用解析返回的 `engine` 命令与对应参数（后台执行并挂超时兜底）：
-  - `sa-agy` 仅传完整 `--model <model>`（不传独立 `--effort` 参数）；`sa-codex` 传 `-m <model> --effort <effort>`；`sa-droid` 传 `-m <model> -r <effort>`；`sa-grok` 传 `-m <model> --effort <effort>`。
-- **只读边界声明**：外部 CLI（`sa-agy` / `sa-codex` / `sa-droid`）与 `swarm` 的 `read_only: true` 属于**任务书与治理约束，并非 OS 只读沙箱**；若任务要求强系统只读隔离，优先使用内置 `invoke_subagent(TypeName="research")`，并在任务书中明写只读禁令。
+- 在 `resolve.py` 探测到 `PATH` 或常用包装目录（`SA_RUNTIME_BIN`、`~/Dev/_shared/agent-runtime/bin`、`~/.gemini/config/bin`、`~/.local/bin`）中已安装对应包装命令（`sa-agy` / `sa-codex` / `sa-droid` / `sa-grok` / `sa-pi`）时返回；若对应目录不在当前 shell `PATH`，请使用绝对路径调用。
+- 主代理按解析返回的 `engine` 与参数后台执行并挂超时兜底（当 `effort` 为空串时省略 `--effort`/`-r`）：
+  - `sa-agy` 仅传完整 `--model <model>`（不传独立 `--effort` 参数）；
+  - `sa-codex` 传 `-m <model> --effort <effort>`（`codex_fast` 由 `sa-codex` 自动读取 Cockpit 策略生效，无需手传）；
+  - `sa-droid` 传 `-m <model> -r <effort>`；
+  - `sa-grok` 传 `-m <model> --effort <effort>`；
+  - `sa-pi` 传 `-m <model>:<effort>`（无 `effort` 时仅 `-m <model>`）。
+- **只读边界声明**：外部 CLI（`sa-agy` / `sa-codex` / `sa-droid` / `sa-grok` / `sa-pi`）与 `swarm` 的 `read_only: true` 属于**任务书与治理约束，并非 OS 只读沙箱**（其中 `sa-droid` 与 `sa-pi` 未挂 `sa-guard` 钩子）；若任务要求强系统只读隔离，优先使用内置 `invoke_subagent(TypeName="research")`，并在任务书中明写只读禁令。
 - **失败态区分（禁止盲目重派）**：
   - **未启动即失败 / 预检不可用**：安全改用 `fallbacks` 列表中的下一可用候选（直至内置兜底）。
   - **已启动后中途失败 / 断线**：先核对现场产物与改动，优先同会话续接或明确交接，绝不把已产生写操作或外部副作用的任务当作全新单重发。
@@ -68,12 +72,13 @@ python3 ~/.gemini/config/plugins/agy-cockpit/skills/cockpit-dispatch/scripts/res
 ## 三、通用任务书模板
 
 ### A. 快搜短卡（仅限 `scout` 纯只读）
-1. **只读禁令**：纯只读核查，禁止写/改/删文件、派生子代理、读取凭据。
+1. **只读禁令**：声明本任务为【被派出子代理 · 纯只读】，禁止写/改/删文件、派生子代理、读取凭据。
 2. **问题**：1–3 个具体事实问题。
 3. **范围**：限定目录、文档、页面或数据口径，命中即停。
 4. **交付**：依据路径/出处 + ≤5 条结论 + 查过范围，不提改写方案。
 
 ### B. 完整任务书（`standard` / `deep` / `expert`）
+- **身份声明**：开头显式标注「被派出子代理任务书（禁止派生子代理）」（对内置 `self` 与 `swarm` 尤为重要）。
 - **Goal**：一句话写清要达成的可验证结果。
 - **Context**：已知资料、路径、约束决策、目标受众或口径定义。
 - **Constraints**：允许改动范围、禁区（禁止擅自提交/发布/写外部服务/读取凭据/派生子代理）、最小必要原则。
@@ -81,3 +86,7 @@ python3 ~/.gemini/config/plugins/agy-cockpit/skills/cockpit-dispatch/scripts/res
   - *软件研发*：指定定点单测/类型检查命令，附变更文件与真实命令输出。
   - *视频制作*：分镜/脚本/字幕/素材清单路径、时长与画幅口径、自检要点。
   - *亚马逊选品/运营分析*：数据来源与时间窗口、计算口径、结论与风险分离、禁止编造未核实数字。
+
+### C. 多方盲审任务书（`panel`，纯只读并发）
+- **盲审纪律**：主代理不充任席位；各席位拿到同一份材料并发独立作答、互不见面，任务书开头显式声明「被派出子代理 · 纯只读独立评审，禁止写文件或派生子代理」。
+- **输出结构**：区分「已确认缺陷（附出处/行号）」「边界风险」「额外考虑」，主代理核实证据后统一汇总共识与分歧交用户拍板。

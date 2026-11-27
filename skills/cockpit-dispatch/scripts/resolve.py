@@ -21,6 +21,11 @@ def main(argv=None):
     parser.add_argument("--state-path", type=Path)
     parser.add_argument("--count", type=int, default=None)
     args = parser.parse_args(argv)
+    if args.count is not None:
+        if args.role != "panel":
+            parser.error("--count can only be used with --role panel")
+        if args.count < 1:
+            parser.error("--count must be a positive integer")
     if args.capabilities:
         result = dispatch_policy.probe_capabilities(state_path=args.state_path)
     elif args.all:

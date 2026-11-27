@@ -16,7 +16,7 @@ from pathlib import Path
 import dispatch_models
 
 DATA_DIR = Path.home() / ".gemini/antigravity/sidecar_data/statusline"
-STATE_PATH = DATA_DIR / "state.json"
+STATE_PATH = DATA_DIR / "view_state.json"
 SCHEMA_VERSION = 1
 ROLE_READ_ONLY = {"scout": True, "standard": False, "deep": False, "expert": False, "panel": True}
 ENGINES = ("agy", "codex", "droid", "grok", "pi")
@@ -225,7 +225,11 @@ def reset_policy(*, expected_revision, policy_path=None):
     return _write_policy(default_policy(), expected_revision, policy_path)
 
 def _quota_cache(state_path):
-    paths = (Path(state_path),) if state_path is not None else (STATE_PATH, STATE_PATH.with_name("view_state.json"))
+    if state_path is not None:
+        paths = (Path(state_path),)
+    else:
+        alt = STATE_PATH.with_name("state.json" if STATE_PATH.name == "view_state.json" else "view_state.json")
+        paths = (STATE_PATH, alt)
     for path in paths:
         try:
             state = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object)
@@ -234,7 +238,7 @@ def _quota_cache(state_path):
         except FileNotFoundError:
             continue
         except (OSError, ValueError, RecursionError):
-            break
+            continue
     return {}
 
 def _number(value):
@@ -295,11 +299,11 @@ def _agy_quota_family(model):
         return "3p"
     return "gemini" if names.intersection(("gemini", "neon", "argon", "carbon", "hydrogen", "flash")) else None
 
-def _selection(target, name, policy, caps):
+def _selection(target, name, policy, caps, state_path=None):
     channel, engine, raw_model, effort = (target[key] for key in ("channel", "engine", "model", "effort"))
     if not target.get("enabled", True):
         return None, "candidate_disabled"
-    model = dispatch_models.resolve_model_id(engine, raw_model, effort) if channel == "cli" else raw_model
+    model = dispatch_models.resolve_model_id(engine, raw_model, effort, agy_state_path=state_path) if channel == "cli" else raw_model
     if channel == "cli":
         if not policy["external_enabled"]:
             return None, "external_disabled"
@@ -327,14 +331,14 @@ def _builtin_tails(name, policy):
     yield dict(mode="invoke_subagent", channel="invoke_subagent", engine="agy", model=model,
                effort="", type="research" if ROLE_READ_ONLY[name] else "self", read_only=ROLE_READ_ONLY[name])
 
-def _resolve_target(primary, name, policy, caps):
+def _resolve_target(primary, name, policy, caps, state_path=None):
     effort = "" if primary["effort"] == "same" else primary["effort"]
-    resolved_model = dispatch_models.resolve_model_id(primary["engine"], primary["model"], effort) if primary["channel"] == "cli" else primary["model"]
+    resolved_model = dispatch_models.resolve_model_id(primary["engine"], primary["model"], effort, agy_state_path=state_path) if primary["channel"] == "cli" else primary["model"]
     chain = next((policy["fallbacks"][k] for k in dispatch_models.fallback_lookup_keys(primary["engine"], primary["model"], resolved_model) if k in policy["fallbacks"]), [])
     available, skipped = [], []
     for i, target in enumerate([primary, *chain]):
         candidate = dict(target, effort=effort) if target["effort"] == "same" else target
-        result, why = _selection(candidate, name, policy, caps)
+        result, why = _selection(candidate, name, policy, caps, state_path)
         if result is None:
             skipped.append(dict(channel=target["channel"], engine=target["engine"], model=target["model"], reason=why))
         elif not any(all(prior[k] == result[k] for k in ("channel", "engine", "model", "effort")) for prior in available):
@@ -351,17 +355,17 @@ def _panel_seat_meta(seat, order):
     seat["blind_reason"] = "independent_concurrent_call" if seat["blind_isolated"] else "shared_swarm_board"
     return seat
 
-def _resolve_panel(config, policy, caps, count):
+def _resolve_panel(config, policy, caps, count, state_path=None):
     enabled = [seat for seat in config["seats"] if seat.get("enabled", True)]
     skipped = []
     if count is None:
-        seats = [_panel_seat_meta(_resolve_target(seat, "panel", policy, caps), i) for i, seat in enumerate(enabled, 1)]
+        seats = [_panel_seat_meta(_resolve_target(seat, "panel", policy, caps, state_path), i) for i, seat in enumerate(enabled, 1)]
     else:
         if type(count) is not int or count < 1:
             raise ValueError("panel count must be a positive integer")
         seats = []
         for i, seat in enumerate(enabled, 1):
-            res = _resolve_target(seat, "panel", policy, caps)
+            res = _resolve_target(seat, "panel", policy, caps, state_path)
             if res["reason"] in ("primary", "fallback"):
                 seats.append(_panel_seat_meta(res, i))
                 if len(seats) >= count:
@@ -369,8 +373,10 @@ def _resolve_panel(config, policy, caps, count):
             else:
                 why = res["skipped"][0]["reason"] if res["skipped"] else "unavailable"
                 skipped.append(dict(order=i, channel=seat["channel"], engine=seat["engine"], model=seat["model"], reason=why))
+        next_order = max((s["order"] for s in seats), default=0)
         while len(seats) < count:
-            seats.append(_panel_seat_meta(dict(next(_builtin_tails("panel", policy)), reason="builtin_fallback", fallbacks=[], skipped=[]), len(seats) + 1))
+            next_order += 1
+            seats.append(_panel_seat_meta(dict(next(_builtin_tails("panel", policy)), reason="builtin_fallback", fallbacks=[], skipped=[]), next_order))
     channels = {seat["channel"] for seat in seats}
     out = dict(mode="panel", channel=next(iter(channels)) if len(channels) == 1 else "panel", read_only=True, seats=seats,
                blind_isolated=bool(seats) and all(s["blind_isolated"] for s in seats),
@@ -385,9 +391,9 @@ def resolve_role(role, policy=None, capabilities=None, *, policy_path=None, stat
         return dict(mode="disabled", channel="direct", reason="dispatch_disabled")
     caps = probe_capabilities(state_path) if capabilities is None else capabilities
     cfg = policy["roles"][role]
-    return _resolve_panel(cfg, policy, caps, count) if role == "panel" else _resolve_target(cfg["primary"], role, policy, caps)
+    return _resolve_panel(cfg, policy, caps, count, state_path) if role == "panel" else _resolve_target(cfg["primary"], role, policy, caps, state_path)
 
 def resolve_all(policy=None, capabilities=None, *, policy_path=None, state_path=None):
     policy = load_policy(policy_path)["policy"] if policy is None else policy
     caps = probe_capabilities(state_path) if capabilities is None else capabilities
-    return {role: resolve_role(role, policy, caps) for role in ROLE_READ_ONLY}
+    return {role: resolve_role(role, policy, caps, state_path=state_path) for role in ROLE_READ_ONLY}

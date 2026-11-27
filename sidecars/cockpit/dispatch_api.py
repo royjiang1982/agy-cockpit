@@ -12,6 +12,7 @@ import dispatch_policy
 _CSRF_TOKEN = secrets.token_urlsafe(24)
 _STATIC_DIR = Path(__file__).resolve().parent
 _ASSETS = {
+    "/static/dispatch_drawer.catalog.js": ("dispatch_drawer.catalog.js", "text/javascript; charset=utf-8"),
     "/static/dispatch_drawer.js": ("dispatch_drawer.js", "text/javascript; charset=utf-8"),
     "/static/dispatch_drawer.css": ("dispatch_drawer.css", "text/css; charset=utf-8"),
 }
@@ -41,9 +42,12 @@ _LOOPBACK_HOST = re.compile(r"^(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})
 def verify_write_request(handler, expected_host_port):
     """Validate framing, exact trusted Origin, and CSRF before reading any body."""
     headers = handler.headers
-    origin = _single(headers, "Origin")
+    origins = headers.get_all("Origin", [])
+    if len(origins) > 1:
+        raise WriteRequestError(403, "invalid origin")
+    origin = origins[0] if len(origins) == 1 else None
     plugin_origin = f"plugin://agy-cockpit--cockpit-{expected_host_port}"
-    proxied_plugin = origin is None and _single(headers, "X-Cockpit-Plugin-Origin") == plugin_origin
+    proxied_plugin = len(origins) == 0 and _single(headers, "X-Cockpit-Plugin-Origin") == plugin_origin
     exact_hosts = {f"{name}:{expected_host_port}" for name in ("localhost", "127.0.0.1", "[::1]")}
     hosts = headers.get_all("Host", [])
     host = hosts[0] if len(hosts) == 1 else None

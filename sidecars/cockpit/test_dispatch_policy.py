@@ -366,11 +366,17 @@ class DispatchPolicyTests(unittest.TestCase):
                          [(2, "agy", "gemini-4-neon-xhigh"), (3, "agy", "claude-opus-5-5-high")])
         four = dp.resolve_role("panel", p, caps, count=4)
         self.assertEqual(len(four["seats"]), 4)
-        self.assertEqual([(s["channel"], s["engine"], s["model"]) for s in four["seats"]],
-                         [("cli", "agy", "gemini-4-neon-xhigh"), ("cli", "agy", "claude-opus-5-5-high"),
-                          ("cli", "grok", "grok-4.7"), ("invoke_subagent", "agy", "flash")])
+        self.assertEqual([(s["order"], s["channel"], s["engine"], s["model"]) for s in four["seats"]],
+                         [(2, "cli", "agy", "gemini-4-neon-xhigh"), (3, "cli", "agy", "claude-opus-5-5-high"),
+                          (4, "cli", "grok", "grok-4.7"), (5, "invoke_subagent", "agy", "flash")])
         with self.assertRaises(ValueError):
             dp.resolve_role("panel", p, caps, count=0)
+        script = Path(__file__).resolve().parents[2] / "skills/cockpit-dispatch/scripts/resolve.py"
+        for bad_args in (("--role", "scout", "--count", "1"), ("--role", "panel", "--count", "0")):
+            child = subprocess.run([sys.executable, str(script), "--policy-path", str(self.policy_path), *bad_args],
+                                   capture_output=True, text=True, timeout=5)
+            self.assertEqual(child.returncode, 2)
+            self.assertNotIn("Traceback", child.stderr)
 
     def test_versionless_families_auto_resolve_to_latest_cached_models(self):
         import dispatch_models as dm
@@ -381,7 +387,7 @@ class DispatchPolicyTests(unittest.TestCase):
         grok_cache.write_text(json.dumps({"models": {"grok-4.7": {}, "grok-5.1": {}, "grok-5.1-build-fast": {}}}))
         agy_state.write_text(json.dumps({"dynamic_models": {"1900": ["Gemini 4.5 Neon (High)"], "1901": ["Claude Opus 6.0"]}}))
         with patch.object(dm, "_CODEX_CACHE", codex_cache), patch.object(dm, "_GROK_CACHE", grok_cache), \
-             patch.object(dm, "_AGY_STATE", agy_state):
+             patch.object(dm, "_AGY_STATE", agy_state), patch.object(dm, "_FACTORY_CACHE_DIR", self.policy_path.with_name("no-factory")):
             self.assertEqual(dm.resolve_model_id("codex", "astra"), "gpt-6.5-astra")
             self.assertEqual(dm.resolve_model_id("codex", "sol"), "gpt-6.4-sol")
             self.assertEqual(dm.resolve_model_id("grok", "grok"), "grok-5.1")

@@ -202,6 +202,9 @@ class DispatchAPITests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", b'{"revision":2}',
                                       {**proxy_headers, "Content-Length": "14"},
                                       extra_headers=[("Host", f"localhost:{self.port + 5}")])[0], 403)
+        self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", b'{"revision":2}',
+                                      {**proxy_headers, "Content-Length": "14"},
+                                      extra_headers=[("Origin", "https://evil.example"), ("Origin", "https://evil2.example")])[0], 403)
 
     def test_ipv4_host_rejects_ipv6_https_and_mismatched_port_origins(self):
         host = f"127.0.0.1:{self.port}"
@@ -266,12 +269,13 @@ class DispatchAPITests(unittest.TestCase):
     def test_dispatch_drawer_serves_real_assets_and_valid_javascript(self):
         assets = Path(__file__).resolve().parent
         with patch.object(dispatch_api, "_STATIC_DIR", assets):
-            for suffix, mime in (("js", "text/javascript"), ("css", "text/css")):
-                name = f"dispatch_drawer.{suffix}"
+            for name, mime in (("dispatch_drawer.catalog.js", "text/javascript"),
+                               ("dispatch_drawer.js", "text/javascript"),
+                               ("dispatch_drawer.css", "text/css")):
                 status, body, content_type = self.request("GET", f"/static/{name}?v=1")
                 self.assertEqual(status, 200, name)
                 self.assertEqual(content_type, mime + "; charset=utf-8")
                 self.assertEqual(body, (assets / name).read_bytes())
-        result = subprocess.run(["node", "--check", str(assets / "dispatch_drawer.js")],
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        for js in ("dispatch_drawer.catalog.js", "dispatch_drawer.js"):
+            result = subprocess.run(["node", "--check", str(assets / js)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)

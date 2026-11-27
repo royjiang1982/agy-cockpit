@@ -133,10 +133,11 @@ def _latest_agy(state_path: Path | None = None) -> dict[str, str]:
 
 
 def _latest_droid(codex_cache_path: Path | None = None, agy_state_path: Path | None = None,
-                  grok_cache_path: Path | None = None) -> dict[str, str]:
+                  grok_cache_path: Path | None = None, factory_cache_dir: Path | None = None) -> dict[str, str]:
     merged = {**_latest_agy(agy_state_path), **_latest_codex(codex_cache_path), **_latest_grok(grok_cache_path)}
-    if _FACTORY_CACHE_DIR.is_dir():
-        for path in sorted(_FACTORY_CACHE_DIR.glob("*.json"))[:4]:
+    fdir = factory_cache_dir if factory_cache_dir is not None else _FACTORY_CACHE_DIR
+    if fdir.is_dir():
+        for path in sorted(fdir.glob("*.json"))[:4]:
             doc = _read_json_cached(path)
             avail = doc.get("availableModels") if isinstance(doc, dict) else None
             if not isinstance(avail, dict):
@@ -144,9 +145,17 @@ def _latest_droid(codex_cache_path: Path | None = None, agy_state_path: Path | N
             for slug in avail:
                 if not isinstance(slug, str):
                     continue
-                m = _RE_CODEX.fullmatch(slug)
-                if m and m.group(2) in merged and _ver_tuple(m.group(1)) > _ver_tuple(merged[m.group(2)]):
-                    merged[m.group(2)] = slug
+                low = slug.lower()
+                for regex, fam_idx, ver_idx, fixed in (
+                    (_RE_CODEX, 2, 1, None), (_RE_AGY_GEMINI, 2, 1, None),
+                    (_RE_AGY_CLAUDE, 1, 2, None), (_RE_GROK, 0, 1, "grok"), (_RE_GROK_FAST, 0, 1, "grok-fast"),
+                ):
+                    m = regex.fullmatch(low)
+                    if m:
+                        fam = fixed or m.group(fam_idx)
+                        if fam in merged and _ver_tuple(m.group(ver_idx)) > _ver_tuple(merged[fam]):
+                            merged[fam] = slug
+                        break
     return merged
 
 
@@ -213,10 +222,10 @@ def fallback_lookup_keys(engine: str, model: str, resolved_model: str) -> tuple[
 
 
 def latest_family_map(*, codex_cache_path: Path | None = None, grok_cache_path: Path | None = None,
-                      agy_state_path: Path | None = None) -> dict[str, dict[str, str]]:
+                      agy_state_path: Path | None = None, factory_cache_dir: Path | None = None) -> dict[str, dict[str, str]]:
     return {
         "agy": _latest_agy(agy_state_path),
         "codex": _latest_codex(codex_cache_path),
         "grok": _latest_grok(grok_cache_path),
-        "droid": _latest_droid(codex_cache_path, agy_state_path),
+        "droid": _latest_droid(codex_cache_path, agy_state_path, grok_cache_path, factory_cache_dir),
     }

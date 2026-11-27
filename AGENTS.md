@@ -4,7 +4,7 @@
 
 ## 目录结构
 - `plugin.json` / `assets/` / `README.md`：插件清单与资源
-- `rules/AGENTS.md`：常驻极短触发规则（≤5 行，向已有工作区规范让位）
+- `rules/AGENTS.md`：常驻极短触发规则（≤5 行；开启「接管子代理编排」时接管派发路由，关闭时切回用户/项目原有设置）
 - `skills/cockpit-dispatch/`：通用 5 角色派发 Skill 与零端口本地解析脚本 `scripts/resolve.py`
 - `sidecars/cockpit/`：驾驶舱 Python Sidecar、设置抽屉静态资源与单测
 - `install.sh`：带 `py_compile` 预检的单向发布脚本，同步到 `~/.gemini/config/plugins/agy-cockpit/`（绝不触碰 `~/.gemini/antigravity/sidecar_data/`）

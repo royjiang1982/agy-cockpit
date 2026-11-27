@@ -6,6 +6,7 @@
 <meta name="cockpit-csrf" content="__CSRF_TOKEN__" />
 <title>AGY Cockpit</title>
 <link rel="stylesheet" href="/static/dispatch_drawer.css?v=__UI_VERSION__" />
+<script defer src="/static/dispatch_drawer.catalog.js?v=__UI_VERSION__"></script>
 <script defer src="/static/dispatch_drawer.js?v=__UI_VERSION__"></script>
 <style>
   :root {
@@ -2092,7 +2093,10 @@
     });
   }
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape') { setQuotaDrawer(false); if (footBarEl) footBarEl.focus(); }
+    if (event.key === 'Escape') {
+      if (event.defaultPrevented || document.getElementById('dispatchDrawer')?.open) return;
+      setQuotaDrawer(false); if (footBarEl) footBarEl.focus();
+    }
   });
   const quotaBackdropEl = document.getElementById('quotaBackdrop');
   if (quotaBackdropEl) quotaBackdropEl.addEventListener('click', () => setQuotaDrawer(false));
