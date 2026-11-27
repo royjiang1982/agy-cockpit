@@ -187,6 +187,22 @@ class DispatchAPITests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 4},
                                       dict(self.headers, Host="evil.example", Origin=plugin_origin))[0], 403)
 
+    def test_allows_antigravity_proxied_plugin_request_without_origin(self):
+        plugin_origin = f"plugin://agy-cockpit--cockpit-{self.port}"
+        base = {k: v for k, v in self.headers.items() if k != "Origin"}
+        proxy_headers = {**base, "Host": f"localhost:{self.port + 5}", "X-Cockpit-Plugin-Origin": plugin_origin}
+        self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 1}, proxy_headers)[0], 200)
+        for bad in (
+            {**proxy_headers, "X-Cockpit-Plugin-Origin": f"plugin://agy-cockpit--cockpit-{self.port + 1}"},
+            {**proxy_headers, "Host": "evil.example"},
+            {**proxy_headers, "Origin": "https://evil.example"},
+            {**proxy_headers, "X-Cockpit-CSRF": "wrong"},
+        ):
+            self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 2}, bad)[0], 403)
+        self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", b'{"revision":2}',
+                                      {**proxy_headers, "Content-Length": "14"},
+                                      extra_headers=[("Host", f"localhost:{self.port + 5}")])[0], 403)
+
     def test_ipv4_host_rejects_ipv6_https_and_mismatched_port_origins(self):
         host = f"127.0.0.1:{self.port}"
         for origin in (f"http://[::1]:{self.port}", f"https://{host}", f"http://127.0.0.1:{self.port + 1}",

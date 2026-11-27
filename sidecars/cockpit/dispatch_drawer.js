@@ -97,7 +97,6 @@
   let view = { type: 'home' };
 
   const drawer = el('dialog', { id: 'dispatchDrawer', 'aria-labelledby': 'dsTitle' });
-  const backBtn = el('button', { type: 'button', className: 'ds-back', hidden: true }, '‹ 返回');
   const titleEl = el('h2', { id: 'dsTitle' }, '子代理设置');
   const statusEl = el('span', { className: 'ds-status', role: 'status', 'aria-live': 'polite' });
   const closeBtn = el('button', { type: 'button', className: 'ds-close', 'aria-label': '关闭' }, '✕');
@@ -107,7 +106,7 @@
   const fields = el('fieldset', { className: 'ds-fields', 'aria-label': '子代理设置' });
   const bodyEl = el('div', { className: 'ds-body' }, warnEl, fields);
   drawer.append(
-    el('div', { className: 'ds-head' }, el('div', { className: 'ds-head-left' }, backBtn, titleEl), el('div', { className: 'ds-head-right' }, statusEl, closeBtn)),
+    el('div', { className: 'ds-head' }, el('div', { className: 'ds-head-left' }, titleEl), el('div', { className: 'ds-head-right' }, statusEl, closeBtn)),
     bodyEl);
   document.body.append(drawer);
 
@@ -181,10 +180,14 @@
   }
 
   function renderHome(p) {
-    const masterCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: p.enabled, 'aria-label': '开启子代理编排' });
+    const masterCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: p.enabled, 'aria-label': '接管子代理编排' });
     masterCb.addEventListener('change', () => { p.enabled = masterCb.checked; commit(); });
     const masterCard = el('div', { className: 'ds-card' },
-      el('label', { className: 'ds-item ds-item-click' }, el('span', { className: 'ds-lbl' }, '开启子代理编排'), masterCb));
+      el('label', { className: 'ds-item ds-item-click' },
+        el('div', { className: 'ds-row-col' },
+          el('span', { className: 'ds-lbl' }, '接管子代理编排'),
+          el('span', { className: 'ds-item-desc' }, '开启后接管编排策略，忽略用户或项目配置；关闭则切回原有设置')),
+        masterCb));
 
     const roleCard = el('div', { className: p.enabled ? 'ds-card' : 'ds-card ds-dimmed' });
     for (const [role, name] of ROLES) {
@@ -300,8 +303,7 @@
     if (!draft) return;
     const prevScroll = bodyEl.scrollTop, p = draft, isHome = view.type === 'home';
     if (saved.read_only_warning) { warnEl.hidden = false; warnEl.dataset.tone = ''; warnText.textContent = '配置文件异常或来自更高版本，当前只读展示默认值。'; reloadBtn.hidden = true; }
-    backBtn.hidden = isHome;
-    backBtn.textContent = view.type === 'seat' ? '‹ 多方会审' : '‹ 返回';
+    closeBtn.setAttribute('aria-label', isHome ? '关闭' : '返回');
     titleEl.textContent = isHome ? '子代理设置' : view.type === 'role' ? (ROLES.find(r => r[0] === view.role)?.[1] || view.role) : view.type === 'panel' ? '多方会审' : `席位 #${view.index + 1}`;
     fields.className = isHome ? 'ds-fields' : 'ds-fields is-sub';
     const kids = isHome ? renderHome(p) : view.type === 'role' ? renderRoleDetail(p, view.role) : view.type === 'panel' ? renderPanelList(p) : renderSeatDetail(p, view.index);
@@ -314,7 +316,7 @@
     const res = await fetch(withToken(url), opts), data = await res.json().catch(() => null);
     if (!res.ok || !data || data.ok === false) {
       const err = data?.error || `请求失败 (${res.status})`;
-      const msg = res.status === 403 && err === 'invalid CSRF token' ? '面板已重载，请刷新后重试' : res.status === 403 ? `保存被拒绝 (${err} · ${location.origin})` : err;
+      const msg = res.status === 403 && err === 'invalid CSRF token' ? '面板已重载，请刷新后重试' : res.status === 403 ? `保存被拒绝 (${err})` : err;
       throw Object.assign(new Error(msg), { status: res.status, code: err });
     }
     return data;
@@ -355,7 +357,11 @@
         pendingSave = false;
         const snapshot = structuredClone(draft);
         snapshot.revision = saved.policy.revision;
-        const post = () => api(endpoint, { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json', 'X-Cockpit-CSRF': csrf }, body: JSON.stringify(snapshot) });
+        const post = () => {
+          const headers = { 'Content-Type': 'application/json', 'X-Cockpit-CSRF': csrf };
+          if (location.protocol === 'plugin:') headers['X-Cockpit-Plugin-Origin'] = location.origin;
+          return api(endpoint, { method: 'POST', cache: 'no-store', headers, body: JSON.stringify(snapshot) });
+        };
         let out;
         try { out = await post(); }
         catch (e) { if (e.status === 403 && e.code === 'invalid CSRF token' && await refreshCsrf()) out = await post(); else throw e; }
@@ -377,7 +383,6 @@
   }
 
   const stepBackOrClose = () => { if (view.type === 'seat') go({ type: 'panel' }); else if (view.type !== 'home') go({ type: 'home' }); else drawer.close(); };
-  backBtn.addEventListener('click', stepBackOrClose);
   closeBtn.addEventListener('click', stepBackOrClose);
   reloadBtn.addEventListener('click', () => load());
   trigger.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); });

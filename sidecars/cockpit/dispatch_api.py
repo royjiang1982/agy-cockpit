@@ -43,12 +43,13 @@ def verify_write_request(handler, expected_host_port):
     headers = handler.headers
     origin = _single(headers, "Origin")
     plugin_origin = f"plugin://agy-cockpit--cockpit-{expected_host_port}"
+    proxied_plugin = origin is None and _single(headers, "X-Cockpit-Plugin-Origin") == plugin_origin
     exact_hosts = {f"{name}:{expected_host_port}" for name in ("localhost", "127.0.0.1", "[::1]")}
     hosts = headers.get_all("Host", [])
     host = hosts[0] if len(hosts) == 1 else None
-    if origin == plugin_origin:
-        if not hosts or not all(_LOOPBACK_HOST.fullmatch(h) for h in hosts):
-            raise WriteRequestError(403, f"invalid host: {hosts!r}")
+    if origin == plugin_origin or proxied_plugin:
+        if host is None or not _LOOPBACK_HOST.fullmatch(host):
+            raise WriteRequestError(403, "invalid host")
     else:
         if host not in exact_hosts:
             raise WriteRequestError(403, "invalid host")

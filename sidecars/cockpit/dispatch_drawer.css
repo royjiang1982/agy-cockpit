@@ -36,12 +36,6 @@
 .ds-head-left { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .ds-head h2 { margin: 0; font-size: 11.5px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ds-head-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.ds-back {
-  display: inline-flex; align-items: center; gap: 2px; height: 22px; margin-left: -4px; padding: 0 5px;
-  border: 0; border-radius: 5px; background: transparent; color: var(--cyan-text);
-  font-size: 10.5px; font-weight: 600; line-height: 1; cursor: pointer; transition: background-color .12s;
-}
-.ds-back:hover { background: var(--pill-bg); }
 .ds-close {
   width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 5px; background: transparent; color: var(--muted);
@@ -114,6 +108,7 @@
 .ds-item.is-dis { cursor: default; opacity: .56; }
 .ds-item:hover:not(.is-dis) { background: color-mix(in srgb, var(--text) 2.5%, transparent); }
 .ds-fb-sub { font-size: 9.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ds-item-desc { font-size: 9.5px; line-height: 1.35; color: var(--dim); }
 
 /* Detail editor blocks */
 .ds-block { padding: 8px 10px 9px; display: flex; flex-direction: column; gap: 6px; }
