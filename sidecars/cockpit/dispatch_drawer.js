@@ -361,9 +361,14 @@
     } finally { busy = false; sync(); }
   }
 
-  backBtn.addEventListener('click', () => go(view.type === 'seat' ? { type: 'panel' } : { type: 'home' }));
+  const stepBackOrClose = () => {
+    if (view.type === 'seat') go({ type: 'panel' });
+    else if (view.type !== 'home') go({ type: 'home' });
+    else drawer.close();
+  };
+  backBtn.addEventListener('click', stepBackOrClose);
   masterCb.addEventListener('change', () => { if (!draft) return; draft.enabled = masterCb.checked; markDirty(); render(); });
-  closeBtn.addEventListener('click', () => drawer.close());
+  closeBtn.addEventListener('click', stepBackOrClose);
   reloadBtn.addEventListener('click', () => load());
   resetBtn.addEventListener('click', () => write(true));
   form.addEventListener('submit', e => { e.preventDefault(); write(false); });
@@ -380,14 +385,12 @@
   drawer.addEventListener('click', e => {
     if (e.target !== drawer) return;
     const r = drawer.getBoundingClientRect();
-    if (e.clientX < r.left || e.clientX >= r.right || e.clientY < r.top || e.clientY >= r.bottom) drawer.close();
+    if (e.clientX < r.left || e.clientX >= r.right || e.clientY < r.top || e.clientY >= r.bottom) stepBackOrClose();
   });
   drawer.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
     e.stopPropagation(); e.preventDefault();
-    if (view.type === 'seat') go({ type: 'panel' });
-    else if (view.type !== 'home') go({ type: 'home' });
-    else drawer.close();
+    stepBackOrClose();
   });
   drawer.addEventListener('close', () => { view = { type: 'home' }; trigger.setAttribute('aria-expanded', 'false'); trigger.focus(); });
   sync();
