@@ -4,22 +4,61 @@
 [![Version](https://img.shields.io/badge/version-1.0.0-0A7EA4)](./plugin.json)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 
-Antigravity 实时驾驶舱与子代理编排中心插件：在侧边栏实时监控上下文窗口占用、缓存命中率、TPS/TTFT、子代理消耗与模型配额，并统一接管多引擎子代理路由、常驻执行与安全守卫。
+**English** | [简体中文](./README.zh-CN.md)
 
-## 核心能力
+**AGY Cockpit** is a real-time observability cockpit and multi-engine subagent orchestration plugin for **Google Antigravity**. Monitor context window usage, prompt cache hit rate, TPS/TTFT, token spend, and model quotas in the side pane — and centrally manage multi-engine subagent routing, resident execution, and safety guard hooks.
 
-- **实时指标驾驶舱**：侧边栏可视化展示上下文窗口、缓存命中、TPS/TTFT、Token 消耗与模型配额。
-- **5 角色子代理编排**：内置 `cockpit-dispatch` Skill 与零端口本地路由解析器，按角色（`scout` / `standard` / `deep` / `expert` / `panel`）自动调度与回退。
-- **自包含常驻运行时**：内置 `sa-subagentd` 守护进程与多引擎包装器（`sa-agy` / `sa-codex` / `sa-droid` / `sa-grok` / `sa-pi`），支持会话复用与续接。
-- **原生安全守卫钩子**：通过 `hooks.json` 自动挂载 `PreToolUse` 守卫（`sa-guard`），防止子代理套娃派生与高危命令误执行。
+## Preview
 
-## 快速开始
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="./docs/screenshots/cockpit-panel.png" alt="AGY Cockpit Real-Time Panel" width="380" />
+      <br />
+      <sub><b>Real-Time Cockpit Panel</b> (demo data)</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="./docs/screenshots/dispatch-drawer.png" alt="Subagent Orchestration Settings Drawer" width="380" />
+      <br />
+      <sub><b>Subagent Orchestration Settings</b> (demo data)</sub>
+    </td>
+  </tr>
+</table>
+
+## Key Features
+
+- **Real-Time Metrics Dashboard**: Tracks context window utilization, prompt cache hit rate, decode speed (TPS), time-to-first-token (TTFT), per-turn trends, model cost breakdown, subagent consumption, and live quota rings.
+- **5-Role Subagent Orchestration**: Ships with the `cockpit-dispatch` skill and a zero-port local policy resolver (`resolve.py`) that routes tasks across 5 general-purpose roles with automatic fallback chains:
+  - `scout` (read-only fast research)
+  - `standard` (UI, visual & content tasks)
+  - `deep` (backend logic, architecture & data pipelines)
+  - `expert` (debugging, security/billing audit & acceptance)
+  - `panel` (read-only multi-seat blind review)
+- **Self-Contained Resident Runtime**: Bundles `sa-subagentd` (Unix socket daemon) and engine wrappers (`sa-agy`, `sa-codex`, `sa-droid`, `sa-grok`, `sa-pi`) plus `sa-run.sh` for persistent connection reuse and multi-turn session resume.
+- **Native PreToolUse Safety Guard**: Automatically registers `hooks.json` (`sa-guard.sh agy`) to block recursive subagent spawning and high-risk shell/git commands inside subagent sessions.
+
+## Repository Layout
+
+```text
+agy-cockpit/
+├── plugin.json                 # Antigravity plugin manifest
+├── hooks.json                  # Native PreToolUse safety guard hook
+├── install.sh                  # One-way installer with syntax & hash verification
+├── rules/AGENTS.md             # Minimal always-on dispatch trigger rule
+├── skills/cockpit-dispatch/    # 5-role dispatch skill + local policy resolver
+├── runtime/                    # Self-contained resident daemon, wrappers, runner & sa-guard
+└── sidecars/cockpit/           # Sidecar HTTP server, UI & unit tests
+```
+
+## Quickstart
 
 ```bash
-# 安装 / 同步到本机 Antigravity 插件目录
+# Install / sync into ~/.gemini/config/plugins/agy-cockpit
 ./install.sh
 
-# 运行 Sidecar 与守卫单测
+# Run Sidecar and safety-guard unit tests
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s sidecars/cockpit -p "test_*.py"
 python3 runtime/tests/test-sa-guard.py
 ```
+
+After installation, reload Antigravity and open the **AGY Cockpit** panel from the sidebar (or click the **Settings** button inside the Subagents section to toggle orchestration takeover and customize per-role routes).
