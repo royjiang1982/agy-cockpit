@@ -320,7 +320,7 @@ def _resolve_target(primary, name, policy, caps, state_path, *, read_only, blind
     resolved_model = raw_model
     if primary["channel"] == "cli" and policy["external_enabled"] and engine in caps.get("available_engines", ()):
         resolved_model = dispatch_models.resolve_model_id(engine, raw_model, effort, agy_state_path=state_path, allow_codex_rpc="codex" in caps.get("available_engines", ()))
-    keys = dispatch_models.fallback_lookup_keys(engine, raw_model, resolved_model)
+    keys = dispatch_models.fallback_lookup_keys(engine, raw_model, resolved_model, effort)
     chain = next((policy["fallbacks"][k] for k in keys if k in policy["fallbacks"]), [])
     available, skipped = [], []
     for i, target in enumerate([primary, *chain]):
@@ -336,7 +336,6 @@ def _resolve_target(primary, name, policy, caps, state_path, *, read_only, blind
             available.append(dict(tail, reason="builtin_fallback"))
     selected, *fallbacks = available
     return dict(selected, fallbacks=fallbacks, skipped=skipped)
-
 
 def _panel_seat_meta(seat, order):
     seat["order"], seat["blind_isolated"] = order, seat["channel"] in ("cli", "invoke_subagent")
@@ -367,9 +366,12 @@ def _resolve_panel(config, policy, caps, count, state_path, *, read_only, blind)
                reason=("shared_swarm_board" if "swarm" in channels else "panel_seats" if seats else "no_enabled_seats"))
     return dict(out, skipped_seats=skipped) if skipped else out
 
-def _degraded_route(read_only, loaded):
+def _degraded_route(read_only, warning):
     return dict(mode="degraded", channel="direct", read_only=read_only, degraded=True,
-                reason="policy_corrupted", warning=loaded["read_only_warning"])
+                reason="policy_corrupted", warning=warning)
+
+def degraded_all(warning):
+    return {role: _degraded_route(read_only, warning) for role, read_only in ROLE_READ_ONLY.items()}
 
 def resolve_role(role, policy=None, capabilities=None, *, policy_path=None, state_path=None, count=None, read_only=False, blind=False):
     if role not in ROLE_READ_ONLY:
@@ -377,7 +379,7 @@ def resolve_role(role, policy=None, capabilities=None, *, policy_path=None, stat
     effective_ro = bool(ROLE_READ_ONLY[role] or read_only)
     if policy is None:
         if (loaded := load_policy(policy_path))["degraded"]:
-            return _degraded_route(effective_ro, loaded)
+            return _degraded_route(effective_ro, loaded["read_only_warning"])
         policy = loaded["policy"]
     if count is not None and (type(count) is not int or not 1 <= count <= MAX_PANEL_COUNT):
         raise ValueError(f"panel count must be an integer from 1 to {MAX_PANEL_COUNT}")
@@ -392,7 +394,7 @@ def resolve_role(role, policy=None, capabilities=None, *, policy_path=None, stat
 def resolve_all(policy=None, capabilities=None, *, policy_path=None, state_path=None):
     if policy is None:
         if (loaded := load_policy(policy_path))["degraded"]:
-            return {role: _degraded_route(read_only, loaded) for role, read_only in ROLE_READ_ONLY.items()}
+            return degraded_all(loaded["read_only_warning"])
         policy = loaded["policy"]
     caps = probe_capabilities(state_path) if capabilities is None else capabilities
     return {role: resolve_role(role, policy, caps, state_path=state_path) for role in ROLE_READ_ONLY}

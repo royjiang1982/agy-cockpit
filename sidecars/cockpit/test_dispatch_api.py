@@ -155,6 +155,27 @@ class DispatchAPITests(unittest.TestCase):
             self.assertEqual(self.request("POST", path, payload, self.headers)[0], 409)
         self.assertEqual(self.path.read_text(), '{"schema_version": 2}')
 
+    def test_resolved_policy_uses_single_degraded_snapshot_after_disk_recovers(self):
+        self.path.write_text("{")
+        load_policy = dispatch_policy.load_policy
+
+        def load_then_recover(path):
+            snapshot = load_policy(path)
+            self.path.write_text(json.dumps(dispatch_policy.default_policy()))
+            return snapshot
+
+        with patch.object(dispatch_policy, "load_policy", side_effect=load_then_recover) as load:
+            status, body, _ = self.request("GET", "/api/dispatch-policy?resolve=1")
+        load.assert_called_once_with(self.path)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["degraded"])
+        self.assertFalse(load_policy(self.path)["degraded"])
+        self.assertEqual(body["resolved"], {
+            role: dict(mode="degraded", channel="direct", read_only=read_only, degraded=True,
+                       reason="policy_corrupted", warning=body["read_only_warning"])
+            for role, read_only in dispatch_policy.ROLE_READ_ONLY.items()
+        })
+
     def test_rejects_missing_incorrect_csrf_and_nonexact_origins(self):
         for key, value in (
             ("X-Cockpit-CSRF", None), ("X-Cockpit-CSRF", "invalid"), ("X-Cockpit-CSRF", "令牌".encode()),

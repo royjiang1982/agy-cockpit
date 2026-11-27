@@ -1204,6 +1204,48 @@ def test_session_auto_handoff():
     print("PASS: transparent cross-session auto-handoff (multi-turn ledger, no nesting, SQLite & JSONL fallbacks)")
 
 
+def test_daemon_restart_validation():
+    from contextlib import redirect_stdout
+    from io import StringIO
+    from unittest.mock import patch
+
+    import agent_runtime.daemon as daemon
+
+    with tempfile.TemporaryDirectory(prefix="sa-") as tmp, patch.dict(os.environ, {"SA_SUBAGENTD_DIR": tmp}):
+        assert daemon.query_daemon("status") == {"ok": False, "status": "stopped"}
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.bind(str(daemon.get_socket_path()))
+        stale = daemon.query_daemon("status")
+        assert stale["ok"] is False and stale["status"] == "error" and stale["stale_socket"] is True, stale
+        with patch.object(daemon.socket, "socket") as client:
+            conn = client.return_value.__enter__.return_value
+            for response in ([], {"ok": 1}, {"ok": "true"}, {"ok": False, "status": "stopped", "stale_socket": True},
+                             {"ok": True, "status": "stopped"}):
+                conn.recv.return_value = (json.dumps(response) + "\n").encode()
+                checked = daemon.query_daemon("status")
+                assert checked["ok"] is False and checked["status"] == "error" and "stale_socket" not in checked, checked
+
+        bad_pids = (None, True, 0, -1, "123", 1.5)
+        with redirect_stdout(StringIO()), patch.object(daemon, "ensure_daemon_running") as start:
+            for pid in bad_pids:
+                with patch.object(daemon, "query_daemon", return_value={"ok": True, "daemon_pid": pid}):
+                    assert daemon.main(["restart"]) == 1, pid
+            with patch.object(daemon, "query_daemon", return_value={"ok": False, "status": "error"}):
+                assert daemon.main(["restart"]) == 1
+            start.assert_not_called()
+            before = {"ok": True, "daemon_pid": 123}
+            for after in ({"ok": 1, "daemon_pid": 456}, *({"ok": True, "daemon_pid": pid} for pid in (*bad_pids, 123))):
+                with patch.object(daemon, "query_daemon", side_effect=(before, {"ok": False}, after)):
+                    assert daemon.main(["restart"]) == 1, after
+            assert start.call_count == len(bad_pids) + 2
+        try:
+            assert daemon.main(["restart"]) == 0
+            healthy = daemon.query_daemon("status")
+            assert healthy["ok"] is True and type(healthy["daemon_pid"]) is int and healthy["daemon_pid"] > 0, healthy
+        finally:
+            daemon.query_daemon("shutdown")
+
+
 def test_real_cli_resident_handshakes():
     """Verify real local CLI binaries initialize cleanly in ResidentServer without LLM calls."""
     if os.environ.get("SA_TEST_LIVE_CLI") != "1":
@@ -1260,5 +1302,6 @@ if __name__ == "__main__":
     test_review_regressions()
     test_zomibot_drop_in_compatibility()
     test_session_auto_handoff()
+    test_daemon_restart_validation()
     test_real_cli_resident_handshakes()
     print("ALL AGENT-RUNTIME VERIFICATIONS PASSED.")

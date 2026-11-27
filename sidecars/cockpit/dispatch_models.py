@@ -346,15 +346,18 @@ def resolve_model_id(
     return model
 
 
-def fallback_lookup_keys(engine: str, model: str, resolved_model: str) -> tuple[str, ...]:
+def fallback_lookup_keys(engine: str, model: str, resolved_model: str, effort: str = "") -> tuple[str, ...]:
     """Ordered fallback dictionary keys: exact, resolved concrete ID, offline default ID, and versionless family."""
     fam = family_of(engine, model) or family_of(engine, resolved_model)
     offline_id = None
-    if fam:
+    if fam and model.strip().lower() == fam and resolved_model == model:
         if engine == "codex":
-            offline_id = _CODEX_DEFAULTS.get(fam)
+            offline_id = _CODEX_DEFAULTS[fam]
         elif engine == "grok":
-            offline_id = _GROK_DEFAULTS.get(fam)
+            offline_id = _GROK_DEFAULTS[fam]
+        elif engine == "agy":
+            eff = effort if effort and effort != "same" else _AGY_DEFAULT_EFFORT[fam]
+            offline_id = f"{_AGY_DEFAULTS[fam]}-{eff}"
     keys: list[str] = []
     for cand in (model, resolved_model, offline_id, fam):
         if cand:

@@ -52,6 +52,20 @@ _START = re.compile(
     re.MULTILINE,
 )
 
+# Operate on the boundary view, where quoted/escaped redirect operators are masked.
+_COMMAND_END = re.compile(r'[;()\n]|(?<![<>])&(?!>)|(?<!>)\|')
+_GIT_REDIRECT = re.compile(
+    r"""(?:&>>?|(?:(?<!\S)[0-9]+)?(?:<<[-<]?|<>|[<>]&|>>|>\||[<>]))[ \t]*"""
+    r"""(?:[^ \t\r\n;&|()<>"'\\]+|\\[^\n]|"[^"]*"|'[^']*')+"""
+)
+
+
+def _strip_git_redirects(tail, scan_tail):
+    chars = list(tail)
+    for match in _GIT_REDIRECT.finditer(scan_tail):
+        chars[match.start():match.end()] = ' ' * (match.end() - match.start())
+    return ''.join(chars)
+
 
 _TAMPER_CMD_RE = re.compile(
     r'(?:^|[;&|(`"\']|\$\()[ \t]*(?:rm|unlink|mv|rmdir)[ \t][^;&|]*zomi-subagent-sessions',
@@ -70,10 +84,6 @@ def _git_branch_mutates(rest):
     args = iter(rest)
     query = operand = False
     for arg in args:
-        if re.match(r'^(?:\d*[<>]+|&>)', arg):
-            if re.fullmatch(r'(?:\d*[<>]+|&>)', arg):
-                next(args, None)
-            continue
         if arg == '--':
             operand = operand or next(args, None) is not None
             break
@@ -144,9 +154,12 @@ def restricted(command, base_dir=None):
             return True
         sens, guard, sub_fn = _bind(match.start('cmd'))
         # Bound tail using scan_cmd (quoted separators are masked) so quoted tokens like "(team)" stay intact.
-        m_end = re.search(r'[;&|()\n]', scan_cmd[match.end():])
-        end_offset = m_end.start() if m_end else len(command) - match.end()
+        scan_tail = scan_cmd[match.end():]
+        m_end = _COMMAND_END.search(scan_tail)
+        end_offset = m_end.start() if m_end else len(scan_tail)
         tail = command[match.end():match.end() + end_offset]
+        if name == 'git':
+            tail = _strip_git_redirects(tail, scan_tail[:end_offset])
         lexer = shlex.shlex(tail, posix=True)
         lexer.whitespace = ' \t\r'
         lexer.whitespace_split = True

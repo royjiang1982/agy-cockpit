@@ -114,7 +114,7 @@ def handle_dispatch_request(handler, path, qs, state_module):
         if qs.get("resolve") == ["1"]:
             caps = dispatch_policy.probe_capabilities(state_path=state_path)
             resolved = (
-                dispatch_policy.resolve_all(policy_path=policy_path, state_path=state_path)
+                dispatch_policy.degraded_all(current["read_only_warning"])
                 if current["degraded"]
                 else dispatch_policy.resolve_all(current["policy"], caps)
             )

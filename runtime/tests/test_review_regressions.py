@@ -61,7 +61,7 @@ class DaemonTests(unittest.TestCase):
                 conn = socket_factory.return_value.__enter__.return_value
                 conn.connect.side_effect = ConnectionRefusedError("refused")
                 self.assertEqual(daemon.query_daemon("status"), {
-                    "ok": False, "status": "error", "error": "refused",
+                    "ok": False, "status": "error", "error": "refused", "stale_socket": True,
                 })
 
     def test_status_and_stop_exit_codes(self):
@@ -90,6 +90,8 @@ class DaemonTests(unittest.TestCase):
         for before, after, code in cases:
             stdout, calls = io.StringIO(), mock.Mock()
             still_running = after == running
+            was_running = before.get("ok") is True
+            seq = (before, {"ok": True}, after.copy()) if was_running else (before, after.copy())
             with (
                 self.subTest(before=before, after=after),
                 mock.patch.object(daemon, "get_socket_path") as socket_path,
@@ -97,17 +99,19 @@ class DaemonTests(unittest.TestCase):
                 mock.patch.object(daemon.time, "monotonic", side_effect=(0.0, 0.1, 3.0)),
                 mock.patch.object(daemon.time, "sleep"),
                 mock.patch.object(daemon, "ensure_daemon_running") as ensure,
-                mock.patch.object(daemon, "query_daemon", side_effect=(before, {"ok": True}, after.copy())) as query,
+                mock.patch.object(daemon, "query_daemon", side_effect=seq) as query,
                 redirect_stdout(stdout),
             ):
                 socket_path.return_value.exists.return_value = still_running
                 calls.attach_mock(query, "query")
                 calls.attach_mock(ensure, "ensure")
                 self.assertEqual(daemon.main(["restart"]), code)
-                self.assertEqual(calls.mock_calls, [
-                    mock.call.query("status"), mock.call.query("shutdown"),
-                    mock.call.ensure(), mock.call.query("status"),
-                ])
+                expected_calls = (
+                    [mock.call.query("status"), mock.call.query("shutdown"), mock.call.ensure(), mock.call.query("status")]
+                    if was_running
+                    else [mock.call.query("status"), mock.call.ensure(), mock.call.query("status")]
+                )
+                self.assertEqual(calls.mock_calls, expected_calls)
                 got = json.loads(stdout.getvalue())
                 if code == 0:
                     self.assertEqual(got, after)
@@ -240,6 +244,49 @@ class InstallTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn("命中 sidecar_data", result.stderr)
             self.assertFalse(target.exists())
+
+    def test_rejects_case_alias_of_absent_sidecar_data_on_first_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            probe = self.write(root / "CaseProbe", "")
+            alias = root / "caseprobe"
+            if not alias.exists() or not alias.samefile(probe):
+                self.skipTest("requires a case-insensitive filesystem")
+
+            home = root / "home"
+            source = self.make_source(root / "source")
+            data = home / ".gemini/antigravity/sidecar_data"
+            for parent_exists in (False, True):
+                if parent_exists:
+                    data.parent.mkdir(parents=True)
+                alias = home / ".gemini/ANTIGRAVITY/SIDECAR_DATA"
+                for target in (alias, alias / "statusline"):
+                    with self.subTest(target=target, parent_exists=parent_exists):
+                        self.assertFalse(data.exists())
+                        self.assertFalse(target.exists())
+                        result = self.install(source, target, home)
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
+                        self.assertIn("命中 sidecar_data", result.stderr)
+                        self.assertFalse(data.exists())
+                        self.assertFalse(target.exists())
+
+    def test_rejects_symlinked_source_parents_before_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in ("skills", "sidecars"):
+                with self.subTest(rel=rel):
+                    source = self.make_source(root / f"source-{rel}")
+                    parent, outside = source / rel, root / f"outside-{rel}"
+                    if parent.exists():
+                        parent.rename(outside)
+                    else:
+                        self.write(outside / "cockpit-dispatch/SKILL.md", "outside")
+                    parent.symlink_to(outside, target_is_directory=True)
+                    target = root / f"target-{rel}"
+                    result = self.install(source, target, root / "home")
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn("源树受管父目录不能是符号链接", result.stderr)
+                    self.assertFalse(target.exists())
 
     def test_rejects_invalid_python_entrypoints_json_and_shell_before_writes(self):
         invalid = (

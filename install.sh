@@ -45,17 +45,6 @@ if target.is_symlink():
     raise SystemExit(f"拒绝安装：目标路径不能是符号链接 ({target})")
 resolved = target.resolve(strict=False)
 
-def _existing_chain(p: Path):
-    cur = p
-    out = []
-    while True:
-        if cur.exists():
-            out.append(cur)
-        if cur.parent == cur:
-            break
-        cur = cur.parent
-    return out
-
 def _same_path(a: Path, b: Path) -> bool:
     if a == b:
         return True
@@ -64,14 +53,42 @@ def _same_path(a: Path, b: Path) -> bool:
     except OSError:
         return False
 
+def _nearest_existing(p: Path):
+    ancestor = p
+    while not ancestor.exists() and ancestor.parent != ancestor:
+        ancestor = ancestor.parent
+    return ancestor, p.relative_to(ancestor).parts
+
+def _may_ignore_case(directory: Path) -> bool:
+    # Probe lookup without writing to the target or the protected tree.
+    try:
+        for entry in directory.iterdir():
+            swapped = entry.name.swapcase()
+            if entry.name.isascii() and swapped != entry.name and not entry.is_symlink():
+                return entry.samefile(directory / swapped)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        pass
+    # With no usable entry (e.g. first install into an empty directory), fail closed.
+    return True
+
 def _overlaps(a: Path, b: Path) -> bool:
     if a == b or a in b.parents or b in a.parents:
         return True
-    a_chain, b_chain = _existing_chain(a), _existing_chain(b)
-    if a.exists() and any(_same_path(a, x) for x in b_chain):
-        return True
-    if b.exists() and any(_same_path(b, x) for x in a_chain):
-        return True
+    a_root, a_tail = _nearest_existing(a)
+    b_root, b_tail = _nearest_existing(b)
+    for base, tail, other, other_tail in ((a_root, a_tail, b_root, b_tail), (b_root, b_tail, a_root, a_tail)):
+        for ancestor in (other, *other.parents):
+            if not _same_path(base, ancestor):
+                continue
+            rest = other.relative_to(ancestor).parts + other_tail
+            n = min(len(tail), len(rest))
+            left, right = tail[:n], rest[:n]
+            return left == right or (
+                tuple(s.casefold() for s in left) == tuple(s.casefold() for s in right)
+                and _may_ignore_case(base)
+            )
     return False
 
 if _overlaps(resolved, src_real):
@@ -94,6 +111,9 @@ for parent_rel in ("skills", "sidecars"):
         real_parent = parent.resolve(strict=False)
         if not _overlaps(resolved, real_parent) or _overlaps(real_parent, sidecar_data):
             raise SystemExit(f"拒绝安装：受管父目录越界或命中 sidecar_data ({parent})")
+    source_parent = src_real / parent_rel
+    if source_parent.is_symlink():
+        raise SystemExit(f"拒绝安装：源树受管父目录不能是符号链接 ({source_parent})")
 managed = ("plugin.json", "README.md", "hooks.json", "assets", "rules", "skills/cockpit-dispatch", "sidecars/cockpit", "runtime")
 paths = [resolved / rel for rel in managed]
 while paths:
@@ -105,13 +125,15 @@ while paths:
         raise SystemExit(f"拒绝安装：受管路径越界或命中 sidecar_data ({path})")
     if path.is_dir():
         paths.extend(path.iterdir())
-src_paths = [src_real / rel for rel in managed if (src_real / rel).exists() or (src_real / rel).is_symlink()]
+src_paths = [src_real / rel for rel in managed]
 while src_paths:
     sp = src_paths.pop()
     if sp.name in ("__pycache__", ".DS_Store", "tests") or sp.suffix == ".pyc":
         continue
     if sp.is_symlink():
         raise SystemExit(f"拒绝安装：源树受管路径包含符号链接 ({sp})")
+    if src_real not in sp.resolve(strict=False).parents:
+        raise SystemExit(f"拒绝安装：源树受管路径越出源码仓 ({sp})")
     if sp.is_dir():
         src_paths.extend(sp.iterdir())
 if resolved.is_dir() and any(resolved.iterdir()):

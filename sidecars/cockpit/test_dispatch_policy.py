@@ -177,6 +177,25 @@ class DispatchPolicyTests(unittest.TestCase):
                 self.assertEqual([(item["engine"], item["reason"]) for item in route["skipped"]],
                                  [("codex", reason), ("droid", reason)])
 
+    def test_offline_agy_family_uses_effort_specific_fallback(self):
+        p = dp.default_policy()
+        p["roles"]["scout"]["primary"] = dp._target("agy", "hydrogen", "high")
+        p["fallbacks"] = {"agy:gemini-4-hydrogen-high": [dp._target("agy", "pro", channel="invoke_subagent")]}
+        route = dp.resolve_role("scout", dp.validate_policy(p), {"available_engines": []})
+        self.assertEqual((route["model"], route["reason"]), ("pro", "fallback"))
+        self.assertEqual(route["skipped"][0]["reason"], "cli_unavailable")
+
+    def test_explicit_codex_version_does_not_use_default_versions_fallback(self):
+        p = dp.default_policy()
+        p["roles"]["scout"]["primary"] = dp._target("codex", "gpt-6.1-sol", "high")
+        p["fallbacks"] = {
+            "codex:gpt-6.2-sol": [dp._target("agy", "pro", channel="invoke_subagent")],
+            "codex:sol": [dp._target("agy", "flash_lite", channel="invoke_subagent")],
+        }
+        route = dp.resolve_role("scout", dp.validate_policy(p), {"available_engines": []})
+        self.assertEqual((route["model"], route["reason"]), ("flash_lite", "fallback"))
+        self.assertEqual(route["skipped"][0]["reason"], "cli_unavailable")
+
     def test_role_permissions_and_public_panel_seat(self):
         p = dict(dp.default_policy(), external_enabled=False, allow_swarm=True)
         cli = p["roles"]["scout"]["primary"].copy()

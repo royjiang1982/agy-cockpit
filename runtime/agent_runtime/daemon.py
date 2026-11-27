@@ -658,10 +658,12 @@ def query_daemon(action: str) -> Dict[str, Any]:
                     break
                 buf += chunk
             data = json.loads(buf.decode("utf-8", errors="replace").strip())
-            if not isinstance(data, dict) or (not data.get("ok") and data.get("status") != "stopped"):
+            if not isinstance(data, dict) or data.get("ok") is not True or data.get("status") == "stopped":
                 err = (data.get("error") or (data.get("result") or {}).get("error")) if isinstance(data, dict) else None
                 return {"ok": False, "status": "error", "error": str(err or "unexpected daemon response")}
             return data
+    except ConnectionRefusedError as exc:
+        return {"ok": False, "status": "error", "error": str(exc), "stale_socket": True}
     except Exception as exc:
         return {"ok": False, "status": "error", "error": str(exc)}
 
@@ -776,14 +778,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps(res, ensure_ascii=False))
         return 1 if res.get("status") == "error" else 0
     if cmd == "restart":
+        def valid_pid(pid):
+            return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
         sock_path = get_socket_path()
         before = query_daemon("status")
-        if before.get("status") == "error" or (before.get("ok") and not before.get("daemon_pid")):
-            err = before if before.get("error") else {"ok": False, "status": "error", "error": "missing daemon_pid before restart"}
+        if ((before.get("status") == "error" and not before.get("stale_socket"))
+                or (before.get("ok") is True and not valid_pid(before.get("daemon_pid")))):
+            err = {"ok": False, "status": "error", "error": before.get("error") or "invalid daemon_pid before restart"}
             print(json.dumps(err, ensure_ascii=False, indent=2))
             return 1
         old_pid = before.get("daemon_pid") if before.get("ok") else None
-        res = query_daemon("shutdown")
+        res = query_daemon("shutdown") if old_pid is not None else {}
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
             if not _ping_daemon(sock_path) and (not res.get("ok") or not sock_path.exists()):
@@ -791,10 +796,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             time.sleep(0.05)
         ensure_daemon_running()
         snap = query_daemon("status")
-        if not snap.get("ok"):
-            snap.setdefault("error", "daemon status check failed after restart")
-        elif not snap.get("daemon_pid") or (old_pid and snap.get("daemon_pid") == old_pid):
-            snap.update(ok=False, error="daemon PID did not change after restart")
+        if (snap.get("ok") is not True or not valid_pid(snap.get("daemon_pid"))
+                or snap.get("daemon_pid") == old_pid):
+            snap.update(ok=False, error=snap.get("error") or "daemon status or PID check failed after restart")
         print(json.dumps(snap, ensure_ascii=False, indent=2))
         return 0 if snap.get("ok") else 1
     if cmd == "status":
