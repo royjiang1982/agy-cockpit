@@ -78,11 +78,35 @@ class DaemonTests(unittest.TestCase):
                     query.assert_called_once_with(action)
                     self.assertEqual(json.loads(stdout.getvalue()), response)
 
+    def test_query_rejects_malformed_frames_and_marks_stale_socket(self):
+        import socket
+
+        with tempfile.TemporaryDirectory(prefix="sa-") as tmp, mock.patch.dict(os.environ, SA_SUBAGENTD_DIR=tmp):
+            self.assertEqual(daemon.query_daemon("status"), {"ok": False, "status": "stopped"})
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.bind(str(daemon.get_socket_path()))
+            stale = daemon.query_daemon("status")
+            self.assertEqual((stale["ok"], stale["status"], stale["stale_socket"]), (False, "error", True))
+            with mock.patch.object(daemon.socket, "socket") as client:
+                conn = client.return_value.__enter__.return_value
+                for response in ([], {"ok": 1}, {"ok": "true"},
+                                 {"ok": False, "status": "stopped", "stale_socket": True},
+                                 {"ok": True, "status": "stopped"}):
+                    with self.subTest(response=response):
+                        conn.recv.return_value = (json.dumps(response) + "\n").encode()
+                        checked = daemon.query_daemon("status")
+                        self.assertIs(checked["ok"], False)
+                        self.assertEqual(checked["status"], "error")
+                        self.assertNotIn("stale_socket", checked)
+
     def test_restart_checks_replacement_daemon(self):
         running = {"ok": True, "daemon_pid": 101}
         replacement = {"ok": True, "daemon_pid": 102}
+        bad_pids = (None, True, 0, -1, "123", 1.5)
         cases = (
             (running, running, 1),
+            (running, {"ok": 1, "daemon_pid": 102}, 1),
+            *((running, {"ok": True, "daemon_pid": pid}, 1) for pid in bad_pids),
             (running, replacement, 0),
             (running, {"ok": False, "status": "error"}, 1),
             ({"ok": False, "status": "stopped"}, replacement, 0),
@@ -118,6 +142,17 @@ class DaemonTests(unittest.TestCase):
                 else:
                     self.assertFalse(got["ok"])
                     self.assertTrue(got.get("error"))
+        # Invalid status before restart must not request shutdown or start a replacement.
+        for pid in bad_pids:
+            with (
+                self.subTest(pid=pid),
+                mock.patch.object(daemon, "query_daemon", return_value={"ok": True, "daemon_pid": pid}) as query,
+                mock.patch.object(daemon, "ensure_daemon_running") as ensure,
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(daemon.main(["restart"]), 1)
+                query.assert_called_once_with("status")
+                ensure.assert_not_called()
         # Error before restart fails immediately without pretending daemon was stopped.
         stdout = io.StringIO()
         with (

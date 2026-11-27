@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import server
+from _cost_test_fixture import patch_cost_state
 from agy_cost_events import AgyCostDedup
 from cost_compaction import (
     COMPACTED_UID, CompactedRows, load_compacted_rows, persisted_compaction,
@@ -210,17 +211,10 @@ class ScanFixture(unittest.TestCase):
         self.factory = self.root / "droid"
         self.factory.mkdir()
         self.patch = lambda name, value: stack.enter_context(patch.object(server, name, value))
-        for name, value in {
-            "_COST_FILE_EVENTS": self.files, "_COST_RUNTIME": self.runtime, "_COST_CACHE_FILE": self.cache,
-            "_DROID_LEDGER": self.ledger, "_COST_CACHE_LOADED": True, "_PENDING_REBUILD": set(),
-            "_DB_APPLIED_BUILTIN_ENUM": {}, "_COST_GENERATION": 0, "_LAST_COST_SCAN_TS": 0,
-            "_APPLIED_MODEL_MAP_EPOCH": server.get_model_map_epoch(), "_APPLIED_PRICING_EPOCH": server.PRICING_EPOCH,
-            "_QUOTA_CACHE": {}, "_WINDOW_COSTS": {}, "_WINDOW_ESTIMATES": {}, "_CALENDAR_CACHE": {},
-            "_CALENDAR_DAYS": {}, "SUBAGENT_APP_DIRS": [("test", self.root)], "FACTORY_SESSIONS_DIR": self.factory,
-            "PI_SESSIONS_DIR": self.root / "missing", "CODEX_SESSIONS_DIR": self.root / "missing",
-            "GROK_SESSIONS_DIR": self.root / "missing",
-        }.items():
-            self.patch(name, value)
+        patch_cost_state(stack, path=self.cache, runtime=self.runtime, events=self.files, ledger=self.ledger,
+                         SUBAGENT_APP_DIRS=[("test", self.root)], FACTORY_SESSIONS_DIR=self.factory,
+                         PI_SESSIONS_DIR=self.root / "missing", CODEX_SESSIONS_DIR=self.root / "missing",
+                         GROK_SESSIONS_DIR=self.root / "missing")
         stack.enter_context(patch.object(server.time, "time", return_value=NOW))
 
     def touch(self, path, epoch):

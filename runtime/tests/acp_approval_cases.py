@@ -5,12 +5,9 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
-import time
+from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
+from _runtime_fixture import TIMEOUT, write_rpc_server
 from agent_runtime import acp_approvals
 from agent_runtime.acp_approvals import (
     AUTO_APPROVE_DELAY_RANGE,
@@ -23,183 +20,87 @@ from agent_runtime.proc_utils import DEFAULT_AGY_APP_DATA_DIR
 from agent_runtime.resident import ResidentServer
 
 
-def _write_fake_perm_server(tmp: Path) -> Path:
-    script = tmp / "fake_agy_perm.py"
-    script.write_text(
-        """#!/usr/bin/env python3
-import json, sys, threading, time
-
+PERMISSION_SCRIPT = '''
 log_file = sys.argv[1]
-lock = threading.Lock()
-pending_prompts = {}
-pending_perms = {}
-seq = 0
-perm_seq = 1000
+session_info = {
+    "models": {"availableModels": [
+        {"modelId": "gemini-4-hydrogen-high"}, {"modelId": "gpt-6.2-astra"},
+    ]},
+    "modes": {"currentModeId": "default", "availableModes": [
+        {"id": mode, "name": mode} for mode in ("default", "accept-edits", "auto", "plan")
+    ]},
+}
 events_log = []
-
-
-def send(obj):
-    with lock:
-        sys.stdout.write(json.dumps(obj) + "\\n")
-        sys.stdout.flush()
-
+pending = {}
+sent_times = {}
+perm_seq = 1000
 
 def record(entry):
-    with lock:
-        events_log.append(entry)
-        with open(log_file, "w", encoding="utf-8") as f:
-            json.dump(events_log, f)
+    events_log.append(entry)
+    with open(log_file, "w", encoding="utf-8") as out:
+        json.dump(events_log, out)
 
+def option(id, kind):
+    return {"optionId": id, "kind": kind, "name": id}
 
-for raw in sys.stdin:
-    raw = raw.strip()
-    if not raw:
-        continue
-    msg = json.loads(raw)
-    if "method" not in msg and "id" in msg:
-        pid = msg["id"]
-        info = pending_perms.pop(pid, None)
-        if not info:
-            continue
-        elapsed = time.monotonic() - info["sent_at"]
-        record({"type": "perm_reply", "perm_id": pid, "result": msg.get("result"), "elapsed": elapsed})
-        sid = info["sid"]
-        prompt_id = info["prompt_id"]
-        outcome = ((msg.get("result") or {}).get("outcome") or {})
-        if outcome.get("outcome") == "selected":
-            remaining = info.get("remaining", 0)
-            if remaining > 0:
-                perm_seq += 1
-                next_id = perm_seq
-                pending_perms[next_id] = {
-                    "sid": sid,
-                    "prompt_id": prompt_id,
-                    "sent_at": time.monotonic(),
-                    "remaining": remaining - 1,
-                }
-                send({
-                    "jsonrpc": "2.0",
-                    "id": next_id,
-                    "method": "session/request_permission",
-                    "params": {
-                        "sessionId": sid,
-                        "toolCall": {"toolCallId": f"tc-{next_id}", "name": "run_command", "title": "step2"},
-                        "options": [
-                            {"optionId": "always-id", "kind": "allow_always", "name": "Always allow"},
-                            {"optionId": "second-once-id", "kind": "allow_once", "name": "Allow once"},
-                            {"optionId": "reject-id", "kind": "reject_once", "name": "Reject"},
-                        ],
-                    },
-                })
-            else:
-                send({
-                    "jsonrpc": "2.0",
-                    "method": "session/update",
-                    "params": {
-                        "sessionId": sid,
-                        "update": {
-                            "sessionUpdate": "agent_message_chunk",
-                            "content": {"type": "text", "text": f"approved:{outcome.get('optionId')}"},
-                        },
-                    },
-                })
-                send({"jsonrpc": "2.0", "id": prompt_id, "result": {"stopReason": "end_turn"}})
-        else:
-            send({"jsonrpc": "2.0", "id": prompt_id, "result": {"stopReason": "cancelled"}})
-        continue
+def request_permission(rid, sid, tool_id, title, options, *, prompt_id=None, remaining=False):
+    sent_times[rid] = time.monotonic()
+    if prompt_id is not None:
+        pending[rid] = (prompt_id, sid, remaining)
+    send({"jsonrpc": "2.0", "id": rid, "method": "session/request_permission", "params": {
+        "sessionId": sid, "toolCall": {"toolCallId": tool_id, "title": title, "name": "run_command"},
+        "options": options,
+    }})
 
-    method = msg.get("method")
-    rid = msg.get("id")
-    params = msg.get("params") or {}
-    if method == "initialize":
-        send({"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}})
-    elif method == "session/new":
-        seq += 1
-        sid = f"sid-{seq}"
-        send({
-            "jsonrpc": "2.0",
-            "id": rid,
-            "result": {
-                "sessionId": sid,
-                "models": {"availableModels": [
-                    {"modelId": "gemini-4-hydrogen-high"},
-                    {"modelId": "gpt-6.2-astra"},
-                ]},
-                "modes": {
-                    "currentModeId": "default",
-                    "availableModes": [
-                        {"id": "default", "name": "Default"},
-                        {"id": "accept-edits", "name": "Accept edits"},
-                        {"id": "auto", "name": "Auto"},
-                        {"id": "plan", "name": "Plan"},
-                    ],
-                },
-            },
-        })
-    elif method == "session/set_mode":
+def handle_prompt(rid, sid, text):
+    global perm_seq
+    perm_seq += 1
+    allow = option("allow-once-id", "allow_once")
+    always = option("allow-always-id", "allow_always")
+    reject = option("reject-id", "reject_once")
+    if "INTERACTION_QUESTION" in text:
+        request_permission(perm_seq, sid, "interaction_1", "Pick one", [{"optionId": "opt_a", "name": "Option A"}])
+        return
+    options = ([reject] if text.endswith("NO_ALLOW_OPTION") else [always] if text.endswith("ALWAYS_ONLY")
+               else [allow, always, reject])
+    request_permission(perm_seq, sid, f"tc-{perm_seq}", "echo ok", options,
+                       prompt_id=rid, remaining="MULTI_PERM" in text)
+
+def handle_cancel(params):
+    record({"type": "session_cancel", "sessionId": params.get("sessionId")})
+
+def override(method, rid, params, message):
+    global perm_seq
+    if method == "test/drain":
+        reply(rid, {"events": events_log})
+        return True
+    if method == "session/set_mode":
         record({"type": "set_mode", "modeId": params.get("modeId")})
-        send({"jsonrpc": "2.0", "id": rid, "result": {}})
-    elif method in ("session/set_model", "session/set_config_option"):
-        send({"jsonrpc": "2.0", "id": rid, "result": {}})
-    elif method == "session/cancel":
-        record({"type": "session_cancel", "sessionId": params.get("sessionId")})
-    elif method == "session/prompt":
-        sid = params.get("sessionId", "")
-        text = params["prompt"][0]["text"]
+    if method is not None or "id" not in message:
+        return False
+    result = message.get("result")
+    entry = {"type": "perm_reply", "perm_id": rid, "result": result}
+    if rid in sent_times:
+        entry["elapsed"] = time.monotonic() - sent_times[rid]
+    record(entry)  # Record duplicates even after the first response consumed the pending entry.
+    info = pending.pop(rid, None)
+    if info is None:
+        return True
+    prompt_id, sid, remaining = info
+    outcome = (result or {}).get("outcome") or {}
+    if outcome.get("outcome") != "selected":
+        reply(prompt_id, {"stopReason": "cancelled"})
+    elif remaining:
         perm_seq += 1
-        pid = perm_seq
-        if "INTERACTION_QUESTION" in text:
-            send({
-                "jsonrpc": "2.0",
-                "id": pid,
-                "method": "session/request_permission",
-                "params": {
-                    "sessionId": sid,
-                    "toolCall": {"toolCallId": "interaction_1", "title": "Pick one"},
-                    "options": [{"optionId": "opt_a", "name": "Option A"}],
-                },
-            })
-            continue
-        if text.endswith(("NO_ALLOW_OPTION", "ALWAYS_ONLY")):
-            option = (
-                {"optionId": "always-id", "kind": "allow_always", "name": "Always allow"} if text.endswith("ALWAYS_ONLY")
-                else {"optionId": "reject-id", "kind": "reject_once", "name": "Reject"}
-            )
-            pending_perms[pid] = {"sid": sid, "prompt_id": rid, "sent_at": time.monotonic(), "remaining": 0}
-            send({
-                "jsonrpc": "2.0",
-                "id": pid,
-                "method": "session/request_permission",
-                "params": {
-                    "sessionId": sid,
-                    "toolCall": {"toolCallId": "tc-bad", "name": "run_command", "title": "bad"},
-                    "options": [option],
-                },
-            })
-            continue
-        if "MULTI_PERM" in text:
-            pending_perms[pid] = {"sid": sid, "prompt_id": rid, "sent_at": time.monotonic(), "remaining": 1}
-        else:
-            pending_perms[pid] = {"sid": sid, "prompt_id": rid, "sent_at": time.monotonic(), "remaining": 0}
-        send({
-            "jsonrpc": "2.0",
-            "id": pid,
-            "method": "session/request_permission",
-            "params": {
-                "sessionId": sid,
-                "toolCall": {"toolCallId": f"tc-{pid}", "name": "run_command", "title": "echo ok"},
-                "options": [
-                    {"optionId": "allow-once-id", "kind": "allow_once", "name": "Allow once"},
-                    {"optionId": "allow-always-id", "kind": "allow_always", "name": "Allow always"},
-                    {"optionId": "reject-id", "kind": "reject_once", "name": "Reject"},
-                ],
-            },
-        })
-""",
-        encoding="utf-8",
-    )
-    script.chmod(0o755)
-    return script
+        request_permission(perm_seq, sid, f"tc-{perm_seq}", "step2", [
+            option("always-id", "allow_always"), option("second-once-id", "allow_once"),
+            option("reject-id", "reject_once"),
+        ], prompt_id=prompt_id)
+    else:
+        update(sid, f"approved:{outcome.get('optionId')}")
+        reply(prompt_id, {"stopReason": "end_turn"})
+    return True
+'''
 
 
 def acp_approval_cases():
@@ -251,7 +152,7 @@ def acp_approval_cases():
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             os.environ["ZOMI_SUBAGENT_SESSIONS_DIR"] = str(tmp / "markers")
-            server = _write_fake_perm_server(tmp)
+            server = write_rpc_server(tmp, "fake_agy_perm.py", setup=PERMISSION_SCRIPT)
             env = os.environ.copy()
 
             # 3a. Two one-time approvals keep the ResidentServer healthy
@@ -300,29 +201,40 @@ def acp_approval_cases():
                 host.shutdown()
 
             # 3c. Cancelling during the delay window sends cancelled and NEVER sends selected
-            acp_approvals.AUTO_APPROVE_DELAY_RANGE = (0.40, 0.50)
             log2 = tmp / "log2.json"
             cmd2 = [sys.executable, str(server), str(log2)]
+            entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+            approve = acp_approvals.AcpAutoApprover._approve_after_delay
+
+            def gated_approval(self, record):
+                try:
+                    entered.set()
+                    if release.wait(TIMEOUT):
+                        approve(self, record)
+                finally:
+                    finished.set()
+
             host2 = ResidentServer(cmd2, cwd=str(tmp), env=env, agent="agy")
             try:
-                turn_c = AgyAcpStream(
-                    cmd2, cwd=str(tmp), env=env,
-                    bot={"model": "gemini-4-hydrogen-high"},
-                    prompt="SINGLE_PERM",
-                    resident=host2, is_subagent=True,
-                )
-                deadline = time.monotonic() + 3.0
-                while not turn_c.approvals.waiting() and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                assert turn_c.approvals.waiting(), "Expected pending approval"
-                turn_c.cancel()
-                try:
-                    list(turn_c)
-                except RuntimeError:
-                    pass
-                turn_c.close()
-                time.sleep(0.55)
-                entries2 = json.loads(log2.read_text(encoding="utf-8"))
+                with patch.object(acp_approvals.AcpAutoApprover, "_approve_after_delay", gated_approval):
+                    turn_c = AgyAcpStream(
+                        cmd2, cwd=str(tmp), env=env,
+                        bot={"model": "gemini-4-hydrogen-high"},
+                        prompt="SINGLE_PERM",
+                        resident=host2, is_subagent=True, rpc_timeout=TIMEOUT,
+                    )
+                    try:
+                        assert entered.wait(TIMEOUT) and turn_c.approvals.waiting(), "Expected pending approval"
+                        turn_c.cancel()
+                    finally:
+                        release.set()
+                    assert finished.wait(TIMEOUT) and turn_c._protocol_done.wait(TIMEOUT)
+                    try:
+                        # A wire round trip after the approval worker exits drains
+                        # every earlier reply, even if the prompt already ended.
+                        entries2 = turn_c._rpc("test/drain", {})["events"]
+                    finally:
+                        turn_c.close()
                 replies2 = [e for e in entries2 if e["type"] == "perm_reply"]
                 assert len(replies2) == 1, replies2
                 assert replies2[0]["result"] == CANCELLED, replies2

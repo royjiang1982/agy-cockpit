@@ -17,10 +17,10 @@ from unittest.mock import patch
 import analyzer
 import cost_runtime
 import server
+from _cost_test_fixture import patch_cost_state
 from agy_cost_events import AgyCostDedup
 from annotation_index import AnnotationIndex
 from cost_windows import WindowCosts, valid_event_time
-from droid_ledger import DroidLedger
 
 
 NOW = 1_800_000_000.0
@@ -66,16 +66,9 @@ class CostRuntimeTests(unittest.TestCase):
             'grok:thread': (NOW, [(NOW - 0.0006, 0.123456789, 'other', '', 30, 4, 3, 2, 10)]),
             'codex:rollout': (NOW, [(NOW - 86400, 1.23, 'other', '', 0, 4, 0, 0)]),
         }
-        for name, value in {
-            '_COST_RUNTIME': self.runtime, '_COST_CACHE_FILE': self.path, '_COST_CACHE_LOADED': True,
-            'STATE_FILE': tmp / 'view_state.json', '_LAST_QUOTA_FETCH_TS': NOW - 60,
-            '_COST_GENERATION': 0, '_COST_FILE_EVENTS': self.events, '_PENDING_REBUILD': set(),
-            '_DB_APPLIED_BUILTIN_ENUM': {}, '_DROID_LEDGER': DroidLedger(),
-            '_CALENDAR_DAYS': {}, '_CALENDAR_CACHE': {}, '_WINDOW_COSTS': {}, '_WINDOW_ESTIMATES': {},
-            '_QUOTA_CACHE': QUOTA, '_LAST_COST_SCAN_TS': NOW, '_APPLIED_PRICING_EPOCH': server.PRICING_EPOCH,
-            '_APPLIED_MODEL_MAP_EPOCH': server.get_model_map_epoch(),
-        }.items():
-            self.stack.enter_context(patch.object(server, name, value))
+        patch_cost_state(self.stack, path=self.path, runtime=self.runtime, events=self.events,
+                         STATE_FILE=tmp / "view_state.json", _LAST_QUOTA_FETCH_TS=NOW - 60,
+                         _QUOTA_CACHE=QUOTA, _LAST_COST_SCAN_TS=NOW)
         self.stack.enter_context(patch.object(cost_runtime.time, 'time', return_value=NOW))
         self.stack.enter_context(patch.object(cost_runtime.time, 'monotonic', side_effect=lambda: self.tick))
 

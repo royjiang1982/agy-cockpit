@@ -7,128 +7,60 @@ import sys
 import tempfile
 import threading
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
+from _runtime_fixture import TIMEOUT, signal_socket, write_rpc_server
 from agent_runtime.acp_stream import AgyAcpStream, agy_server_command
 from agent_runtime.proc_utils import DEFAULT_AGY_APP_DATA_DIR, agy_app_data_dir
 from agent_runtime.resident import ResidentServer
 from agent_runtime.session_handoff import _inspect_agy_db
 
 
-def _write_fake_agy_server(tmp: Path) -> Path:
-    script = tmp / "fake_agy_session_new.py"
-    script.write_text(
-        """#!/usr/bin/env python3
-import json, os, sys, threading, time
-
-state_file = sys.argv[1]
-fail_count = int(sys.argv[2])
-fail_msg = sys.argv[3]
-delay_ms = int(sys.argv[4])
-
-lock = threading.Lock()
+SESSION_OPEN_SCRIPT = '''
+state_file, fail_count, fail_message = sys.argv[1:4]
+open_gate = sys.argv[4] if len(sys.argv) > 4 else None
+capabilities["sessionCapabilities"] = {"resume": {}}
+session_info = {"models": {"availableModels": [{"modelId": "gemini-4-hydrogen-high"}]}}
+reply_prefix = "ok:"
+counts = {"calls": 0, "max_in_flight": 0}
 in_flight = 0
-max_in_flight = 0
-calls = 0
-write_lock = threading.Lock()
+lock = threading.Lock()
 
-
-def send(obj):
-    with write_lock:
-        sys.stdout.write(json.dumps(obj) + "\\n")
-        sys.stdout.flush()
-
-
-def dump_state():
-    with open(state_file, "w", encoding="utf-8") as f:
-        json.dump({"calls": calls, "max_in_flight": max_in_flight}, f)
-
-
-def handle_open(rid, method, params):
-    global in_flight, max_in_flight, calls
+def open_session(rid, params):
+    global in_flight
     with lock:
-        calls += 1
-        call_no = calls
+        counts["calls"] += 1
+        call_no = counts["calls"]
         in_flight += 1
-        if in_flight > max_in_flight:
-            max_in_flight = in_flight
-        dump_state()
-    if delay_ms > 0:
-        time.sleep(delay_ms / 1000.0)
+        counts["max_in_flight"] = max(in_flight, counts["max_in_flight"])
+        with open(state_file, "w", encoding="utf-8") as f:
+            json.dump(counts, f)
+    if call_no == 1 and open_gate:
+        child_signal(open_gate, hold=True)
     with lock:
         in_flight -= 1
-    if call_no <= fail_count:
-        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32000, "message": fail_msg}})
-        return
-    sid = params.get("sessionId") or f"sid-{call_no}"
-    send({
-        "jsonrpc": "2.0",
-        "id": rid,
-        "result": {
-            "sessionId": sid,
-            "models": {"availableModels": [{"modelId": "gemini-4-hydrogen-high"}]},
-        },
-    })
+    if call_no <= int(fail_count):
+        error(rid, -32000, fail_message)
+    else:
+        reply(rid, {"sessionId": params.get("sessionId") or f"sid-{call_no}", **session_info})
 
-
-for raw in sys.stdin:
-    raw = raw.strip()
-    if not raw:
-        continue
-    msg = json.loads(raw)
-    method = msg.get("method")
-    rid = msg.get("id")
-    params = msg.get("params") or {}
-    if method == "initialize":
-        send({
-            "jsonrpc": "2.0",
-            "id": rid,
-            "result": {
-                "protocolVersion": 1,
-                "agentCapabilities": {"loadSession": True, "sessionCapabilities": {"resume": {}}},
-            },
-        })
-    elif method in ("session/new", "session/resume", "session/load"):
-        threading.Thread(target=handle_open, args=(rid, method, params), daemon=True).start()
-    elif method in ("session/set_model", "session/set_mode"):
-        send({"jsonrpc": "2.0", "id": rid, "result": {}})
-    elif method == "session/prompt":
-        sid = params.get("sessionId", "")
-        send({
-            "jsonrpc": "2.0",
-            "method": "session/update",
-            "params": {
-                "sessionId": sid,
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {"type": "text", "text": f"ok:{sid}"},
-                },
-            },
-        })
-        send({"jsonrpc": "2.0", "id": rid, "result": {"stopReason": "end_turn"}})
-""",
-        encoding="utf-8",
-    )
-    script.chmod(0o755)
-    return script
+def handle_open(rid, params):
+    threading.Thread(target=open_session, args=(rid, params), daemon=True).start()
+'''
 
 
 def agy_session_new_cases():
     orig_delays = AgyAcpStream.SESSION_NEW_RETRY_DELAYS
-    AgyAcpStream.SESSION_NEW_RETRY_DELAYS = (0.01, 0.01)
+    AgyAcpStream.SESSION_NEW_RETRY_DELAYS = (0, 0)
     prev_markers = os.environ.get("ZOMI_SUBAGENT_SESSIONS_DIR")
     try:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             os.environ["ZOMI_SUBAGENT_SESSIONS_DIR"] = str(tmp / "markers")
-            server = _write_fake_agy_server(tmp)
+            server = write_rpc_server(tmp, "fake_agy_session.py", setup=SESSION_OPEN_SCRIPT)
             env = os.environ.copy()
 
             # 1. Transient session/new failure retries up to 2 times and keeps ResidentServer healthy
             st1 = tmp / "st1.json"
-            cmd1 = [sys.executable, str(server), str(st1), "2", "Failed to start Antigravity conversation", "0"]
+            cmd1 = [sys.executable, str(server), str(st1), "2", "Failed to start Antigravity conversation"]
             host1 = ResidentServer(cmd1, cwd=str(tmp), env=env, agent="agy")
             try:
                 t1 = AgyAcpStream(
@@ -156,7 +88,7 @@ def agy_session_new_cases():
 
             # 2. Exhausted retries (3 failures) raises the original transient error
             st2 = tmp / "st2.json"
-            cmd2 = [sys.executable, str(server), str(st2), "5", "Failed to start Antigravity conversation", "0"]
+            cmd2 = [sys.executable, str(server), str(st2), "5", "Failed to start Antigravity conversation"]
             host2 = ResidentServer(cmd2, cwd=str(tmp), env=env, agent="agy")
             try:
                 t_fail = AgyAcpStream(
@@ -178,7 +110,7 @@ def agy_session_new_cases():
 
             # 3. Non-transient error (429) and session/resume MUST NOT retry
             st3 = tmp / "st3.json"
-            cmd3 = [sys.executable, str(server), str(st3), "5", "429 rate limit exceeded", "0"]
+            cmd3 = [sys.executable, str(server), str(st3), "5", "429 rate limit exceeded"]
             host3 = ResidentServer(cmd3, cwd=str(tmp), env=env, agent="agy")
             try:
                 t_rate = AgyAcpStream(
@@ -199,7 +131,7 @@ def agy_session_new_cases():
                 host3.shutdown()
 
             st4 = tmp / "st4.json"
-            cmd4 = [sys.executable, str(server), str(st4), "5", "Failed to start Antigravity conversation", "0"]
+            cmd4 = [sys.executable, str(server), str(st4), "5", "Failed to start Antigravity conversation"]
             host4 = ResidentServer(cmd4, cwd=str(tmp), env=env, agent="agy")
             try:
                 t_resume = AgyAcpStream(
@@ -220,37 +152,56 @@ def agy_session_new_cases():
                 host4.shutdown()
 
             # 4. Concurrent session/new on the same ResidentServer is strictly serialized
-            st5 = tmp / "st5.json"
-            cmd5 = [sys.executable, str(server), str(st5), "0", "unused", "80"]
-            host5 = ResidentServer(cmd5, cwd=str(tmp), env=env, agent="agy")
-            try:
-                results = []
-                errors = []
+            st5, gate = tmp / "st5.json", tmp / "open.sock"
+            cmd5 = [sys.executable, str(server), str(st5), "0", "unused", str(gate)]
+            with signal_socket(gate) as listener:
+                host5 = ResidentServer(cmd5, cwd=str(tmp), env=env, agent="agy")
+                try:
+                    results, errors = [], []
+                    attempted = threading.Barrier(4)
+                    lock = host5.session_create_lock
 
-                def run_one(idx):
+                    class ObservedLock:
+                        def acquire(self, **kwargs):
+                            attempted.wait(TIMEOUT)
+                            return lock.acquire(**kwargs)
+
+                        def release(self):
+                            lock.release()
+
+                    host5.session_create_lock = ObservedLock()
+
+                    def run_one(idx):
+                        try:
+                            turn = AgyAcpStream(
+                                cmd5, cwd=str(tmp), env=env,
+                                bot={"model": "gemini-4-hydrogen-high"}, prompt=f"p{idx}",
+                                resident=host5, is_subagent=True, rpc_timeout=TIMEOUT,
+                            )
+                            try:
+                                results.append([json.loads(line) for line in turn])
+                            finally:
+                                turn.close()
+                        except Exception as exc:
+                            errors.append(exc)
+
+                    threads = [threading.Thread(target=run_one, args=(i,), daemon=True) for i in range(3)]
+                    for th in threads:
+                        th.start()
                     try:
-                        turn = AgyAcpStream(
-                            cmd5, cwd=str(tmp), env=env,
-                            bot={"model": "gemini-4-hydrogen-high"}, prompt=f"p{idx}",
-                            resident=host5, is_subagent=True,
-                        )
-                        evs = [json.loads(line) for line in turn]
-                        turn.close()
-                        results.append(evs)
-                    except Exception as exc:
-                        errors.append(exc)
-
-                threads = [threading.Thread(target=run_one, args=(i,)) for i in range(3)]
-                for th in threads:
-                    th.start()
-                for th in threads:
-                    th.join(timeout=15)
-                assert not errors, errors
-                assert len(results) == 3, len(results)
-                state = json.loads(st5.read_text())
-                assert state["calls"] == 3 and state["max_in_flight"] == 1, state
-            finally:
-                host5.shutdown()
+                        # All three callers reach session/new before the first wire response can finish.
+                        attempted.wait(TIMEOUT)
+                        with listener.accept()[0]:
+                            assert lock.locked() and json.loads(st5.read_text())["calls"] == 1
+                    finally:
+                        for th in threads:
+                            th.join(TIMEOUT)
+                    assert not any(th.is_alive() for th in threads) and not errors, errors
+                    assert len(results) == 3, len(results)
+                    state = json.loads(st5.read_text())
+                    assert state["calls"] == 3 and state["max_in_flight"] == 1, state
+                finally:
+                    host5.shutdown()
     finally:
         AgyAcpStream.SESSION_NEW_RETRY_DELAYS = orig_delays
         if prev_markers is None:

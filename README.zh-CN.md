@@ -57,9 +57,12 @@ agy-cockpit/
 # 安装 / 同步到本机插件目录（~/.gemini/config/plugins/agy-cockpit）
 ./install.sh
 
-# 运行 Sidecar 与守卫单测
+# 运行 Sidecar 单测与全部离线运行时测试
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s sidecars/cockpit -p "test_*.py"
-python3 runtime/tests/test-sa-guard.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B runtime/tests/run_all.py
+
+# 单独运行守卫测试
+PYTHONDONTWRITEBYTECODE=1 python3 -B runtime/tests/test-sa-guard.py
 ```
 
 安装完成后重载 Antigravity，即可在侧边栏打开 **AGY Cockpit** 面板；点击「子代理」栏右上角 **设置** 可随时开启/关闭「接管子代理编排」并自定义各角色路由。

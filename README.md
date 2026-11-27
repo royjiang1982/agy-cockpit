@@ -57,9 +57,12 @@ agy-cockpit/
 # Install / sync into ~/.gemini/config/plugins/agy-cockpit
 ./install.sh
 
-# Run Sidecar and safety-guard unit tests
+# Run Sidecar and all offline runtime suites
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s sidecars/cockpit -p "test_*.py"
-python3 runtime/tests/test-sa-guard.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B runtime/tests/run_all.py
+
+# Run only the safety guard
+PYTHONDONTWRITEBYTECODE=1 python3 -B runtime/tests/test-sa-guard.py
 ```
 
 After installation, reload Antigravity and open the **AGY Cockpit** panel from the sidebar (or click the **Settings** button inside the Subagents section to toggle orchestration takeover and customize per-role routes).
