@@ -1,0 +1,16 @@
+{
+  "sa-guard": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./runtime/guard/sa-guard.sh agy",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

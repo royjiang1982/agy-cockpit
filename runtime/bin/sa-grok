@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Standalone Grok ACP subagent CLI over the Coding Agent ResidentServer daemon."""
+import argparse
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from agent_runtime.daemon import run_subagent_client
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--board", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--name", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--log-file", default=None)
+    parser.add_argument("-p", "--prompt", default=None)
+    parser.add_argument("-r", "--resume", "-s", "--session-id", "--conversation", dest="session_id", default="")
+    parser.add_argument("-m", "--model", default="grok-4.7")
+    parser.add_argument("--effort", "--reasoning-effort", dest="effort", default="xhigh")
+    parser.add_argument("--always-approve", action="store_true")
+    parser.add_argument("--no-subagents", action="store_true")
+    parser.add_argument("--output-format", default="streaming-json")
+    parser.add_argument("arguments", nargs="*")
+    args = parser.parse_intermixed_args()
+    prompt = args.prompt if args.prompt is not None else " ".join(args.arguments)
+    if not prompt or not prompt.strip():
+        parser.error("任务书不能为空")
+    return run_subagent_client(
+        log_file=args.log_file,
+        agent="grok",
+        model=args.model,
+        effort=args.effort,
+        session_id=args.session_id,
+        prompt=prompt,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -69,19 +69,19 @@ PY
 
 echo "==> [2/4] 预检 Python 语法..."
 python3 - "${SCRIPT_DIR}" <<'PY'
-import py_compile, sys
+import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
 targets = []
-for sub in ("sidecars/cockpit", "skills"):
+for sub in ("sidecars/cockpit", "skills", "runtime/agent_runtime", "runtime/guard"):
     base = root / sub
     if base.exists():
         targets.extend(sorted(base.rglob("*.py")))
 for path in targets:
     if "__pycache__" in path.parts:
         continue
-    py_compile.compile(str(path), doraise=True)
+    compile(path.read_text(encoding="utf-8"), str(path), "exec")
 print(f"    py_compile OK ({len(targets)} files)")
 PY
 
@@ -91,19 +91,19 @@ mkdir -p "${TARGET_REAL}"
 stage_dir="$(mktemp -d "${TARGET_REAL}/.stage.XXXXXX")"
 trap 'rm -rf "${stage_dir}"' EXIT
 
-for file_item in "plugin.json" "README.md"; do
+for file_item in "plugin.json" "README.md" "hooks.json"; do
   if [ -f "${SCRIPT_DIR}/${file_item}" ]; then
     cp -f "${SCRIPT_DIR}/${file_item}" "${stage_dir}/${file_item}"
     mv -f "${stage_dir}/${file_item}" "${TARGET_REAL}/${file_item}"
   fi
 done
 
-for dir_item in "assets" "rules" "skills/cockpit-dispatch" "sidecars/cockpit"; do
+for dir_item in "assets" "rules" "skills/cockpit-dispatch" "sidecars/cockpit" "runtime"; do
   src="${SCRIPT_DIR}/${dir_item}"
   dst="${TARGET_REAL}/${dir_item}"
   if [ -d "${src}" ]; then
     mkdir -p "$(dirname "${dst}")" "${stage_dir}/${dir_item}"
-    rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='.DS_Store' "${src}/" "${stage_dir}/${dir_item}/"
+    rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='.DS_Store' --exclude='tests' "${src}/" "${stage_dir}/${dir_item}/"
     mkdir -p "${dst}"
     rsync -a --delay-updates --delete \
       --exclude='__pycache__' \
@@ -116,6 +116,9 @@ chmod +x "${TARGET_REAL}/sidecars/cockpit/server.py"
 if [ -f "${TARGET_REAL}/skills/cockpit-dispatch/scripts/resolve.py" ]; then
   chmod +x "${TARGET_REAL}/skills/cockpit-dispatch/scripts/resolve.py"
 fi
+for exe in "${TARGET_REAL}/runtime/bin/"sa-* "${TARGET_REAL}/runtime/guard/sa-guard.sh" "${TARGET_REAL}/runtime/guard/sa-guard-hook.py"; do
+  [ -f "${exe}" ] && chmod +x "${exe}"
+done
 
 echo "==> [4/4] 核对已安装清单..."
 python3 - "${SCRIPT_DIR}" "${TARGET_REAL}" <<'PY'
@@ -124,11 +127,14 @@ from pathlib import Path
 
 src_root, dst_root = Path(sys.argv[1]), Path(sys.argv[2])
 checked = 0
-for rel in ("plugin.json", "README.md", "assets", "rules", "skills/cockpit-dispatch", "sidecars/cockpit"):
+for rel in ("plugin.json", "README.md", "hooks.json", "assets", "rules", "skills/cockpit-dispatch", "sidecars/cockpit", "runtime"):
     src = src_root / rel
     if not src.exists():
         continue
-    files = [src] if src.is_file() else [p for p in src.rglob("*") if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc" and p.name != ".DS_Store"]
+    files = [src] if src.is_file() else [
+        p for p in src.rglob("*")
+        if p.is_file() and "__pycache__" not in p.parts and "tests" not in p.parts and p.suffix != ".pyc" and p.name != ".DS_Store"
+    ]
     for sp in files:
         dp = dst_root / sp.relative_to(src_root)
         if not dp.exists() or hashlib.sha256(sp.read_bytes()).digest() != hashlib.sha256(dp.read_bytes()).digest():

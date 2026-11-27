@@ -28,8 +28,9 @@ _NAMESPACED_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-
 _LABEL = re.compile(r"[^()]*(?: \([A-Za-z0-9._ -]+\))?")
 MAX_QUOTA_AGE_SEC = 300
 _LOCK, _REAL_WHICH = threading.Lock(), shutil.which
-_EXTRA_WRAPPER_DIRS = (Path.home() / "Dev/_shared/agent-runtime/bin", Path.home() / ".gemini/config/bin", Path.home() / ".local/bin")
-
+_BUNDLED_BIN = Path(__file__).resolve().parents[2] / "runtime" / "bin"
+_EXTRA_WRAPPER_DIRS = (Path.home() / ".gemini/config/bin", Path.home() / ".local/bin")
+_CLI_BIN_DIRS = (Path.home() / ".local/bin", Path.home() / ".grok/bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin"))
 
 def _has_wrapper(engine):
     exe = f"sa-{engine}"
@@ -38,13 +39,15 @@ def _has_wrapper(engine):
     if shutil.which is not _REAL_WHICH or not os.environ.get("PATH"):
         return False
     env_bin = os.environ.get("SA_RUNTIME_BIN")
-    dirs = ([Path(env_bin)] if env_bin else []) + list(_EXTRA_WRAPPER_DIRS)
-    return any((d / exe).is_file() and os.access(d / exe, os.X_OK) for d in dirs)
-
+    if env_bin:
+        return (Path(env_bin) / exe).is_file() and os.access(Path(env_bin) / exe, os.X_OK)
+    if any((d / exe).is_file() and os.access(d / exe, os.X_OK) for d in _EXTRA_WRAPPER_DIRS):
+        return True
+    return ((_BUNDLED_BIN / exe).is_file() and os.access(_BUNDLED_BIN / exe, os.X_OK)
+            and (bool(shutil.which(engine)) or any((d / engine).is_file() and os.access(d / engine, os.X_OK) for d in _CLI_BIN_DIRS)))
 
 class PolicyConflictError(Exception):
     """The revision has changed or the on-disk policy cannot be safely edited."""
-
 
 def _target(engine, model, effort="", channel="cli", **extras):
     return dict(channel=channel, engine=engine, model=model, effort=effort, **extras)
@@ -78,11 +81,9 @@ def default_policy():
 def _fields(obj, required, optional=()):
     if not isinstance(obj, dict) or not set(required) <= obj.keys() or obj.keys() - set(required) - set(optional):
         raise ValueError("unexpected or missing policy fields")
-
 def _bool(value):
     if type(value) is not bool:
         raise ValueError("policy switches must be boolean")
-
 def _revision(value):
     if type(value) is not int or value < 1:
         raise ValueError("revision must be a positive integer")

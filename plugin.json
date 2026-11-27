@@ -3,7 +3,7 @@
   "name": "agy-cockpit",
   "displayName": "AGY Cockpit",
   "version": "1.0.0",
-  "description": "实时驾驶舱：监控上下文窗口、缓存命中、TPS/TTFT、子代理消耗与模型配额。",
+  "description": "实时驾驶舱与子代理编排中心：监控上下文窗口、缓存命中、TPS/TTFT、消耗与配额，并统一管理多引擎子代理路由、常驻执行与安全守卫。",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
     "打开 AGY Cockpit 面板"

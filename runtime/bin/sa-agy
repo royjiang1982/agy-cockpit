@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Standalone AGY ACP subagent CLI over the Coding Agent ResidentServer daemon."""
+import argparse
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from agent_runtime.daemon import run_subagent_client
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--board", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--name", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--log-file", default=None)
+    parser.add_argument("-p", "--prompt", default=None)
+    parser.add_argument("-m", "--model", default="gemini-4-hydrogen-high")
+    parser.add_argument("--conversation", "-r", default="")
+    parser.add_argument("--mode", default="accept-edits")
+    parser.add_argument("--output-format", default="stream-json")
+    parser.add_argument("--print-response-only", action="store_true")
+    parser.add_argument("positional", nargs="*")
+    args = parser.parse_intermixed_args()
+    prompt = args.prompt if args.prompt is not None else " ".join(args.positional)
+    if not prompt or not prompt.strip():
+        parser.error("任务书（--prompt）不能为空")
+    mode = "plan" if args.mode == "plan" else "accept-edits"
+    return run_subagent_client(
+        log_file=args.log_file,
+        agent="agy",
+        model=args.model,
+        mode=mode,
+        session_id=args.conversation,
+        prompt=prompt,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())
