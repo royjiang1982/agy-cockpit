@@ -3,6 +3,7 @@
 [![Antigravity Plugin](https://img.shields.io/badge/Antigravity-Plugin-4285F4?logo=google&logoColor=white)](https://github.com/royjiang1982/agy-cockpit)
 [![Version](https://img.shields.io/badge/version-1.0.0-0A7EA4)](./plugin.json)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-2EA44F)](./LICENSE)
 
 **English** | [简体中文](./README.zh-CN.md)
 
