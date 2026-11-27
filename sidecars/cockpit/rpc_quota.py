@@ -1,4 +1,4 @@
-"""LanguageServer ConnectRPC client (model sync), official CLI quota monitors, and live theme reader."""
+"""Official CLI quota monitors and live Antigravity theme reader."""
 
 from __future__ import annotations
 
@@ -28,9 +28,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from analyzer import HOME, cached_paths, decode_proto, log_lines, serialized
+from analyzer import HOME, cached_paths, log_lines, serialized
 from agy_quota import fetch_agy_quota
-from pricing import register_dynamic_models
 from quota_sources import codex_rpc_windows as _extract_codex_rpc_windows, codex_rollout_windows
 from droid_ledger import parse_droid_reset_sec, droid_reset_precision, droid_probe_due, anchor_droid_quota
 from subagents import CODEX_SESSIONS_DIR, FACTORY_SESSIONS_DIR, GROK_SESSIONS_DIR, parse_iso_ts
@@ -107,8 +106,6 @@ def _probe_output(command, *, timeout, text=True, stderr=subprocess.DEVNULL):
         _finish_probe(proc)
 
 
-_CACHED_LS_ENDPOINT: tuple[int, str] | None = None
-_LAST_LS_MODEL_SYNC: tuple[tuple[int, str], float] | None = None
 _CODEX_QUOTA_CACHE: tuple[tuple[str, float], dict[str, dict]] | None = None
 _LAST_CODEX_SCAN_TS: float = 0.0
 _DROID_QUOTA_CACHE: dict[str, dict] = {}
@@ -124,70 +121,6 @@ _THEME_CFG_CACHE: dict = {
     "dark": {"background": "#101010", "foreground": "#cccccc", "primary": "#007acc"},
     "light": {"background": "#F9F9F9", "foreground": "#101010", "primary": "#007acc"},
 }
-
-
-def discover_ls_endpoints(*, timeout: float = 6.0) -> list[tuple[int, str]]:
-    """Find running Antigravity App language_server (port, csrf) endpoints."""
-    endpoints: list[tuple[int, str]] = []
-    deadline = time.monotonic() + timeout
-    try:
-        out = _probe_output(["ps", "-axww", "-o", "pid,command"], text=True, timeout=min(2.0, timeout))
-        for line in reversed(out.splitlines()):
-            if "language_server" in line and "--csrf_token" in line and "--subclient_type hub" in line:
-                pid = line.strip().split()[0]
-                m = re.search(r"--csrf_token\s+([^\s]+)", line)
-                csrf = m.group(1) if m else ""
-                if not csrf:
-                    continue
-                if time.monotonic() >= deadline:
-                    break
-                try:
-                    lsof = _probe_output(["lsof", "-nP", "-p", pid], text=True, timeout=min(2.0, max(0.1, deadline - time.monotonic())))
-                    ports = [int(p) for p in re.findall(r"127\.0\.0\.1:(\d+)\s+\(LISTEN\)", lsof)]
-                    for port in ports:
-                        if (port, csrf) not in endpoints:
-                            endpoints.append((port, csrf))
-                except Exception:
-                    continue
-    except Exception:
-        pass
-    return endpoints
-
-
-class NativeRPCError(RuntimeError):
-    """LanguageServer ConnectRPC call error."""
-
-    def __init__(self, message, state='rejected'):
-        super().__init__(message)
-        self.state = state
-
-
-def _native_rpc(method: str, payload: bytes, endpoint: tuple[int, str], timeout=8.0) -> bytes:
-    """One Connect unary attempt on the endpoint selected by a readonly query."""
-    port, csrf = endpoint
-    request = urllib.request.Request(
-        f'http://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/{method}',
-        data=payload, method='POST',
-        headers={'Content-Type': 'application/proto', 'Connect-Protocol-Version': '1',
-                 'x-codeium-csrf-token': csrf})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            if response.status != 200:
-                raise NativeRPCError(f'{method}: HTTP {response.status}', 'unknown')
-            body = response.read(32 * 1024 * 1024 + 1)
-            if len(body) > 32 * 1024 * 1024:
-                raise NativeRPCError(f'{method}: 响应过大', 'unknown')
-            return body
-    except urllib.error.HTTPError as exc:
-        state = 'rejected' if exc.code in (400, 401, 403, 404, 405) else 'unknown'
-        detail = ''
-        with contextlib.suppress(Exception):
-            raw = exc.read(512).decode('utf-8', errors='replace').strip()
-            if raw:
-                detail = f' ({raw[:240]})'
-        raise NativeRPCError(f'{method}: HTTP {exc.code}{detail}', state) from None
-    except (OSError, urllib.error.URLError, http.client.HTTPException) as exc:
-        raise NativeRPCError(f'{method}: 连接失败或响应不确定 ({type(exc).__name__})', 'unknown') from None
 
 
 def _find_cli_bin(name: str) -> str | None:
@@ -540,64 +473,6 @@ def fetch_droid_quota(seed_cache: dict[str, dict] | None = None, force_refresh: 
         _LAST_DROID_SUCCESS_MTIME = max_s_mt
         _DROID_QUOTA_CACHE = anchor_droid_quota(_DROID_QUOTA_CACHE, previous, now_done)
     return {"droid-installed": {"installed": True}, **_DROID_QUOTA_CACHE}
-
-
-def _sync_ls_model_configs(port: int, csrf: str, force_refresh: bool = False) -> bool:
-    """Sync live `ClientModelConfig` enum mappings from LanguageServer so newly launched models never render as `#14xx`."""
-    global _LAST_LS_MODEL_SYNC
-    now = time.monotonic()
-    if (
-        not force_refresh
-        and _LAST_LS_MODEL_SYNC is not None
-        and _LAST_LS_MODEL_SYNC[0] == (port, csrf)
-        and (now - _LAST_LS_MODEL_SYNC[1]) < 300.0
-    ):
-        return False
-    try:
-        raw = _native_rpc("GetCascadeModelConfigData", b"", (port, csrf), timeout=2.0)
-        entries: list[tuple[int, str, str]] = []
-        for fnum, wtype, val in decode_proto(raw):
-            if fnum == 1 and wtype == "bytes" and isinstance(val, bytes):
-                label = ""
-                enum_id = 0
-                model_id = ""
-                for cf_num, cf_t, cf_v in decode_proto(val):
-                    if cf_num == 1 and cf_t == "bytes" and isinstance(cf_v, bytes):
-                        label = cf_v.decode("utf-8", errors="ignore").strip()
-                    elif cf_num == 2 and cf_t == "bytes" and isinstance(cf_v, bytes):
-                        for mf_num, mf_t, mf_v in decode_proto(cf_v):
-                            if mf_num == 1 and mf_t == "varint" and isinstance(mf_v, int):
-                                enum_id = mf_v
-                    elif cf_num == 21 and cf_t == "bytes" and isinstance(cf_v, bytes):
-                        model_id = cf_v.decode("utf-8", errors="ignore").strip()
-                if enum_id > 0 and label:
-                    entries.append((enum_id, label, model_id))
-        if entries:
-            _LAST_LS_MODEL_SYNC = ((port, csrf), now)
-            return register_dynamic_models(entries)
-    except Exception:
-        pass
-    return False
-
-
-def sync_ls_model_configs(force_refresh: bool = False) -> bool:
-    """Discover local LanguageServer and sync dynamic `ClientModelConfig` labels (no upstream network calls)."""
-    global _CACHED_LS_ENDPOINT
-    if not force_refresh and _LAST_LS_MODEL_SYNC is not None and (time.monotonic() - _LAST_LS_MODEL_SYNC[1]) < 300.0:
-        return False
-    candidates: list[tuple[int, str]] = []
-    if _CACHED_LS_ENDPOINT is not None:
-        candidates.append(_CACHED_LS_ENDPOINT)
-    for ep in discover_ls_endpoints(timeout=2.5):
-        if ep not in candidates:
-            candidates.append(ep)
-    for port, csrf in candidates:
-        before = _LAST_LS_MODEL_SYNC
-        changed = _sync_ls_model_configs(port, csrf, force_refresh=force_refresh)
-        if _LAST_LS_MODEL_SYNC != before or (_LAST_LS_MODEL_SYNC is not None and _LAST_LS_MODEL_SYNC[0] == (port, csrf)):
-            _CACHED_LS_ENDPOINT = (port, csrf)
-            return changed
-    return False
 
 
 def fetch_quota_buckets_with_meta(

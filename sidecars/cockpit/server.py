@@ -56,7 +56,6 @@ from rpc_quota import (  # noqa: E402
     fetch_codex_quota,
     fetch_quota_buckets_with_meta,
     get_live_theme,
-    sync_ls_model_configs,
     active_probe_count, pause_probes, resume_probes, terminate_active_probes,
 )
 from subagents import (  # noqa: E402
@@ -888,10 +887,6 @@ def _quota_and_cost_worker() -> None:
             if not admitted:
                 continue
             try:
-                if tick == 1 or tick % 2000 == 0:
-                    if sync_ls_model_configs():
-                        with _STATE_LOCK:
-                            _save_persisted_state()
                 _refresh_window_costs()
                 if tick == 1 or tick % 67 == 0:
                     _preheat_recent_app_conversations()
