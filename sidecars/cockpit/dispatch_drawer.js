@@ -20,16 +20,16 @@
   const E3 = ['low', 'medium', 'high'], E4 = ['low', 'medium', 'high', 'xhigh'];
   const E4M = ['low', 'medium', 'high', 'max'], E5 = ['low', 'medium', 'high', 'xhigh', 'max'], E6 = [...E5, 'ultra'];
 
-  const fam = (id, label, efforts, re, brand) => ({ id, label, efforts, re, ...(brand ? { brand } : {}) });
+  const fam = (id, label, efforts, re, brand, group) => ({ id, label, efforts, re, ...(brand ? { brand } : {}), ...(group ? { group } : {}) });
   const CATALOG = {
     agy: [
-      fam('hydrogen', 'Hydrogen', E4, /^hydrogen$|^gemini-[\d.]+-hydrogen(?:-[a-z]+)?$/),
-      fam('neon', 'Neon', E4, /^neon$|^gemini-[\d.]+-neon(?:-[a-z]+)?$/),
-      fam('argon', 'Argon', E3, /^argon$|^gemini-[\d.]+-argon(?:-[a-z]+)?$/),
-      fam('carbon', 'Carbon', E3, /^carbon$|^gemini-[\d.]+-carbon(?:-[a-z]+)?$/),
-      fam('flash', 'Flash', E3, /^flash$|^gemini-[\d.]+-flash(?:-[a-z]+)?$/),
-      fam('opus', 'Opus', E4M, /^opus$|^claude-opus-[\d.-]+(?:-[a-z]+)?$/, 'claude'),
-      fam('sonnet', 'Sonnet', E4M, /^sonnet$|^claude-sonnet-[\d.-]+(?:-[a-z]+)?$/, 'claude'),
+      fam('hydrogen', 'Hydrogen', E4, /^hydrogen$|^gemini-[\d.]+-hydrogen(?:-[a-z]+)?$/, 'agy', 'Gemini'),
+      fam('neon', 'Neon', E4, /^neon$|^gemini-[\d.]+-neon(?:-[a-z]+)?$/, 'agy', 'Gemini'),
+      fam('argon', 'Argon', E3, /^argon$|^gemini-[\d.]+-argon(?:-[a-z]+)?$/, 'agy', 'Gemini'),
+      fam('carbon', 'Carbon', E3, /^carbon$|^gemini-[\d.]+-carbon(?:-[a-z]+)?$/, 'agy', 'Gemini'),
+      fam('flash', 'Flash', E3, /^flash$|^gemini-[\d.]+-flash(?:-[a-z]+)?$/, 'agy', 'Gemini'),
+      fam('opus', 'Opus', E4M, /^opus$|^claude-opus-[\d.-]+(?:-[a-z]+)?$/, 'claude', 'Claude'),
+      fam('sonnet', 'Sonnet', E4M, /^sonnet$|^claude-sonnet-[\d.-]+(?:-[a-z]+)?$/, 'claude', 'Claude'),
     ],
     codex: [
       fam('sol', 'Sol', E6, /^sol$|^gpt-[\d.]+-sol$/),
@@ -70,11 +70,10 @@
   };
   function droidFallbackFor(primary, role) {
     const ek = primary.engine, spec = findSpec(ek, primary.model), id = spec?.id || String(primary.model || '').toLowerCase();
-    if (ek === 'codex') return t('droid', id, id === 'astra' && primary.effort === 'xhigh' ? 'xhigh' : 'same', 'cli', { enabled: true });
-    if (ek === 'grok') return t('droid', 'astra', 'xhigh', 'cli', { enabled: true });
-    if (id === 'opus' || id === 'sonnet') return t('droid', id, primary.effort || 'high', 'cli', { enabled: true });
-    if (id === 'flash' || (id === 'hydrogen' && role === 'scout')) return t('droid', 'flash', 'high', 'cli', { enabled: true });
-    return t('droid', 'argon', 'medium', 'cli', { enabled: true });
+    if (ek === 'codex') return t('droid', id, 'same', 'cli', { enabled: true });
+    if (ek === 'grok') return t('droid', 'astra', 'same', 'cli', { enabled: true });
+    if (id === 'opus' || id === 'sonnet' || id === 'flash' || id === 'argon') return t('droid', id, 'same', 'cli', { enabled: true });
+    return t('droid', id === 'hydrogen' && role === 'scout' ? 'flash' : 'argon', 'same', 'cli', { enabled: true });
   }
   function findFallbackEntry(p, primary) {
     const ek = primary.engine, spec = findSpec(ek, primary.model);
@@ -159,12 +158,18 @@
       }))));
 
     const modList = modelsFor(ek), modItems = modList.some(x => x.id === spec.id) ? modList : [spec, ...modList];
-    card.append(el('div', { className: 'ds-block' }, el('div', { className: 'ds-block-lbl' }, '模型'),
-      el('div', { className: 'ds-chips' }, ...modItems.map(x => {
-        const btn = el('button', { type: 'button', className: x.id === spec.id ? 'ds-chip is-on' : 'ds-chip' }, dot(x.brand || em.brand), x.label);
-        btn.addEventListener('click', () => { if (x.id !== spec.id) onChange(buildTarget(ek, x, curEffRaw || 'high')); });
-        return btn;
-      }))));
+    const mkChip = x => {
+      const btn = el('button', { type: 'button', className: x.id === spec.id ? 'ds-chip is-on' : 'ds-chip' }, dot(x.brand || em.brand), x.label);
+      btn.addEventListener('click', () => { if (x.id !== spec.id) onChange(buildTarget(ek, x, curEffRaw || 'high')); });
+      return btn;
+    };
+    const groups = [...new Set(modItems.map(x => x.group).filter(Boolean))], modBlock = el('div', { className: 'ds-block' }, el('div', { className: 'ds-block-lbl' }, '模型'));
+    if (groups.length > 1) {
+      for (const g of groups) modBlock.append(el('div', { className: 'ds-mod-grp' }, el('span', { className: 'ds-mod-sub' }, g), el('div', { className: 'ds-chips' }, ...modItems.filter(x => x.group === g).map(mkChip))));
+      const rest = modItems.filter(x => !x.group);
+      if (rest.length) modBlock.append(el('div', { className: 'ds-chips' }, ...rest.map(mkChip)));
+    } else modBlock.append(el('div', { className: 'ds-chips' }, ...modItems.map(mkChip)));
+    card.append(modBlock);
 
     if (spec.efforts.length) {
       const curEff = spec.efforts.includes(curEffRaw) ? curEffRaw : spec.efforts[0];
@@ -214,45 +219,45 @@
     fastCb.addEventListener('change', () => { p.codex_fast = fastCb.checked; commit(false); });
     optCard.append(el('label', { className: 'ds-item ds-item-click' }, el('span', { className: 'ds-lbl-sub' }, 'Codex Fast 模式'), fastCb));
 
-    const droidOk = hasDroid(), thrVal = el('span', {}, `≤${p.quota_fallback.threshold_pct}%`);
-    const minus = el('button', { type: 'button', disabled: !droidOk || p.quota_fallback.threshold_pct <= 0, 'aria-label': '降低阈值' }, '−');
-    const plus = el('button', { type: 'button', disabled: !droidOk || p.quota_fallback.threshold_pct >= 50, 'aria-label': '提高阈值' }, '+');
-    const stepBox = el('div', { className: droidOk && p.quota_fallback.enabled ? 'ds-step' : 'ds-step is-off' }, minus, thrVal, plus);
-    const nudge = d => {
-      const next = Math.min(50, Math.max(0, p.quota_fallback.threshold_pct + d));
-      if (next === p.quota_fallback.threshold_pct) return;
-      p.quota_fallback.threshold_pct = next; thrVal.textContent = `≤${next}%`;
-      minus.disabled = next <= 0; plus.disabled = next >= 50; commit(false);
-    };
-    minus.addEventListener('click', () => nudge(-5));
-    plus.addEventListener('click', () => nudge(5));
-    const qCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: droidOk && p.quota_fallback.enabled, disabled: !droidOk, 'aria-label': '低配额自动回退到 Droid' });
-    qCb.addEventListener('change', () => { p.quota_fallback.enabled = qCb.checked; stepBox.className = qCb.checked ? 'ds-step' : 'ds-step is-off'; commit(false); });
-    optCard.append(el('div', { className: droidOk ? 'ds-item' : 'ds-item is-dis' },
-      el('div', { className: 'ds-row-col' }, el('span', { className: 'ds-lbl-sub' }, '低配额自动回退'), droidOk ? '' : el('span', { className: 'ds-fb-sub' }, '未检测到 Droid，已停用')),
-      el('div', { className: 'ds-thr-wrap' }, droidOk ? stepBox : '', qCb)));
+    if (hasDroid()) {
+      const thrVal = el('span', {}, `≤${p.quota_fallback.threshold_pct}%`);
+      const minus = el('button', { type: 'button', disabled: p.quota_fallback.threshold_pct <= 0, 'aria-label': '降低阈值' }, '−');
+      const plus = el('button', { type: 'button', disabled: p.quota_fallback.threshold_pct >= 50, 'aria-label': '提高阈值' }, '+');
+      const stepBox = el('div', { className: p.quota_fallback.enabled ? 'ds-step' : 'ds-step is-off' }, minus, thrVal, plus);
+      const nudge = d => {
+        const next = Math.min(50, Math.max(0, p.quota_fallback.threshold_pct + d));
+        if (next === p.quota_fallback.threshold_pct) return;
+        p.quota_fallback.threshold_pct = next; thrVal.textContent = `≤${next}%`;
+        minus.disabled = next <= 0; plus.disabled = next >= 50; commit(false);
+      };
+      minus.addEventListener('click', () => nudge(-5));
+      plus.addEventListener('click', () => nudge(5));
+      const qCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: p.quota_fallback.enabled, 'aria-label': '低配额自动回退到 Droid' });
+      qCb.addEventListener('change', () => { p.quota_fallback.enabled = qCb.checked; stepBox.className = qCb.checked ? 'ds-step' : 'ds-step is-off'; commit(false); });
+      optCard.append(el('div', { className: 'ds-item' }, el('span', { className: 'ds-lbl-sub' }, '低配额自动回退'), el('div', { className: 'ds-thr-wrap' }, stepBox, qCb)));
+    }
 
     return [masterCard, roleCard, optCard];
   }
 
   function renderRoleDetail(p, role) {
-    const cur = p.roles[role].primary, droidOk = hasDroid();
+    const cur = p.roles[role].primary;
     const kids = [renderTargetEditor(cur, { onChange: next => { p.roles[role].primary = next; syncSwitches(p); commit(); } })];
+    if (!hasDroid()) return kids;
     const [fbKey, chain] = findFallbackEntry(p, cur);
     const activeFb = chain.find(c => c && c.enabled !== false && c.engine === 'droid') || null;
     const mapped = activeFb || droidFallbackFor(cur, role);
-    const fbCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: droidOk && Boolean(activeFb), disabled: !droidOk, 'aria-label': '回退到 Droid' });
+    const fbCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: Boolean(activeFb), 'aria-label': '回退到 Droid' });
     fbCb.addEventListener('change', () => {
-      if (!droidOk) return;
       const spec = findSpec(cur.engine, cur.model), canonKey = `${cur.engine}:${spec?.id || cur.model}`;
       if (fbKey !== canonKey) delete p.fallbacks[fbKey];
       p.fallbacks[canonKey] = [{ ...droidFallbackFor(cur, role), enabled: fbCb.checked }];
       commit();
     });
-    const sub = droidOk ? `→ Droid ${fmtTarget(mapped).text}` : '未检测到 Droid 引擎，不可开启';
+    const fbPreview = { ...mapped, effort: mapped.effort === 'same' ? effortOf(cur) : mapped.effort };
     kids.push(el('div', { className: 'ds-card' },
-      el('label', { className: droidOk ? 'ds-item ds-item-click' : 'ds-item is-dis' },
-        el('div', { className: 'ds-row-col' }, el('span', { className: 'ds-lbl' }, '回退到 Droid'), el('span', { className: 'ds-fb-sub' }, sub)), fbCb)));
+      el('label', { className: 'ds-item ds-item-click' },
+        el('div', { className: 'ds-row-col' }, el('span', { className: 'ds-lbl' }, '回退到 Droid'), el('span', { className: 'ds-fb-sub' }, `→ Droid ${fmtTarget(fbPreview).text}`)), fbCb)));
     return kids;
   }
 
@@ -314,7 +319,7 @@
     const res = await fetch(withToken(url), opts), data = await res.json().catch(() => null);
     if (!res.ok || !data || data.ok === false) {
       const err = data?.error || `请求失败 (${res.status})`;
-      const msg = res.status === 403 && err === 'invalid CSRF token' ? '面板已重载，请刷新后重试' : res.status === 403 ? `保存被拒绝 (${err})` : err;
+      const msg = res.status === 403 && err === 'invalid CSRF token' ? '面板已重载，请刷新后重试' : res.status === 403 ? `保存被拒绝 (${err} · ${location.origin})` : err;
       throw Object.assign(new Error(msg), { status: res.status, code: err });
     }
     return data;
