@@ -177,6 +177,16 @@ class DispatchAPITests(unittest.TestCase):
             self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": revision},
                                           dict(self.headers, Host=host, Origin=f"http://{host}"))[0], 200)
 
+    def test_allows_antigravity_sidecar_plugin_origin_with_loopback_host(self):
+        plugin_origin = f"plugin://agy-cockpit--cockpit-{self.port}"
+        for revision, host in enumerate((f"127.0.0.1:{self.port}", "127.0.0.1", "localhost"), start=1):
+            self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": revision},
+                                          dict(self.headers, Host=host, Origin=plugin_origin))[0], 200)
+        self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 4},
+                                      dict(self.headers, Host="127.0.0.1", Origin=f"plugin://agy-cockpit--cockpit-{self.port + 1}"))[0], 403)
+        self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 4},
+                                      dict(self.headers, Host="evil.example", Origin=plugin_origin))[0], 403)
+
     def test_ipv4_host_rejects_ipv6_https_and_mismatched_port_origins(self):
         host = f"127.0.0.1:{self.port}"
         for origin in (f"http://[::1]:{self.port}", f"https://{host}", f"http://127.0.0.1:{self.port + 1}",

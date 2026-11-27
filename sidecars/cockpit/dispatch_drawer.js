@@ -68,12 +68,9 @@
     const eff = spec.efforts.includes(effort) ? effort : (spec.efforts.includes('high') ? 'high' : (spec.efforts[spec.efforts.length - 1] || ''));
     return t(ek, spec.id, eff, 'cli', extra);
   };
-  function droidFallbackFor(primary, role) {
-    const ek = primary.engine, spec = findSpec(ek, primary.model), id = spec?.id || String(primary.model || '').toLowerCase();
-    if (ek === 'codex') return t('droid', id, 'same', 'cli', { enabled: true });
-    if (ek === 'grok') return t('droid', 'astra', 'same', 'cli', { enabled: true });
-    if (id === 'opus' || id === 'sonnet' || id === 'flash' || id === 'argon') return t('droid', id, 'same', 'cli', { enabled: true });
-    return t('droid', id === 'hydrogen' && role === 'scout' ? 'flash' : 'argon', 'same', 'cli', { enabled: true });
+  function droidFallbackFor(primary) {
+    const spec = findSpec(primary.engine, primary.model), id = spec?.id || String(primary.model || '').toLowerCase();
+    return t('droid', id, 'same', 'cli', { enabled: true });
   }
   function findFallbackEntry(p, primary) {
     const ek = primary.engine, spec = findSpec(ek, primary.model);
@@ -89,7 +86,7 @@
   }
   const fmtTarget = x => {
     const ek = engKeyOf(x), em = ENG[ek] || { label: ek, brand: 'agy' };
-    const spec = findSpec(ek, x.model) || (ek === 'droid' ? (findSpec('codex', x.model) || findSpec('agy', x.model)) : null);
+    const spec = findSpec(ek, x.model) || (ek === 'droid' ? (findSpec('codex', x.model) || findSpec('agy', x.model) || findSpec('grok', x.model)) : null);
     const lbl = spec ? spec.label : (DROID_LABELS[String(x.model || '').toLowerCase()] || String(x.model || ''));
     const eff = EFF[effortOf(x)];
     const brand = ek === 'droid' ? 'droid' : (spec?.brand || (ek === 'agy' && /claude|opus|sonnet/i.test(x.model || '') ? 'claude' : em.brand));
@@ -242,19 +239,17 @@
 
   function renderRoleDetail(p, role) {
     const cur = p.roles[role].primary;
-    const kids = [renderTargetEditor(cur, { onChange: next => { p.roles[role].primary = next; syncSwitches(p); commit(); } })];
+    const syncFb = (target, enabled) => {
+      const [oldKey] = findFallbackEntry(p, target), spec = findSpec(target.engine, target.model), canonKey = `${target.engine}:${spec?.id || target.model}`;
+      if (oldKey !== canonKey) delete p.fallbacks[oldKey];
+      p.fallbacks[canonKey] = [{ ...droidFallbackFor(target), enabled }];
+    };
+    const [, chain] = findFallbackEntry(p, cur), activeFb = chain.find(c => c && c.enabled !== false && c.engine === 'droid') || null;
+    const kids = [renderTargetEditor(cur, { onChange: next => { p.roles[role].primary = next; if (hasDroid() && activeFb) syncFb(next, true); syncSwitches(p); commit(); } })];
     if (!hasDroid()) return kids;
-    const [fbKey, chain] = findFallbackEntry(p, cur);
-    const activeFb = chain.find(c => c && c.enabled !== false && c.engine === 'droid') || null;
-    const mapped = activeFb || droidFallbackFor(cur, role);
     const fbCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: Boolean(activeFb), 'aria-label': '回退到 Droid' });
-    fbCb.addEventListener('change', () => {
-      const spec = findSpec(cur.engine, cur.model), canonKey = `${cur.engine}:${spec?.id || cur.model}`;
-      if (fbKey !== canonKey) delete p.fallbacks[fbKey];
-      p.fallbacks[canonKey] = [{ ...droidFallbackFor(cur, role), enabled: fbCb.checked }];
-      commit();
-    });
-    const fbPreview = { ...mapped, effort: mapped.effort === 'same' ? effortOf(cur) : mapped.effort };
+    fbCb.addEventListener('change', () => { syncFb(cur, fbCb.checked); commit(); });
+    const fbPreview = { ...droidFallbackFor(cur), effort: effortOf(cur) };
     kids.push(el('div', { className: 'ds-card' },
       el('label', { className: 'ds-item ds-item-click' },
         el('div', { className: 'ds-row-col' }, el('span', { className: 'ds-lbl' }, '回退到 Droid'), el('span', { className: 'ds-fb-sub' }, `→ Droid ${fmtTarget(fbPreview).text}`)), fbCb)));

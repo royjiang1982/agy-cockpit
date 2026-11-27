@@ -132,8 +132,9 @@ def _latest_agy(state_path: Path | None = None) -> dict[str, str]:
     return {fam: base for fam, (_, base) in best.items()}
 
 
-def _latest_droid(codex_cache_path: Path | None = None, agy_state_path: Path | None = None) -> dict[str, str]:
-    merged = {**_latest_agy(agy_state_path), **_latest_codex(codex_cache_path)}
+def _latest_droid(codex_cache_path: Path | None = None, agy_state_path: Path | None = None,
+                  grok_cache_path: Path | None = None) -> dict[str, str]:
+    merged = {**_latest_agy(agy_state_path), **_latest_codex(codex_cache_path), **_latest_grok(grok_cache_path)}
     if _FACTORY_CACHE_DIR.is_dir():
         for path in sorted(_FACTORY_CACHE_DIR.glob("*.json"))[:4]:
             doc = _read_json_cached(path)
@@ -172,7 +173,7 @@ def family_of(engine: str, model: str) -> str | None:
         mc = _RE_AGY_CLAUDE.fullmatch(low)
         return mc.group(1) if mc else None
     if engine == "droid":
-        return family_of("codex", low) or family_of("agy", low)
+        return family_of("codex", low) or family_of("agy", low) or family_of("grok", low)
     return None
 
 
@@ -195,8 +196,8 @@ def resolve_model_id(
         base = _latest_agy(agy_state_path)[low]
         eff = effort if effort and effort != "same" else _AGY_DEFAULT_EFFORT[low]
         return f"{base}-{eff}"
-    if engine == "droid" and (low in _CODEX_DEFAULTS or low in _AGY_DEFAULTS):
-        return _latest_droid(codex_cache_path, agy_state_path)[low]
+    if engine == "droid" and (low in _CODEX_DEFAULTS or low in _AGY_DEFAULTS or low in _GROK_DEFAULTS):
+        return _latest_droid(codex_cache_path, agy_state_path, grok_cache_path)[low]
     return model
 
 

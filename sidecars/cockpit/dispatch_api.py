@@ -35,15 +35,25 @@ def _single(headers, key):
     return values[0] if len(values) == 1 else None
 
 
+_LOOPBACK_HOST = re.compile(r"^(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?$")
+
+
 def verify_write_request(handler, expected_host_port):
     """Validate framing, exact trusted Origin, and CSRF before reading any body."""
     headers = handler.headers
-    host = _single(headers, "Host")
-    if host not in {f"{name}:{expected_host_port}" for name in ("localhost", "127.0.0.1", "[::1]")}:
-        raise WriteRequestError(403, "invalid host")
     origin = _single(headers, "Origin")
-    if origin not in (f"http://{host}", "plugin://agy-cockpit"):
-        raise WriteRequestError(403, "invalid origin")
+    plugin_origin = f"plugin://agy-cockpit--cockpit-{expected_host_port}"
+    exact_hosts = {f"{name}:{expected_host_port}" for name in ("localhost", "127.0.0.1", "[::1]")}
+    hosts = headers.get_all("Host", [])
+    host = hosts[0] if len(hosts) == 1 else None
+    if origin == plugin_origin:
+        if not hosts or not all(_LOOPBACK_HOST.fullmatch(h) for h in hosts):
+            raise WriteRequestError(403, f"invalid host: {hosts!r}")
+    else:
+        if host not in exact_hosts:
+            raise WriteRequestError(403, "invalid host")
+        if origin not in (f"http://{host}", "plugin://agy-cockpit"):
+            raise WriteRequestError(403, "invalid origin")
     token = _single(headers, "X-Cockpit-CSRF")
     if not token or not hmac.compare_digest(token.encode("utf-8"), _CSRF_TOKEN.encode("ascii")):
         raise WriteRequestError(403, "invalid CSRF token")
