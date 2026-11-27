@@ -45,43 +45,27 @@
   const DROID_LABELS = { flash: 'Flash', argon: 'Argon', opus: 'Opus', sonnet: 'Sonnet', sol: 'Sol', astra: 'Astra', terra: 'Terra', luna: 'Luna' };
   const t = (engine, model, effort = '', channel = 'cli', extra = {}) => ({ channel, engine, model, effort, ...extra });
   const DEFAULT_SEAT_POOL = [
-    t('codex', 'astra', 'xhigh', 'cli', { enabled: true }), t('agy', 'neon', 'xhigh', 'cli', { enabled: true }),
-    t('agy', 'opus', 'high', 'cli', { enabled: true }), t('grok', 'grok', 'xhigh', 'cli', { enabled: true }),
-    t('codex', 'sol', 'xhigh', 'cli', { enabled: true }),
+    t('agy', 'neon', 'xhigh', 'cli', { enabled: true }), t('agy', 'carbon', 'high', 'cli', { enabled: true }),
+    t('agy', 'opus', 'high', 'cli', { enabled: true }), t('codex', 'astra', 'xhigh', 'cli', { enabled: true }),
+    t('grok', 'grok', 'xhigh', 'cli', { enabled: true }), t('codex', 'sol', 'xhigh', 'cli', { enabled: true }),
   ];
 
   const el = (tag, attrs = {}, ...kids) => {
     const n = document.createElement(tag);
-    for (const [k, v] of Object.entries(attrs)) {
-      if (typeof v === 'boolean' || k === 'value' || k === 'className') n[k] = v;
-      else n.setAttribute(k, v);
-    }
-    n.append(...kids);
-    return n;
+    for (const [k, v] of Object.entries(attrs)) { if (typeof v === 'boolean' || k === 'value' || k === 'className') n[k] = v; else n.setAttribute(k, v); }
+    n.append(...kids); return n;
   };
   const dot = b => el('span', { className: 'ds-dot', 'data-b': b, 'aria-hidden': 'true' });
   const engKeyOf = x => x.channel === 'invoke_subagent' ? 'native' : x.channel === 'swarm' ? 'swarm' : x.engine;
   const modelsFor = ek => CATALOG[ek] || [];
   const findSpec = (ek, mod) => modelsFor(ek).find(s => s.re.test(String(mod || '').toLowerCase()));
   const effortOf = x => x.effort || (/-?(low|medium|high|xhigh|max|ultra)$/i.exec(x.model || '')?.[1]?.toLowerCase() || '');
-  const buildTarget = (ek, spec, effort, extra = {}) => {
-    const eff = spec.efforts.includes(effort) ? effort : (spec.efforts.includes('high') ? 'high' : (spec.efforts[spec.efforts.length - 1] || ''));
-    return t(ek, spec.id, eff, 'cli', extra);
-  };
-  function droidFallbackFor(primary) {
-    const spec = findSpec(primary.engine, primary.model), id = spec?.id || String(primary.model || '').toLowerCase();
-    return t('droid', id, 'same', 'cli', { enabled: true });
-  }
+  const buildTarget = (ek, spec, effort, extra = {}) => t(ek, spec.id, spec.efforts.includes(effort) ? effort : (spec.efforts.includes('high') ? 'high' : (spec.efforts[spec.efforts.length - 1] || '')), 'cli', extra);
+  const droidFallbackFor = primary => t('droid', findSpec(primary.engine, primary.model)?.id || String(primary.model || '').toLowerCase(), 'same', 'cli', { enabled: true });
   function findFallbackEntry(p, primary) {
-    const ek = primary.engine, spec = findSpec(ek, primary.model);
-    for (const k of [primary.model, spec?.id].filter(Boolean).map(v => `${ek}:${v}`)) {
-      if (k in (p.fallbacks || {})) return [k, p.fallbacks[k] || []];
-    }
-    if (spec) {
-      for (const [k, chain] of Object.entries(p.fallbacks || {})) {
-        if (k.startsWith(ek + ':') && spec.re.test(k.slice(ek.length + 1).toLowerCase())) return [k, chain || []];
-      }
-    }
+    const ek = primary.engine, spec = findSpec(ek, primary.model), fbs = p.fallbacks || {};
+    for (const k of [primary.model, spec?.id].filter(Boolean).map(v => `${ek}:${v}`)) if (k in fbs) return [k, fbs[k] || []];
+    if (spec) for (const [k, chain] of Object.entries(fbs)) if (k.startsWith(ek + ':') && spec.re.test(k.slice(ek.length + 1).toLowerCase())) return [k, chain || []];
     return [`${ek}:${spec?.id || primary.model}`, []];
   }
   const fmtTarget = x => {
@@ -136,7 +120,14 @@
   }
   const go = nextView => { view = nextView; bodyEl.scrollTop = 0; render(); };
 
-  function renderTargetEditor(target, { onChange }) {
+  function syncFallback(p, target, enabled) {
+    const [oldKey] = findFallbackEntry(p, target), spec = findSpec(target.engine, target.model), canonKey = `${target.engine}:${spec?.id || target.model}`;
+    if (oldKey !== canonKey) delete p.fallbacks[oldKey];
+    p.fallbacks[canonKey] = [{ ...droidFallbackFor(target), enabled }];
+  }
+  const hasActiveDroidFb = (p, target) => Boolean(findFallbackEntry(p, target)[1].find(c => c && c.enabled !== false && c.engine === 'droid'));
+
+  function renderTargetEditor(p, target, { onChange }) {
     const has = avail(), ek = engKeyOf(target), em = ENG[ek] || { label: ek, brand: 'agy' };
     const spec = findSpec(ek, target.model) || { id: target.model, label: fmtTarget(target).short, efforts: target.effort ? E4 : [] };
     const curEffRaw = effortOf(target), card = el('div', { className: 'ds-card' });
@@ -176,6 +167,37 @@
           return btn;
         }))));
     }
+    if (ek === 'codex') {
+      const fastCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: p.codex_fast, 'aria-label': 'Codex Fast 模式' });
+      fastCb.addEventListener('change', () => { p.codex_fast = fastCb.checked; commit(false); });
+      card.append(el('label', { className: 'ds-item ds-item-click' }, el('span', { className: 'ds-lbl-sub' }, 'Codex Fast 模式'), fastCb));
+    }
+    return card;
+  }
+
+  function renderDroidCard(p, target, { enabled, onToggle }) {
+    const fbCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: enabled, 'aria-label': '回退到 Droid' });
+    fbCb.addEventListener('change', () => onToggle(fbCb.checked));
+    const fbPreview = { ...droidFallbackFor(target), effort: effortOf(target) };
+    const card = el('div', { className: 'ds-card' },
+      el('label', { className: 'ds-item ds-item-click' },
+        el('div', { className: 'ds-row-col' }, el('span', { className: 'ds-lbl' }, '回退到 Droid'), el('span', { className: 'ds-fb-sub' }, `→ Droid ${fmtTarget(fbPreview).text}`)), fbCb));
+    if (enabled) {
+      const thrVal = el('span', {}, `≤${p.quota_fallback.threshold_pct}%`);
+      const minus = el('button', { type: 'button', disabled: p.quota_fallback.threshold_pct <= 0, 'aria-label': '降低阈值' }, '−');
+      const plus = el('button', { type: 'button', disabled: p.quota_fallback.threshold_pct >= 50, 'aria-label': '提高阈值' }, '+');
+      const stepBox = el('div', { className: p.quota_fallback.enabled ? 'ds-step' : 'ds-step is-off' }, minus, thrVal, plus);
+      const nudge = d => {
+        const next = Math.min(50, Math.max(0, p.quota_fallback.threshold_pct + d));
+        if (next === p.quota_fallback.threshold_pct) return;
+        p.quota_fallback.threshold_pct = next; thrVal.textContent = `≤${next}%`;
+        minus.disabled = next <= 0; plus.disabled = next >= 50; commit(false);
+      };
+      minus.addEventListener('click', () => nudge(-5)); plus.addEventListener('click', () => nudge(5));
+      const qCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: p.quota_fallback.enabled, 'aria-label': '低配额自动回退到 Droid' });
+      qCb.addEventListener('change', () => { p.quota_fallback.enabled = qCb.checked; stepBox.className = qCb.checked ? 'ds-step' : 'ds-step is-off'; commit(false); });
+      card.append(el('div', { className: 'ds-item' }, el('span', { className: 'ds-lbl-sub' }, '低配额自动回退'), el('div', { className: 'ds-thr-wrap' }, stepBox, qCb)));
+    }
     return card;
   }
 
@@ -211,48 +233,13 @@
     pRow.addEventListener('click', () => go({ type: 'panel' }));
     roleCard.append(pRow);
 
-    const optCard = el('div', { className: p.enabled ? 'ds-card' : 'ds-card ds-dimmed' });
-    const fastCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: p.codex_fast, 'aria-label': 'Codex Fast 模式' });
-    fastCb.addEventListener('change', () => { p.codex_fast = fastCb.checked; commit(false); });
-    optCard.append(el('label', { className: 'ds-item ds-item-click' }, el('span', { className: 'ds-lbl-sub' }, 'Codex Fast 模式'), fastCb));
-
-    if (hasDroid()) {
-      const thrVal = el('span', {}, `≤${p.quota_fallback.threshold_pct}%`);
-      const minus = el('button', { type: 'button', disabled: p.quota_fallback.threshold_pct <= 0, 'aria-label': '降低阈值' }, '−');
-      const plus = el('button', { type: 'button', disabled: p.quota_fallback.threshold_pct >= 50, 'aria-label': '提高阈值' }, '+');
-      const stepBox = el('div', { className: p.quota_fallback.enabled ? 'ds-step' : 'ds-step is-off' }, minus, thrVal, plus);
-      const nudge = d => {
-        const next = Math.min(50, Math.max(0, p.quota_fallback.threshold_pct + d));
-        if (next === p.quota_fallback.threshold_pct) return;
-        p.quota_fallback.threshold_pct = next; thrVal.textContent = `≤${next}%`;
-        minus.disabled = next <= 0; plus.disabled = next >= 50; commit(false);
-      };
-      minus.addEventListener('click', () => nudge(-5));
-      plus.addEventListener('click', () => nudge(5));
-      const qCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: p.quota_fallback.enabled, 'aria-label': '低配额自动回退到 Droid' });
-      qCb.addEventListener('change', () => { p.quota_fallback.enabled = qCb.checked; stepBox.className = qCb.checked ? 'ds-step' : 'ds-step is-off'; commit(false); });
-      optCard.append(el('div', { className: 'ds-item' }, el('span', { className: 'ds-lbl-sub' }, '低配额自动回退'), el('div', { className: 'ds-thr-wrap' }, stepBox, qCb)));
-    }
-
-    return [masterCard, roleCard, optCard];
+    return [masterCard, roleCard];
   }
 
   function renderRoleDetail(p, role) {
-    const cur = p.roles[role].primary;
-    const syncFb = (target, enabled) => {
-      const [oldKey] = findFallbackEntry(p, target), spec = findSpec(target.engine, target.model), canonKey = `${target.engine}:${spec?.id || target.model}`;
-      if (oldKey !== canonKey) delete p.fallbacks[oldKey];
-      p.fallbacks[canonKey] = [{ ...droidFallbackFor(target), enabled }];
-    };
-    const [, chain] = findFallbackEntry(p, cur), activeFb = chain.find(c => c && c.enabled !== false && c.engine === 'droid') || null;
-    const kids = [renderTargetEditor(cur, { onChange: next => { p.roles[role].primary = next; if (hasDroid() && activeFb) syncFb(next, true); syncSwitches(p); commit(); } })];
-    if (!hasDroid()) return kids;
-    const fbCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: Boolean(activeFb), 'aria-label': '回退到 Droid' });
-    fbCb.addEventListener('change', () => { syncFb(cur, fbCb.checked); commit(); });
-    const fbPreview = { ...droidFallbackFor(cur), effort: effortOf(cur) };
-    kids.push(el('div', { className: 'ds-card' },
-      el('label', { className: 'ds-item ds-item-click' },
-        el('div', { className: 'ds-row-col' }, el('span', { className: 'ds-lbl' }, '回退到 Droid'), el('span', { className: 'ds-fb-sub' }, `→ Droid ${fmtTarget(fbPreview).text}`)), fbCb)));
+    const cur = p.roles[role].primary, activeFb = hasActiveDroidFb(p, cur);
+    const kids = [renderTargetEditor(p, cur, { onChange: next => { p.roles[role].primary = next; if (hasDroid() && activeFb) syncFallback(p, next, true); syncSwitches(p); commit(); } })];
+    if (hasDroid()) kids.push(renderDroidCard(p, cur, { enabled: activeFb, onToggle: on => { syncFallback(p, cur, on); commit(); } }));
     return kids;
   }
 
@@ -276,7 +263,7 @@
       const has = avail(), sameSeat = (a, b) => a.engine === b.engine && (findSpec(a.engine, a.model)?.id || a.model) === (findSpec(b.engine, b.model)?.id || b.model);
       const nextSeat = DEFAULT_SEAT_POOL.find(c => has.includes(c.engine) && !seats.some(s => sameSeat(s, c)))
         || DEFAULT_SEAT_POOL.find(c => has.includes(c.engine)) || DEFAULT_SEAT_POOL[0];
-      go({ type: 'new-seat', seat: { ...nextSeat, enabled: true } });
+      go({ type: 'new-seat', seat: { ...nextSeat, enabled: true }, fbEnabled: hasActiveDroidFb(p, nextSeat) });
     });
     return [el('div', { className: 'ds-caption' }, '按顺序选用：单方取 #1、两方取前 2 个，不可用自动顺延下一席位。'), listCard, addBtn];
   }
@@ -284,15 +271,28 @@
   function renderSeatDetail(p, index, draftSeat = null) {
     const seats = enabledSeats(p), isNew = Boolean(draftSeat);
     if (!isNew && !seats[index]) { view = { type: 'panel' }; return renderPanelList(p); }
-    const kids = [renderTargetEditor(isNew ? draftSeat : seats[index], {
+    const target = isNew ? draftSeat : seats[index];
+    const activeFb = isNew ? Boolean(view.fbEnabled) : hasActiveDroidFb(p, target);
+    const kids = [renderTargetEditor(p, target, {
       onChange: next => {
-        if (isNew) { view = { type: 'new-seat', seat: { ...next, enabled: true } }; render(); return; }
-        const copy = seats.map(s => ({ ...s, enabled: true })); copy[index] = { ...next, enabled: true }; p.roles.panel.seats = copy; syncSwitches(p); commit();
+        if (isNew) { view = { type: 'new-seat', seat: { ...next, enabled: true }, fbEnabled: activeFb }; render(); return; }
+        const copy = seats.map(s => ({ ...s, enabled: true })); copy[index] = { ...next, enabled: true }; p.roles.panel.seats = copy;
+        if (hasDroid() && activeFb) syncFallback(p, next, true); syncSwitches(p); commit();
       },
     })];
+    if (hasDroid()) {
+      kids.push(renderDroidCard(p, target, {
+        enabled: activeFb,
+        onToggle: on => { if (isNew) { view = { ...view, fbEnabled: on }; render(); } else { syncFallback(p, target, on); commit(); } },
+      }));
+    }
     if (isNew) {
       const saveBtn = el('button', { type: 'button', className: 'ds-primary-btn' }, '保存');
-      saveBtn.addEventListener('click', () => { p.roles.panel.seats = [...seats.map(s => ({ ...s, enabled: true })), { ...draftSeat, enabled: true }]; syncSwitches(p); view = { type: 'panel' }; bodyEl.scrollTop = 0; commit(); });
+      saveBtn.addEventListener('click', () => {
+        p.roles.panel.seats = [...seats.map(s => ({ ...s, enabled: true })), { ...draftSeat, enabled: true }];
+        if (hasDroid()) syncFallback(p, draftSeat, activeFb);
+        syncSwitches(p); view = { type: 'panel' }; bodyEl.scrollTop = 0; commit();
+      });
       kids.push(saveBtn);
     } else if (seats.length > 1) {
       const delBtn = el('button', { type: 'button', className: 'ds-danger-btn' }, '移除此席位');

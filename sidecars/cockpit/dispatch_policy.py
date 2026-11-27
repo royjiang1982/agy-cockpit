@@ -51,25 +51,24 @@ def _target(engine, model, effort="", channel="cli", **extras):
 
 def default_policy():
     primaries = {
-        "scout": _target("agy", "gemini-4-hydrogen-high", "high"),
-        "standard": _target("agy", "gemini-4-neon-medium", "medium"),
-        "deep": _target("codex", "gpt-6.2-sol", "high"),
-        "expert": _target("codex", "gpt-6.2-astra", "xhigh"),
+        "scout": _target("agy", "hydrogen", "high"),
+        "standard": _target("agy", "neon", "high"),
+        "deep": _target("agy", "hydrogen", "high"),
+        "expert": _target("agy", "hydrogen", "xhigh"),
     }
     roles = {name: dict(read_only=ROLE_READ_ONLY[name], primary=primary) for name, primary in primaries.items()}
     roles["panel"] = dict(read_only=True, seats=[
-        dict(primaries["expert"], enabled=True),
-        _target("agy", "gemini-4-neon-xhigh", "xhigh", enabled=True),
-        _target("agy", "claude-opus-5-5-high", "high", enabled=False),
-        _target("grok", "grok-4.7", "xhigh", enabled=False),
+        _target("agy", "neon", "xhigh", enabled=True),
+        _target("agy", "carbon", "high", enabled=True),
+        _target("agy", "opus", "high", enabled=True),
     ])
     fallback_specs = {
-        "agy:gemini-4-hydrogen-high": ("gemini-3.8-flash", "high"),
-        "agy:gemini-4-neon-medium": ("gemini-4-argon", "medium"),
-        "agy:gemini-4-neon-high": ("gemini-4-argon", "medium"),
-        "codex:gpt-6.2-sol": ("gpt-6.2-sol", "same"),
-        "codex:gpt-6.2-astra": ("gpt-6.2-astra", "xhigh"),
-        "agy:claude-opus-5-5-high": ("claude-opus-5-5", "high"),
+        "agy:hydrogen": ("hydrogen", "same"),
+        "agy:neon": ("neon", "same"),
+        "agy:carbon": ("carbon", "same"),
+        "agy:opus": ("opus", "same"),
+        "codex:sol": ("sol", "same"),
+        "codex:astra": ("astra", "same"),
     }
     return dict(schema_version=SCHEMA_VERSION, revision=1, enabled=True, external_enabled=True,
                 allow_swarm=False, codex_fast=True, quota_fallback=dict(enabled=True, threshold_pct=5),

@@ -142,7 +142,7 @@ class DispatchPolicyTests(unittest.TestCase):
             self.assertEqual((all_roles[role]["type"], all_roles[role]["model"]), expected)
         self.assertTrue(all_roles["panel"]["blind_isolated"])
         self.assertEqual([(s["type"], s["model"], s["read_only"]) for s in all_roles["panel"]["seats"]],
-                         [("research", "flash", True), ("research", "flash", True)])
+                         [("research", "flash", True)] * 3)
         self.assertFalse(self.policy_path.exists())
         dp_off = dict(dp.default_policy(), enabled=False)
         self.assertEqual(dp.resolve_role("scout", dp_off, caps),
@@ -177,8 +177,11 @@ class DispatchPolicyTests(unittest.TestCase):
 
     def test_fresh_quota_only_and_enabled_fallback_order(self):
         p = dp.default_policy()
-        chain = p["fallbacks"]["codex:gpt-6.2-sol"]
-        chain.insert(0, dict(chain[0], model="first", enabled=False))
+        p["roles"]["deep"]["primary"] = dp._target("codex", "gpt-6.2-sol", "high")
+        p["fallbacks"]["codex:gpt-6.2-sol"] = [
+            dp._target("droid", "first", "same", enabled=False),
+            dp._target("droid", "gpt-6.2-sol", "same", enabled=True),
+        ]
         recently = NOW - 2
         for stamp, reset, stale, expected, fresh in (
             (recently, NOW + 60, False, "droid", True), (NOW - 300, NOW + 60, False, "droid", True),
@@ -346,9 +349,13 @@ class DispatchPolicyTests(unittest.TestCase):
 
     def test_panel_ordered_count_skips_unavailable_seats_and_backfills(self):
         p = dp.default_policy()
-        for seat in p["roles"]["panel"]["seats"]:
-            seat["enabled"] = True
-        p["fallbacks"]["codex:gpt-6.2-astra"] = []  # Force seat #1 to be skipped when codex is unavailable
+        p["roles"]["panel"]["seats"] = [
+            dp._target("codex", "gpt-6.2-astra", "xhigh", enabled=True),
+            dp._target("agy", "gemini-4-neon-xhigh", "xhigh", enabled=True),
+            dp._target("agy", "claude-opus-5-5-high", "high", enabled=True),
+            dp._target("grok", "grok-4.7", "xhigh", enabled=True),
+        ]
+        p["fallbacks"]["codex:astra"] = []  # Force seat #1 to be skipped when codex is unavailable
         caps = {"available_engines": ["agy", "grok"]}
         one = dp.resolve_role("panel", p, caps, count=1)
         self.assertEqual([(s["order"], s["engine"], s["model"]) for s in one["seats"]],

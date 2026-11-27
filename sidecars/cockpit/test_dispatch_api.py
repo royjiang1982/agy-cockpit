@@ -28,7 +28,7 @@ class DispatchAPITests(unittest.TestCase):
             patch.object(server, "STATE_FILE", self.state), patch.object(server, "INDEX_HTML_FILE", html),
             patch.object(server, "_HTML_CACHE", None), patch.object(server, "_touch_ui_activity"),
             patch.object(dispatch_api, "_STATIC_DIR", self.root),
-            patch.object(dispatch_policy.shutil, "which", side_effect=lambda exe: exe if exe == "sa-codex" else None),
+            patch.object(dispatch_policy.shutil, "which", side_effect=lambda exe: exe if exe in ("sa-agy", "sa-codex") else None),
             patch.dict(os.environ, {"SA_DISPATCH_POLICY_PATH": ""}),
         )
         for context in patches:
@@ -70,7 +70,7 @@ class DispatchAPITests(unittest.TestCase):
         self.state.write_text(json.dumps({"quota_cache": {"codex-5h": {"pct": 42}}}))
         status, capabilities, _ = self.request("GET", "/api/dispatch-capabilities")
         self.assertEqual(status, 200)
-        self.assertEqual(capabilities["available_engines"], ["codex"])
+        self.assertEqual(capabilities["available_engines"], ["agy", "codex"])
         self.assertEqual(capabilities["quota"]["codex"]["pct"], 42)
         status, raw, _ = self.request("GET", "/api/dispatch-policy")
         self.assertEqual(status, 200)
