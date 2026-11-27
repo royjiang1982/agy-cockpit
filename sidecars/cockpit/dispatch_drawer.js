@@ -7,35 +7,41 @@
   const sidecarToken = (new URLSearchParams(window.location.search).get('token') || '').trim();
   const withToken = url => !sidecarToken ? url : `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(sidecarToken)}`;
   let csrf = document.querySelector('meta[name="cockpit-csrf"]')?.content || '';
+
+  const PRIMARY_ENGINES = ['agy', 'codex', 'grok'];
   const ENG = {
-    agy: { label: 'AGY', brand: 'agy', channel: 'cli' }, codex: { label: 'Codex', brand: 'codex', channel: 'cli' },
-    droid: { label: 'Droid', brand: 'droid', channel: 'cli' }, grok: { label: 'Grok', brand: 'grok', channel: 'cli' },
-    native: { label: '内置', brand: 'native', channel: 'invoke_subagent' }, swarm: { label: 'Swarm', brand: 'swarm', channel: 'swarm' },
+    agy: { label: 'AGY', brand: 'agy' }, codex: { label: 'Codex', brand: 'codex' },
+    grok: { label: 'Grok', brand: 'grok' }, droid: { label: 'Droid', brand: 'droid' },
+    native: { label: '内置', brand: 'native' }, swarm: { label: 'Swarm', brand: 'swarm' },
   };
   const EFF = { '': '', low: '低', medium: '中', high: '高', xhigh: '极高', max: 'Max', ultra: 'Ultra', same: '同档' };
-  const SWARM_TIER = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh', max: 'Max' };
   const SKIP_WHY = { quota_low: '配额低', cli_unavailable: '未装', external_disabled: 'CLI已关', swarm_disabled: 'Swarm已关' };
-  const ROLES = [['scout', '快搜侦察', true], ['standard', '常规制作', false], ['deep', '深度执行', false], ['expert', '专家验收', false]];
+  const ROLES = [['scout', '快搜侦察'], ['standard', '常规制作'], ['deep', '深度执行'], ['expert', '专家验收']];
   const E3 = ['low', 'medium', 'high'], E4 = ['low', 'medium', 'high', 'xhigh'];
   const E4M = ['low', 'medium', 'high', 'max'], E5 = ['low', 'medium', 'high', 'xhigh', 'max'], E6 = [...E5, 'ultra'];
 
-  const mkAgy = (id, label, prefix, efforts, brand = 'agy') => ({ id, label, brand, efforts, toModel: e => `${prefix}-${e || efforts[efforts.length - 1]}`, match: m => m === prefix || m.startsWith(prefix + '-') });
-  const mkSwarm = (id, label, base, efforts, brand = 'swarm') => ({ id, label, brand, efforts, swarmBase: base, toModel: e => `${base} (${SWARM_TIER[e] || 'High'})`, match: m => m.toLowerCase().startsWith(base.toLowerCase()) });
+  const mkAgy = (id, label, prefix, efforts, brand = 'agy') => ({
+    id, label, brand, efforts,
+    toModel: e => `${prefix}-${e || efforts[efforts.length - 1]}`,
+    match: m => m === prefix || m.startsWith(prefix + '-'),
+  });
   const m = (id, label, efforts, brand) => (brand ? { id, label, efforts, brand } : { id, label, efforts });
   const CATALOG = {
-    agy: [mkAgy('hydrogen', 'Hydrogen', 'gemini-4-hydrogen', E4), mkAgy('neon', 'Neon', 'gemini-4-neon', E4), mkAgy('argon', 'Argon', 'gemini-4-argon', E3), mkAgy('carbon', 'Carbon', 'gemini-4-carbon', E3), mkAgy('flash38', 'Flash 3.8', 'gemini-3.8-flash', E3), mkAgy('opus55', 'Opus 5.5', 'claude-opus-5-5', E4M, 'claude'), mkAgy('sonnet55', 'Sonnet 5.5', 'claude-sonnet-5-5', E4M, 'claude')],
+    agy: [
+      mkAgy('hydrogen', 'Hydrogen', 'gemini-4-hydrogen', E4), mkAgy('neon', 'Neon', 'gemini-4-neon', E4),
+      mkAgy('argon', 'Argon', 'gemini-4-argon', E3), mkAgy('carbon', 'Carbon', 'gemini-4-carbon', E3),
+      mkAgy('flash38', 'Flash 3.8', 'gemini-3.8-flash', E3),
+      mkAgy('opus55', 'Opus 5.5', 'claude-opus-5-5', E4M, 'claude'), mkAgy('sonnet55', 'Sonnet 5.5', 'claude-sonnet-5-5', E4M, 'claude'),
+    ],
     codex: [m('gpt-6.2-sol', 'gpt-6.2-sol', E6), m('gpt-6.2-astra', 'gpt-6.2-astra', E6), m('gpt-6.1-terra', 'gpt-6.1-terra', E6), m('gpt-6-luna', 'gpt-6-luna', E5)],
     grok: [m('grok-4.7', 'grok-4.7', E4), m('grok-4.7-build-fast', 'grok-4.7-fast', E4), m('grok-4.6', 'grok-4.6', E4), m('grok-4.5', 'grok-4.5', E4)],
-    // Droid mirrors only models present in other engines (AGY + Codex), no extras.
-    droid: [m('gemini-3.8-flash', 'Flash 3.8', E3, 'agy'), m('gemini-4-argon', 'Argon', E3, 'agy'), m('claude-opus-5-5', 'Opus 5.5', E4M, 'claude'), m('claude-sonnet-5-5', 'Sonnet 5.5', E4M, 'claude'), m('gpt-6.2-sol', 'gpt-6.2-sol', E6, 'codex'), m('gpt-6.2-astra', 'gpt-6.2-astra', E6, 'codex'), m('gpt-6.1-terra', 'gpt-6.1-terra', E6, 'codex'), m('gpt-6-luna', 'gpt-6-luna', E5, 'codex')],
-    native: [m('flash_lite', 'Flash Lite', []), m('flash', 'Flash', []), m('inherit', '继承主模型', []), m('pro', 'Pro', [])],
-    swarm: [mkSwarm('s_hydrogen', 'Hydrogen', 'Gemini 4 Hydrogen', E4, 'agy'), mkSwarm('s_neon', 'Neon', 'Gemini 4 Neon', E4, 'agy'), mkSwarm('s_argon', 'Argon', 'Gemini 4 Argon', E3, 'agy'), mkSwarm('s_carbon', 'Carbon', 'Gemini 4 Carbon', E3, 'agy'), mkSwarm('s_flash38', 'Flash 3.8', 'Gemini 3.8 Flash', E3, 'agy'), mkSwarm('s_opus55', 'Opus 5.5', 'Claude Opus 5.5', E4M, 'claude'), mkSwarm('s_sonnet55', 'Sonnet 5.5', 'Claude Sonnet 5.5', E4M, 'claude')],
   };
+  const DROID_LABELS = { 'gemini-3.8-flash': 'Flash 3.8', 'gemini-4-argon': 'Argon', 'claude-opus-5-5': 'Opus 5.5', 'claude-sonnet-5-5': 'Sonnet 5.5' };
   const t = (engine, model, effort = '', channel = 'cli', extra = {}) => ({ channel, engine, model, effort, ...extra });
   const DEFAULT_SEAT_POOL = [
     t('codex', 'gpt-6.2-astra', 'xhigh', 'cli', { enabled: true }), t('agy', 'gemini-4-neon-xhigh', 'xhigh', 'cli', { enabled: true }),
     t('agy', 'claude-opus-5-5-high', 'high', 'cli', { enabled: true }), t('grok', 'grok-4.7', 'xhigh', 'cli', { enabled: true }),
-    t('droid', 'gpt-6.2-astra', 'xhigh', 'cli', { enabled: true }), t('agy', 'flash', '', 'invoke_subagent', { enabled: true }),
+    t('codex', 'gpt-6.2-sol', 'xhigh', 'cli', { enabled: true }),
   ];
 
   const el = (tag, attrs = {}, ...kids) => {
@@ -50,30 +56,34 @@
   const dot = b => el('span', { className: 'ds-dot', 'data-b': b, 'aria-hidden': 'true' });
   const engKeyOf = x => x.channel === 'invoke_subagent' ? 'native' : x.channel === 'swarm' ? 'swarm' : x.engine;
   const modelsFor = ek => CATALOG[ek] || [];
-  const findSpec = (ek, m) => modelsFor(ek).find(s => (s.match ? s.match(m) : s.id === m));
-  function effortOf(x, spec) {
-    if (x.channel === 'swarm') {
-      const m = /\((Low|Medium|High|XHigh|Max)\)$/i.exec(x.model || '');
-      return m ? m[1].toLowerCase() : (spec?.efforts?.[1] || 'high');
-    }
+  const findSpec = (ek, mod) => modelsFor(ek).find(s => (s.match ? s.match(mod) : s.id === mod));
+  function effortOf(x) {
     if (x.effort) return x.effort;
-    const m = /-(low|medium|high|xhigh|max|ultra)$/i.exec(x.model || '');
-    return m ? m[1].toLowerCase() : '';
+    const hit = /-(low|medium|high|xhigh|max|ultra)$/i.exec(x.model || '');
+    return hit ? hit[1].toLowerCase() : '';
   }
   const buildTarget = (ek, spec, effort, extra = {}) => {
-    const meta = ENG[ek] || { channel: 'cli' };
-    const eff = effort === 'same' ? 'same' : (spec.efforts.includes(effort) ? effort : (spec.efforts.includes('high') ? 'high' : (spec.efforts[spec.efforts.length - 1] || '')));
-    if (meta.channel === 'swarm') return t('agy', spec.toModel ? spec.toModel(eff) : spec.id, '', 'swarm', extra);
-    if (meta.channel === 'invoke_subagent') return t('agy', spec.id, '', 'invoke_subagent', extra);
-    return t(ek, spec.toModel ? spec.toModel(eff === 'same' ? 'high' : eff) : spec.id, eff, 'cli', extra);
+    const eff = spec.efforts.includes(effort) ? effort : (spec.efforts.includes('high') ? 'high' : (spec.efforts[spec.efforts.length - 1] || ''));
+    return t(ek, spec.toModel ? spec.toModel(eff) : spec.id, eff, 'cli', extra);
   };
+  function droidFallbackFor(primary, role) {
+    const mod = primary.model || '';
+    if (primary.engine === 'codex') return t('droid', mod, mod === 'gpt-6.2-astra' && primary.effort === 'xhigh' ? 'xhigh' : 'same', 'cli', { enabled: true });
+    if (primary.engine === 'grok') return t('droid', 'gpt-6.2-astra', 'xhigh', 'cli', { enabled: true });
+    if (mod.startsWith('claude-opus-5-5')) return t('droid', 'claude-opus-5-5', primary.effort || 'high', 'cli', { enabled: true });
+    if (mod.startsWith('claude-sonnet-5-5')) return t('droid', 'claude-sonnet-5-5', primary.effort || 'high', 'cli', { enabled: true });
+    if (mod.startsWith('gemini-3.8-flash') || (mod.startsWith('gemini-4-hydrogen') && role === 'scout')) {
+      return t('droid', 'gemini-3.8-flash', 'high', 'cli', { enabled: true });
+    }
+    return t('droid', 'gemini-4-argon', 'medium', 'cli', { enabled: true });
+  }
   const fmtTarget = x => {
     const ek = engKeyOf(x), em = ENG[ek] || { label: ek, brand: 'agy' };
-    const spec = findSpec(ek, x.model, false) || findSpec(ek, x.model, true);
-    const lbl = spec ? spec.label : String(x.model || '').replace(/^(?:gemini-4-|gemini-|claude-)/, '').replace(/-(?:low|medium|high|xhigh|max|ultra)$/, '');
-    const eff = EFF[effortOf(x, spec)];
+    const spec = findSpec(ek, x.model);
+    const lbl = spec ? spec.label : (DROID_LABELS[x.model] || String(x.model || '').replace(/^(?:gemini-4-|gemini-|claude-)/, '').replace(/-(?:low|medium|high|xhigh|max|ultra)$/, ''));
+    const eff = EFF[effortOf(x)];
     const brand = ek === 'droid' ? 'droid' : (spec?.brand || (ek === 'agy' && /claude|opus|sonnet/i.test(x.model || '') ? 'claude' : em.brand));
-    return { eng: em.label, short: lbl, text: eff && ek !== 'native' ? `${lbl} · ${eff}` : lbl, brand };
+    return { eng: em.label, short: lbl, text: eff && ek !== 'native' && ek !== 'swarm' ? `${lbl} · ${eff}` : lbl, brand };
   };
 
   let saved = null, draft = null, busy = false, dirty = false, conflicted = false;
@@ -101,11 +111,13 @@
   document.body.append(drawer);
 
   const avail = () => saved?.capabilities?.available_engines || [];
+  const hasDroid = () => avail().includes('droid');
   const enabledSeats = p => (p.roles.panel.seats || []).filter(s => s && s.enabled !== false);
   function syncSwitches(p) {
     const seats = enabledSeats(p);
     p.external_enabled = ROLES.some(([r]) => p.roles[r].primary.channel === 'cli') || seats.some(s => s.channel === 'cli');
-    if (ROLES.some(([r]) => p.roles[r].primary.channel === 'swarm') || seats.some(s => s.channel === 'swarm')) p.allow_swarm = true;
+    p.allow_swarm = ROLES.some(([r]) => p.roles[r].primary.channel === 'swarm') || seats.some(s => s.channel === 'swarm');
+    if (!hasDroid()) p.quota_fallback.enabled = false;
   }
   function setMsg(text, tone = '') {
     if (tone === 'err') { warnEl.hidden = false; warnEl.dataset.tone = 'err'; warnEl.textContent = text; statusEl.textContent = ''; statusEl.dataset.tone = ''; }
@@ -123,40 +135,41 @@
   const markDirty = () => { dirty = true; if (!conflicted) setMsg('未保存', 'warn'); sync(); };
   const go = nextView => { view = nextView; bodyEl.scrollTop = 0; render(); };
 
-  function renderTargetEditor(target, { readOnly, allowNative = true, allowSwarm = true, allowSame = false, onChange }) {
+  function renderTargetEditor(target, { onChange }) {
     const has = avail(), ek = engKeyOf(target), em = ENG[ek] || { label: ek, brand: 'agy' };
-    const spec = findSpec(ek, target.model, readOnly) || { id: target.model, label: fmtTarget(target).short, efforts: target.effort ? E4 : [] };
-    const curEffRaw = effortOf(target, spec);
+    const spec = findSpec(ek, target.model) || { id: target.model, label: fmtTarget(target).short, efforts: target.effort ? E4 : [] };
+    const curEffRaw = effortOf(target);
     const card = el('div', { className: 'ds-card' });
 
-    const engKeys = [...['agy', 'codex', 'droid', 'grok'].filter(e => has.includes(e) || e === ek), ...(allowNative ? ['native'] : []), ...(allowSwarm ? ['swarm'] : [])];
+    const engKeys = PRIMARY_ENGINES.filter(e => has.includes(e) || e === ek);
+    if (!engKeys.includes(ek)) engKeys.unshift(ek);
+    if (!engKeys.length) engKeys.push(...PRIMARY_ENGINES);
     card.append(el('div', { className: 'ds-block' }, el('div', { className: 'ds-block-lbl' }, '引擎'),
       el('div', { className: 'ds-chips' }, ...engKeys.map(k => {
-        const miss = ENG[k].channel === 'cli' && !has.includes(k);
+        const miss = PRIMARY_ENGINES.includes(k) && !has.includes(k);
         const btn = el('button', { type: 'button', className: k === ek ? 'ds-chip is-on' : 'ds-chip' },
-          dot(ENG[k].brand), ENG[k].label, miss ? el('span', { className: 'ds-chip-meta' }, '未装') : '');
+          dot(ENG[k]?.brand || 'agy'), ENG[k]?.label || k, miss ? el('span', { className: 'ds-chip-meta' }, '未装') : '');
         btn.addEventListener('click', () => {
           if (k === ek) return;
-          const list = modelsFor(k, readOnly);
+          const list = modelsFor(k);
           if (list.length) onChange(buildTarget(k, list[0], curEffRaw || 'high'));
         });
         return btn;
       }))));
 
-    const modList = modelsFor(ek, readOnly);
-    const modItems = modList.some(m => m.id === spec.id) ? modList : [spec, ...modList];
+    const modList = modelsFor(ek);
+    const modItems = modList.some(x => x.id === spec.id) ? modList : [spec, ...modList];
     card.append(el('div', { className: 'ds-block' }, el('div', { className: 'ds-block-lbl' }, '模型'),
-      el('div', { className: 'ds-chips' }, ...modItems.map(m => {
-        const btn = el('button', { type: 'button', className: m.id === spec.id ? 'ds-chip is-on' : 'ds-chip' }, dot(m.brand || em.brand), m.label);
-        btn.addEventListener('click', () => { if (m.id !== spec.id) onChange(buildTarget(ek, m, curEffRaw || 'high')); });
+      el('div', { className: 'ds-chips' }, ...modItems.map(x => {
+        const btn = el('button', { type: 'button', className: x.id === spec.id ? 'ds-chip is-on' : 'ds-chip' }, dot(x.brand || em.brand), x.label);
+        btn.addEventListener('click', () => { if (x.id !== spec.id) onChange(buildTarget(ek, x, curEffRaw || 'high')); });
         return btn;
       }))));
 
     if (spec.efforts.length) {
-      const effs = allowSame ? ['same', ...spec.efforts] : spec.efforts;
-      const curEff = effs.includes(curEffRaw) ? curEffRaw : effs[0];
+      const curEff = spec.efforts.includes(curEffRaw) ? curEffRaw : spec.efforts[0];
       card.append(el('div', { className: 'ds-block' }, el('div', { className: 'ds-block-lbl' }, '推理档位'),
-        el('div', { className: 'ds-seg' }, ...effs.map(e => {
+        el('div', { className: 'ds-seg' }, ...spec.efforts.map(e => {
           const btn = el('button', { type: 'button', className: e === curEff ? 'is-on' : '' }, EFF[e] || e);
           btn.addEventListener('click', () => { if (e !== curEff) onChange(buildTarget(ek, spec, e)); });
           return btn;
@@ -178,8 +191,7 @@
         el('span', { className: 'ds-lbl' }, name),
         el('span', { className: 'ds-eng-col' }, dot(f.brand), el('span', { className: 'ds-val-eng' }, f.eng)),
         el('span', { className: 'ds-val-txt' }, f.text),
-        el('span', { className: 'ds-arrow' }, '›'),
-        note);
+        el('span', { className: 'ds-arrow' }, '›'), note);
       row.addEventListener('click', () => go({ type: 'role', role }));
       roleCard.append(row);
     }
@@ -199,10 +211,11 @@
     fastCb.addEventListener('change', () => { p.codex_fast = fastCb.checked; markDirty(); });
     optCard.append(el('label', { className: 'ds-item ds-item-click' }, el('span', { className: 'ds-lbl-sub' }, 'Codex Fast 模式'), fastCb));
 
+    const droidOk = hasDroid();
     const thrVal = el('span', {}, `≤${p.quota_fallback.threshold_pct}%`);
-    const minus = el('button', { type: 'button', disabled: p.quota_fallback.threshold_pct <= 0, 'aria-label': '降低阈值' }, '−');
-    const plus = el('button', { type: 'button', disabled: p.quota_fallback.threshold_pct >= 50, 'aria-label': '提高阈值' }, '+');
-    const stepBox = el('div', { className: p.quota_fallback.enabled ? 'ds-step' : 'ds-step is-off' }, minus, thrVal, plus);
+    const minus = el('button', { type: 'button', disabled: !droidOk || p.quota_fallback.threshold_pct <= 0, 'aria-label': '降低阈值' }, '−');
+    const plus = el('button', { type: 'button', disabled: !droidOk || p.quota_fallback.threshold_pct >= 50, 'aria-label': '提高阈值' }, '+');
+    const stepBox = el('div', { className: droidOk && p.quota_fallback.enabled ? 'ds-step' : 'ds-step is-off' }, minus, thrVal, plus);
     const nudge = d => {
       const next = Math.min(50, Math.max(0, p.quota_fallback.threshold_pct + d));
       if (next === p.quota_fallback.threshold_pct) return;
@@ -211,44 +224,38 @@
     };
     minus.addEventListener('click', () => nudge(-5));
     plus.addEventListener('click', () => nudge(5));
-    const qCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: p.quota_fallback.enabled, 'aria-label': '低配额自动回退' });
+    const qCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: droidOk && p.quota_fallback.enabled, disabled: !droidOk, 'aria-label': '低配额自动回退到 Droid' });
     qCb.addEventListener('change', () => { p.quota_fallback.enabled = qCb.checked; stepBox.className = qCb.checked ? 'ds-step' : 'ds-step is-off'; markDirty(); });
-    optCard.append(el('div', { className: 'ds-item' }, el('span', { className: 'ds-lbl-sub' }, '低配额自动回退'), el('div', { className: 'ds-thr-wrap' }, stepBox, qCb)));
+    optCard.append(el('div', { className: droidOk ? 'ds-item' : 'ds-item is-dis' },
+      el('div', { className: 'ds-row-col' },
+        el('span', { className: 'ds-lbl-sub' }, '低配额自动回退'),
+        droidOk ? '' : el('span', { className: 'ds-fb-sub' }, '未检测到 Droid，已停用')),
+      el('div', { className: 'ds-thr-wrap' }, droidOk ? stepBox : '', qCb)));
 
     return [...(!p.enabled ? [el('div', { className: 'ds-banner' }, '派发已暂停，任务将由主代理直接执行。')] : []), roleCard, optCard];
   }
 
   function renderRoleDetail(p, role) {
-    const [, , readOnly] = ROLES.find(r => r[0] === role), cur = p.roles[role].primary;
+    const cur = p.roles[role].primary;
     const kids = [renderTargetEditor(cur, {
-      readOnly, allowNative: true, allowSwarm: !readOnly,
       onChange: next => { p.roles[role].primary = next; syncSwitches(p); markDirty(); render(); },
     })];
-    if (cur.channel !== 'cli') return [...kids, el('div', { className: 'ds-caption' }, '当前使用内置通道，无需额外配置外部模型回退。')];
-
+    const droidOk = hasDroid();
     const fbKey = `${cur.engine}:${cur.model}`, chain = p.fallbacks[fbKey] || [];
-    const firstOn = chain.find(c => c && c.enabled !== false) || null;
-    const fbCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: Boolean(firstOn), 'aria-label': '开启模型回退' });
+    const activeFb = chain.find(c => c && c.enabled !== false && c.engine === 'droid') || null;
+    const mapped = activeFb || droidFallbackFor(cur, role);
+    const fbChecked = droidOk && Boolean(activeFb);
+    const fbCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: fbChecked, disabled: !droidOk, 'aria-label': '回退到 Droid' });
     fbCb.addEventListener('change', () => {
-      if (!fbCb.checked) p.fallbacks[fbKey] = chain.map(c => ({ ...c, enabled: false }));
-      else if (chain.length) p.fallbacks[fbKey] = chain.map((c, i) => ({ ...c, enabled: i === 0 ? true : c.enabled }));
-      else {
-        const defEng = avail().includes('droid') ? 'droid' : (avail()[0] || 'droid');
-        p.fallbacks[fbKey] = [buildTarget(defEng, modelsFor(defEng, false)[0], cur.effort || 'high', { enabled: true })];
-      }
+      if (!droidOk) return;
+      p.fallbacks[fbKey] = fbCb.checked ? [{ ...mapped, enabled: true }] : [{ ...mapped, enabled: false }];
       markDirty(); render();
     });
-    kids.push(el('div', { className: 'ds-card' }, el('label', { className: 'ds-item ds-item-click' }, el('span', { className: 'ds-lbl' }, '开启回退'), fbCb)));
-    if (firstOn) {
-      kids.push(renderTargetEditor(firstOn, {
-        readOnly: false, allowNative: false, allowSwarm: false, allowSame: true,
-        onChange: next => {
-          const rest = chain.filter(c => !(c.channel === firstOn.channel && c.engine === firstOn.engine && c.model === firstOn.model));
-          p.fallbacks[fbKey] = [{ ...next, enabled: true }, ...rest];
-          markDirty(); render();
-        },
-      }));
-    }
+    const sub = droidOk ? `→ Droid ${fmtTarget(mapped).text}` : '未检测到 Droid 引擎，不可开启';
+    kids.push(el('div', { className: 'ds-card' },
+      el('label', { className: droidOk ? 'ds-item ds-item-click' : 'ds-item is-dis' },
+        el('div', { className: 'ds-row-col' }, el('span', { className: 'ds-lbl' }, '回退到 Droid'), el('span', { className: 'ds-fb-sub' }, sub)),
+        fbCb)));
     return kids;
   }
 
@@ -276,9 +283,8 @@
     const addBtn = el('button', { type: 'button', className: 'ds-add-btn' }, '+ 添加席位');
     addBtn.addEventListener('click', () => {
       const has = avail();
-      const nextSeat = DEFAULT_SEAT_POOL.find(c => (c.channel !== 'cli' || has.includes(c.engine))
-        && !seats.some(s => s.channel === c.channel && s.engine === c.engine && s.model === c.model))
-        || t('agy', 'flash', '', 'invoke_subagent', { enabled: true });
+      const nextSeat = DEFAULT_SEAT_POOL.find(c => has.includes(c.engine) && !seats.some(s => s.engine === c.engine && s.model === c.model))
+        || DEFAULT_SEAT_POOL.find(c => has.includes(c.engine)) || DEFAULT_SEAT_POOL[0];
       const nextList = [...seats.map(s => ({ ...s, enabled: true })), { ...nextSeat, enabled: true }];
       p.roles.panel.seats = nextList; syncSwitches(p); markDirty(); go({ type: 'seat', index: nextList.length - 1 });
     });
@@ -289,7 +295,6 @@
     const seats = enabledSeats(p);
     if (!seats[index]) { view = { type: 'panel' }; return renderPanelList(p); }
     const kids = [renderTargetEditor(seats[index], {
-      readOnly: true, allowNative: true, allowSwarm: true,
       onChange: next => {
         const copy = seats.map(s => ({ ...s, enabled: true }));
         copy[index] = { ...next, enabled: true };
@@ -330,9 +335,9 @@
   }
   async function refreshCsrf() {
     const res = await fetch(withToken('/'), { cache: 'no-store' });
-    const m = res.ok && (await res.text()).match(/<meta\s+name="cockpit-csrf"\s+content="([^"]+)"/i);
-    if (!m?.[1]) return false;
-    csrf = m[1];
+    const hit = res.ok && (await res.text()).match(/<meta\s+name="cockpit-csrf"\s+content="([^"]+)"/i);
+    if (!hit?.[1]) return false;
+    csrf = hit[1];
     const tag = document.querySelector('meta[name="cockpit-csrf"]');
     if (tag) tag.content = csrf;
     return true;
@@ -350,6 +355,12 @@
     if (!saved) return;
     if (isReset && !saved.exists) { draft = structuredClone(saved.policy); dirty = false; view = { type: 'home' }; render(); setMsg('已还原', 'ok'); return; }
     busy = true; sync(); setMsg(isReset ? '恢复中…' : '保存中…');
+    if (!isReset && !hasDroid()) {
+      draft.quota_fallback.enabled = false;
+      for (const k of Object.keys(draft.fallbacks || {})) {
+        draft.fallbacks[k] = (draft.fallbacks[k] || []).map(c => (c.engine === 'droid' ? { ...c, enabled: false } : c));
+      }
+    }
     const url = isReset ? endpoint + '/reset' : endpoint, payload = JSON.stringify(isReset ? { revision: saved.policy.revision } : draft);
     const post = () => api(url, { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json', 'X-Cockpit-CSRF': csrf }, body: payload });
     try {

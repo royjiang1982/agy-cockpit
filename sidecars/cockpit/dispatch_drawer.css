@@ -102,10 +102,12 @@
 
 .ds-item {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  min-height: 32px; padding: 4px 10px; transition: background-color .1s;
+  min-height: 34px; padding: 5px 10px; transition: background-color .1s;
 }
 .ds-item-click { cursor: pointer; user-select: none; }
-.ds-item:hover { background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+.ds-item.is-dis { cursor: default; opacity: .56; }
+.ds-item:hover:not(.is-dis) { background: color-mix(in srgb, var(--text) 2.5%, transparent); }
+.ds-fb-sub { font-size: 9.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Detail editor blocks */
 .ds-block { padding: 8px 10px 9px; display: flex; flex-direction: column; gap: 6px; }
@@ -192,6 +194,7 @@
 }
 .ds-switch:checked { background: var(--green); }
 .ds-switch:checked::after { transform: translateX(12px); }
+.ds-switch:disabled { opacity: .38; cursor: not-allowed; }
 
 /* Inline threshold stepper */
 .ds-thr-wrap { display: inline-flex; align-items: center; gap: 8px; }
