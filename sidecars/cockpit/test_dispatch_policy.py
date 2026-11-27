@@ -130,6 +130,18 @@ class DispatchPolicyTests(unittest.TestCase):
                     dp.reset_policy(expected_revision=1, policy_path=self.policy_path)
                 self.assertEqual(self.policy_path.read_text(), contents)
 
+    def test_corrupted_policy_stops_single_and_all_routes_without_probing(self):
+        self.policy_path.write_text("{")
+        warning = dp.load_policy(self.policy_path)["read_only_warning"]
+        stopped = dict(mode="degraded", channel="direct", read_only=True, degraded=True,
+                       reason="policy_corrupted", warning=warning)
+        with patch.object(dp, "probe_capabilities") as probe:
+            self.assertEqual(dp.resolve_role("expert", read_only=True), stopped)
+            self.assertEqual(dp.resolve_all(policy_path=self.policy_path), {
+                role: dict(stopped, read_only=read_only) for role, read_only in dp.ROLE_READ_ONLY.items()
+            })
+            probe.assert_not_called()
+
     def test_path_probe_and_safe_native_fallbacks(self):
         with patch.object(dp.shutil, "which", return_value=None) as which:
             caps = dp.probe_capabilities(self.state_path)
@@ -174,6 +186,58 @@ class DispatchPolicyTests(unittest.TestCase):
         self.assertTrue(panel["seats"][1]["blind_isolated"])
         p["allow_swarm"] = False
         self.assertTrue(dp.resolve_role("panel", p, caps)["blind_isolated"])
+
+    def test_read_only_expert_rejects_swarm_and_keeps_entire_chain_read_only(self):
+        p = dict(dp.default_policy(), allow_swarm=True)
+        caps = {"available_engines": ["grok"]}
+        expert = p["roles"]["expert"]
+        swarm = dp._target("agy", "Gemini 4 Neon (High)", channel="swarm")
+        cli = dp._target("grok", "grok-4.7", "high")
+        native = dp._target("agy", "inherit", channel="invoke_subagent")
+        p["fallbacks"]["grok:grok-4.7"] = [swarm, native]
+        p["fallbacks"][f"agy:{swarm['model']}"] = [native]
+        for primary, routes in ((cli, [("cli", None), ("invoke_subagent", "research"), ("invoke_subagent", "research")]),
+                                (swarm, [("invoke_subagent", "research"), ("invoke_subagent", "research")])):
+            with self.subTest(primary=primary["channel"]):
+                expert["primary"] = primary
+                resolved = dp.resolve_role("expert", p, caps, read_only=True)
+                chain = [resolved, *resolved["fallbacks"]]
+                self.assertTrue(all(item["read_only"] for item in chain))
+                self.assertEqual([(item["channel"], item.get("type")) for item in chain], routes)
+                self.assertEqual(resolved["skipped"], [
+                    dict(channel="swarm", engine="agy", model=swarm["model"], reason="read_only_requires_isolated")
+                ])
+
+    def test_blind_panel_excludes_swarm_primaries_and_fallbacks(self):
+        p = dict(dp.default_policy(), allow_swarm=True)
+        panel = p["roles"]["panel"]
+        swarm = dp._target("agy", "Gemini 4 Neon (High)", channel="swarm")
+        panel["seats"] = [swarm, dp._target("agy", "inherit", channel="invoke_subagent")]
+        p["fallbacks"]["agy:inherit"] = [swarm]
+        caps = {"available_engines": []}
+        ordinary = dp.resolve_role("panel", p, caps)
+        self.assertEqual(ordinary["seats"][0]["channel"], "swarm")
+        self.assertEqual(ordinary["seats"][1]["fallbacks"][0]["channel"], "swarm")
+        blind_skip = dict(channel="swarm", engine="agy", model=swarm["model"], reason="blind_requires_isolated")
+        for count in (None, 2):
+            with self.subTest(count=count):
+                result = dp.resolve_role("panel", p, caps, blind=True, count=count)
+                self.assertTrue(result["blind_isolated"])
+                self.assertEqual(len(result["seats"]), 2)
+                for seat in result["seats"]:
+                    self.assertTrue(seat["blind_isolated"])
+                    self.assertTrue(all(item["channel"] != "swarm" for item in [seat, *seat["fallbacks"]]))
+                self.assertEqual([seat for seat in result["seats"] if seat["model"] == "inherit"][0]["skipped"],
+                                 [blind_skip])
+                if count is None:
+                    self.assertEqual(result["seats"][0]["skipped"], [blind_skip])
+                else:
+                    self.assertEqual(result["skipped_seats"][0]["reason"], "blind_requires_isolated")
+                    self.assertEqual(result["seats"][-1]["reason"], "builtin_fallback")
+        panel["seats"] = []
+        empty = dp.resolve_role("panel", p, caps, blind=True)
+        self.assertEqual(empty["seats"], [])
+        self.assertFalse(empty["blind_isolated"])
 
     def test_fresh_quota_only_and_enabled_fallback_order(self):
         p = dp.default_policy()
@@ -332,6 +396,26 @@ class DispatchPolicyTests(unittest.TestCase):
                 else:
                     self.assertEqual(body["type"], "research")
 
+    def test_cli_read_only_and_blind_flags(self):
+        script = Path(__file__).resolve().parents[2] / "skills/cockpit-dispatch/scripts/resolve.py"
+        p = dict(dp.default_policy(), allow_swarm=True)
+        p["roles"]["panel"]["seats"] = [dp._target("agy", "Gemini 4 Neon (High)", channel="swarm")]
+        self.policy_path.write_text(json.dumps(p))
+        cmd = [sys.executable, str(script), "--policy-path", str(self.policy_path), "--state-path", str(self.state_path)]
+        opts = dict(capture_output=True, text=True, timeout=5, env=dict(os.environ, PATH=""))
+        expert = subprocess.run([*cmd, "--role", "expert", "--read-only"], **opts)
+        self.assertEqual(expert.returncode, 0, expert.stderr)
+        self.assertEqual(json.loads(expert.stdout)["type"], "research")
+        panel = subprocess.run([*cmd, "--role", "panel", "--blind", "--count", "2"], **opts)
+        self.assertEqual(panel.returncode, 0, panel.stderr)
+        self.assertEqual([seat["channel"] for seat in json.loads(panel.stdout)["seats"]], ["invoke_subagent"] * 2)
+        for args in (("--all", "--read-only"), ("--capabilities", "--read-only"),
+                     ("--all", "--blind"), ("--role", "expert", "--blind")):
+            with self.subTest(args=args):
+                bad = subprocess.run([*cmd, *args], **opts)
+                self.assertEqual(bad.returncode, 2)
+                self.assertIn("can only be used with --role", bad.stderr)
+
     def test_wrapper_discovery_uses_runtime_bin_when_path_is_nonempty(self):
         fake_bin = self.policy_path.parent / "runtime-bin"
         fake_bin.mkdir()
@@ -369,10 +453,13 @@ class DispatchPolicyTests(unittest.TestCase):
         self.assertEqual([(s["order"], s["channel"], s["engine"], s["model"]) for s in four["seats"]],
                          [(2, "cli", "agy", "gemini-4-neon-xhigh"), (3, "cli", "agy", "claude-opus-5-5-high"),
                           (4, "cli", "grok", "grok-4.7"), (5, "invoke_subagent", "agy", "flash")])
-        with self.assertRaises(ValueError):
-            dp.resolve_role("panel", p, caps, count=0)
+        self.assertEqual(len(dp.resolve_role("panel", p, caps, count=12)["seats"]), 12)
+        for invalid in (0, 13, 2.0, True):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                dp.resolve_role("panel", p, caps, count=invalid)
         script = Path(__file__).resolve().parents[2] / "skills/cockpit-dispatch/scripts/resolve.py"
-        for bad_args in (("--role", "scout", "--count", "1"), ("--role", "panel", "--count", "0")):
+        for bad_args in (("--role", "scout", "--count", "1"), ("--role", "panel", "--count", "0"),
+                         ("--role", "panel", "--count", "13")):
             child = subprocess.run([sys.executable, str(script), "--policy-path", str(self.policy_path), *bad_args],
                                    capture_output=True, text=True, timeout=5)
             self.assertEqual(child.returncode, 2)

@@ -41,7 +41,7 @@ def _is_swarm_worker(sid, env_map):
     if not brain_root.is_dir():
         return False
     try:
-        rosters = sorted(brain_root.glob('*/.system_generated/swarm/members.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:32]
+        rosters = list(brain_root.glob('*/.system_generated/swarm/members.json'))
     except OSError:
         return False
     for roster in rosters:

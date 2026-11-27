@@ -148,6 +148,9 @@ class DispatchAPITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(body["degraded"])
         self.assertTrue(body["read_only_warning"])
+        for role, item in body["resolved"].items():
+            self.assertEqual(item["mode"], "degraded", role)
+            self.assertEqual(item["reason"], "policy_corrupted", role)
         for path, payload in (("/api/dispatch-policy", body["policy"]), ("/api/dispatch-policy/reset", {"revision": 1})):
             self.assertEqual(self.request("POST", path, payload, self.headers)[0], 409)
         self.assertEqual(self.path.read_text(), '{"schema_version": 2}')

@@ -64,13 +64,24 @@ def _strip_subagent_prefix(text: str) -> str:
 
 def _unwrap_handoff_prompt(text: str, ts: float = 0.0) -> Tuple[List[Dict[str, Any]], str]:
     txt, carried = _strip_subagent_prefix(text), []
-    while "<previous_session_history" in txt and "</previous_session_history>" in txt and "【本轮新指令】：" in txt:
-        body, tail = txt.split("</previous_session_history>", 1)
+    open_tag, close_tag, next_turn = "<previous_session_history", "</previous_session_history>", "【本轮新指令】："
+    while True:
+        open_idx = txt.find(open_tag)
+        if open_idx < 0:
+            break
+        close_idx = txt.find(close_tag, open_idx + len(open_tag))
+        if close_idx < 0:
+            break
+        _, separator, new_prompt = txt[close_idx + len(close_tag):].partition(next_turn)
+        if not separator:
+            break
+        body = txt[open_idx:close_idx]
         for seg in re.split(r"(?:^|\n+)=== 第 \d+ 轮 ===\n", body)[1:]:
-            if "[主代理输入]:\n" in seg and "\n[子代理回复]:" in seg:
-                p_raw, r_raw = seg.split("[主代理输入]:\n", 1)[1].split("\n[子代理回复]:", 1)
+            _, prompt_marker, turn = seg.partition("[主代理输入]:\n")
+            p_raw, reply_marker, r_raw = turn.partition("\n[子代理回复]:")
+            if prompt_marker and reply_marker:
                 carried.append({"prompt": _strip_subagent_prefix(p_raw.strip()), "response": r_raw.lstrip("\n").rstrip(), "ts": ts})
-        txt = _strip_subagent_prefix(tail.split("【本轮新指令】：", 1)[1])
+        txt = _strip_subagent_prefix(new_prompt)
     return carried, txt
 
 def _append_unwrapped_user_turn(turns: List[Dict[str, Any]], cur_u: Optional[str], cur_a: List[str], u_txt: str, cur_ts: float) -> Tuple[str, List[str]]:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_TARGET="${HOME}/.gemini/config/plugins/agy-cockpit"
 ALLOW_CUSTOM=0
 TARGET_DIR="${DEFAULT_TARGET}"
@@ -29,11 +29,12 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 echo "==> [1/4] 校验目标路径边界..."
-TARGET_REAL="$(python3 - "${TARGET_DIR}" "${DEFAULT_TARGET}" "${ALLOW_CUSTOM}" <<'PY'
-import json, os, sys
+TARGET_REAL="$(python3 - "${TARGET_DIR}" "${DEFAULT_TARGET}" "${ALLOW_CUSTOM}" "${SCRIPT_DIR}" <<'PY'
+import json, sys
 from pathlib import Path
 
 raw_target, raw_default, allow_custom = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+src_real = Path(sys.argv[4]).resolve()
 target = Path(raw_target).expanduser()
 default = Path(raw_default).expanduser()
 home = Path.home().resolve()
@@ -43,47 +44,117 @@ sidecar_data = (home / ".gemini" / "antigravity" / "sidecar_data").resolve()
 if target.is_symlink():
     raise SystemExit(f"拒绝安装：目标路径不能是符号链接 ({target})")
 resolved = target.resolve(strict=False)
-if resolved in (Path("/"), home, plugins_root, sidecar_data) or sidecar_data in resolved.parents:
+
+def _existing_chain(p: Path):
+    cur = p
+    out = []
+    while True:
+        if cur.exists():
+            out.append(cur)
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return out
+
+def _same_path(a: Path, b: Path) -> bool:
+    if a == b:
+        return True
+    try:
+        return a.exists() and b.exists() and a.samefile(b)
+    except OSError:
+        return False
+
+def _overlaps(a: Path, b: Path) -> bool:
+    if a == b or a in b.parents or b in a.parents:
+        return True
+    a_chain, b_chain = _existing_chain(a), _existing_chain(b)
+    if a.exists() and any(_same_path(a, x) for x in b_chain):
+        return True
+    if b.exists() and any(_same_path(b, x) for x in a_chain):
+        return True
+    return False
+
+if _overlaps(resolved, src_real):
+    raise SystemExit(f"拒绝安装：目标路径与源码仓重叠 ({resolved})")
+if any(_same_path(resolved, p) for p in (Path("/"), home, plugins_root)):
     raise SystemExit(f"拒绝安装：目标路径命中受保护目录 ({resolved})")
-if not allow_custom and resolved != default.resolve(strict=False):
-    if resolved.parent != plugins_root or resolved.name != "agy-cockpit":
+if _overlaps(resolved, sidecar_data):
+    raise SystemExit(f"拒绝安装：目标路径命中 sidecar_data ({resolved})")
+if not allow_custom and not _same_path(resolved, default.resolve(strict=False)):
+    if not _same_path(resolved.parent, plugins_root) or resolved.name != "agy-cockpit":
         raise SystemExit(f"拒绝安装：默认仅允许安装到 {default}（测试自定义目录请显式加 --allow-custom-target）")
 
-if resolved.exists():
-    if not resolved.is_dir():
-        raise SystemExit(f"拒绝安装：目标不是目录 ({resolved})")
+if resolved.exists() and not resolved.is_dir():
+    raise SystemExit(f"拒绝安装：目标不是目录 ({resolved})")
+for parent_rel in ("skills", "sidecars"):
+    parent = resolved / parent_rel
+    if parent.is_symlink():
+        raise SystemExit(f"拒绝安装：受管父目录不能是符号链接 ({parent})")
+    if parent.exists():
+        real_parent = parent.resolve(strict=False)
+        if not _overlaps(resolved, real_parent) or _overlaps(real_parent, sidecar_data):
+            raise SystemExit(f"拒绝安装：受管父目录越界或命中 sidecar_data ({parent})")
+managed = ("plugin.json", "README.md", "hooks.json", "assets", "rules", "skills/cockpit-dispatch", "sidecars/cockpit", "runtime")
+paths = [resolved / rel for rel in managed]
+while paths:
+    path = paths.pop()
+    if path.is_symlink():
+        raise SystemExit(f"拒绝安装：受管路径不能是符号链接 ({path})")
+    real = path.resolve(strict=False)
+    if resolved not in real.parents or _overlaps(real, sidecar_data):
+        raise SystemExit(f"拒绝安装：受管路径越界或命中 sidecar_data ({path})")
+    if path.is_dir():
+        paths.extend(path.iterdir())
+src_paths = [src_real / rel for rel in managed if (src_real / rel).exists() or (src_real / rel).is_symlink()]
+while src_paths:
+    sp = src_paths.pop()
+    if sp.name in ("__pycache__", ".DS_Store", "tests") or sp.suffix == ".pyc":
+        continue
+    if sp.is_symlink():
+        raise SystemExit(f"拒绝安装：源树受管路径包含符号链接 ({sp})")
+    if sp.is_dir():
+        src_paths.extend(sp.iterdir())
+if resolved.is_dir() and any(resolved.iterdir()):
     manifest = resolved / "plugin.json"
-    if any(resolved.iterdir()):
-        if not manifest.is_file():
-            raise SystemExit(f"拒绝安装：非空目标目录缺少 plugin.json ({resolved})")
-        try:
-            meta = json.loads(manifest.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise SystemExit(f"拒绝安装：目标 plugin.json 无法解析 ({exc})")
-        if not isinstance(meta, dict) or meta.get("name") != "agy-cockpit":
-            raise SystemExit(f"拒绝安装：目标不属于 agy-cockpit 插件 (name={meta.get('name')!r})")
+    if not manifest.is_file():
+        raise SystemExit(f"拒绝安装：非空目标目录缺少 plugin.json ({resolved})")
+    try:
+        meta = json.loads(manifest.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"拒绝安装：目标 plugin.json 无法解析 ({exc})")
+    if not isinstance(meta, dict) or meta.get("name") != "agy-cockpit":
+        raise SystemExit(f"拒绝安装：目标不属于 agy-cockpit 插件 (name={meta.get('name')!r})")
 
 print(resolved)
 PY
 )"
 
-echo "==> [2/4] 预检 Python 语法..."
+echo "==> [2/4] 预检 Python、JSON 和 Shell 语法..."
 python3 - "${SCRIPT_DIR}" <<'PY'
-import sys
+import json, sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
 targets = []
-for sub in ("sidecars/cockpit", "skills", "runtime/agent_runtime", "runtime/guard"):
+for sub in ("assets", "rules", "skills/cockpit-dispatch", "sidecars/cockpit", "runtime"):
     base = root / sub
-    if base.exists():
-        targets.extend(sorted(base.rglob("*.py")))
+    targets.extend(p for p in sorted(base.rglob("*.py")) if "__pycache__" not in p.parts and "tests" not in p.parts)
+for path in sorted((root / "runtime/bin").glob("sa-*")):
+    if not path.suffix and path.is_file():
+        with path.open("rb") as script:
+            shebang = script.readline()
+        if shebang.startswith(b"#!") and b"python" in shebang:
+            targets.append(path)
 for path in targets:
-    if "__pycache__" in path.parts:
-        continue
-    compile(path.read_text(encoding="utf-8"), str(path), "exec")
+    compile(path.read_bytes(), str(path), "exec")
 print(f"    py_compile OK ({len(targets)} files)")
+for name in ("plugin.json", "hooks.json"):
+    try:
+        json.loads((root / name).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"JSON 预检失败：{name} ({exc})")
 PY
+sh -n "${SCRIPT_DIR}/runtime/guard/sa-guard.sh"
 
 echo "==> [3/4] 仅同步受管插件清单至 ${TARGET_REAL}（不删除外部文件，不触碰 sidecar_data）..."
 mkdir -p "${TARGET_REAL}"

@@ -436,13 +436,21 @@ class SubagentDaemon:
             response_text = (
                 "".join(codex_messages.values()) if codex_messages else "".join(chunks)
             )
-            if not client_eof.is_set():
-                record_turn_completion(agent, final_sid, raw_prompt, response_text, stream_tokens, handoff, d_dir)
             pending_result = {
                 "type": "result", "agent": agent,
                 "conversation_id": final_sid,
                 "result": {"status": "SUCCESS", "response": response_text},
             }
+            if not client_eof.is_set():
+                try:
+                    record_turn_completion(agent, final_sid, raw_prompt, response_text, stream_tokens, handoff, d_dir)
+                except Exception as ledger_exc:
+                    warning = str(ledger_exc)
+                    pending_result["result"]["ledger_warning"] = warning
+                    try:
+                        print(f"session ledger write failed: {warning}", file=sys.stderr)
+                    except (OSError, ValueError):
+                        pass  # Logging must not override the completed turn.
         except Exception as exc:
             if agent == "agy" and re.search(r"quota|exhausted|rate[ _-]?limit|\b429\b|配额|额度", str(exc), re.I):
                 invalidate_agy_quota_cache()

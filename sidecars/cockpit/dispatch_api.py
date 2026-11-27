@@ -113,7 +113,12 @@ def handle_dispatch_request(handler, path, qs, state_module):
         current = dispatch_policy.load_policy(policy_path)
         if qs.get("resolve") == ["1"]:
             caps = dispatch_policy.probe_capabilities(state_path=state_path)
-            current.update(capabilities=caps, resolved=dispatch_policy.resolve_all(current["policy"], caps))
+            resolved = (
+                dispatch_policy.resolve_all(policy_path=policy_path, state_path=state_path)
+                if current["degraded"]
+                else dispatch_policy.resolve_all(current["policy"], caps)
+            )
+            current.update(capabilities=caps, resolved=resolved)
         respond(200, current)
         return
     if method != "POST" or path not in (_POLICY, _RESET):

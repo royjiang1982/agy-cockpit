@@ -27,6 +27,7 @@ _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/() -]{0,80}", re.ASCII)
 _NAMESPACED_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.:-]*")
 _LABEL = re.compile(r"[^()]*(?: \([A-Za-z0-9._ -]+\))?")
 MAX_QUOTA_AGE_SEC = 300
+MAX_PANEL_COUNT = 12
 _LOCK, _REAL_WHICH = threading.Lock(), shutil.which
 _BUNDLED_BIN = Path(__file__).resolve().parents[2] / "runtime" / "bin"
 _EXTRA_WRAPPER_DIRS = (Path.home() / ".gemini/config/bin", Path.home() / ".local/bin")
@@ -77,7 +78,6 @@ def default_policy():
                 allow_swarm=False, codex_fast=True, quota_fallback=dict(enabled=True, threshold_pct=5),
                 roles=roles, fallbacks={k: [_target("droid", *v, enabled=True)] for k, v in fallback_specs.items()})
 
-
 def _fields(obj, required, optional=()):
     if not isinstance(obj, dict) or not set(required) <= obj.keys() or obj.keys() - set(required) - set(optional):
         raise ValueError("unexpected or missing policy fields")
@@ -87,14 +87,10 @@ def _bool(value):
 def _revision(value):
     if type(value) is not int or value < 1:
         raise ValueError("revision must be a positive integer")
-
-
 def _model_name(name):
     return (isinstance(name, str) and _MODEL.fullmatch(name) and ".." not in name
             and name == name.strip() and not re.search(r"(?:^| )--?\S", name)
             and (_NAMESPACED_MODEL.fullmatch(name) if "/" in name else _LABEL.fullmatch(name)))
-
-
 def _validate_target(target, allow_enabled=False):
     _fields(target, ("channel", "engine", "model", "effort"), ("enabled",) if allow_enabled else ())
     channel, engine, model, effort = (target[key] for key in ("channel", "engine", "model", "effort"))
@@ -106,8 +102,6 @@ def _validate_target(target, allow_enabled=False):
         raise ValueError("invalid invoke_subagent model")
     if "enabled" in target:
         _bool(target["enabled"])
-
-
 def validate_policy(payload):
     """Validate a complete v1 policy; normalize optional invariant read_only fields."""
     switches = ("enabled", "external_enabled", "allow_swarm", "codex_fast")
@@ -150,7 +144,6 @@ def validate_policy(payload):
     return dict(payload, roles=roles, quota_fallback=dict(quota),
                 fallbacks={key: [dict(target) for target in targets] for key, targets in fallbacks.items()})
 
-
 def unique_json_object(pairs):
     out = {}
     for key, value in pairs:
@@ -159,13 +152,11 @@ def unique_json_object(pairs):
         out[key] = value
     return out
 
-
 def policy_file_path(policy_path=None, *, state_path=None):
     if policy_path is not None:
         return Path(policy_path)
     override = os.environ.get("SA_DISPATCH_POLICY_PATH")
     return Path(override) if override else Path(state_path or STATE_PATH).with_name("dispatch-policy.json")
-
 
 def load_policy(policy_path=None):
     """Return policy and disk health without writing anything."""
@@ -179,7 +170,6 @@ def load_policy(policy_path=None):
         return dict(policy=default_policy(), exists=True, degraded=True,
                     read_only_warning="Policy is unreadable, invalid, or uses an unsupported schema; it was not changed.")
 
-
 @contextmanager
 def _policy_file_lock(path):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,7 +180,6 @@ def _policy_file_lock(path):
         yield
     finally:
         os.close(fd)
-
 
 def _write_policy(payload, expected_revision, policy_path):
     _revision(expected_revision)
@@ -214,7 +203,6 @@ def _write_policy(payload, expected_revision, policy_path):
         finally:
             Path(tmp).unlink(missing_ok=True)
         return updated
-
 
 def save_policy(payload, *, expected_revision, policy_path=None):
     policy = validate_policy(payload)
@@ -261,8 +249,6 @@ def _limiting_hint(rows):
     fresh = [row for row in rows if row["fresh"]]
     return (min(fresh, key=lambda row: (row["pct"], -row["observed_at"])) if fresh else
             max(rows, key=lambda row: row["observed_at"] or 0, default=_quota_hint({}, 0)))
-
-
 def probe_capabilities(state_path=None, *, now=None):
     """PATH-only wrapper discovery plus persisted (never polled) quota samples."""
     now = time.time() if now is None else now
@@ -293,14 +279,13 @@ def probe_capabilities(state_path=None, *, now=None):
                 agy_quota={family: _limiting_hint(rows) for family, rows in agy_families.items()
                            if rows or any(agy_families.values())})
 
-
 def _agy_quota_family(model):
     names = set(re.findall(r"[a-z0-9]+", model.lower()))
     if names.intersection(("claude", "opus", "sonnet", "haiku")):
         return "3p"
     return "gemini" if names.intersection(("gemini", "neon", "argon", "carbon", "hydrogen", "flash")) else None
 
-def _selection(target, name, policy, caps, state_path=None):
+def _selection(target, policy, caps, state_path, *, read_only):
     channel, engine, raw_model, effort = (target[key] for key in ("channel", "engine", "model", "effort"))
     if not target.get("enabled", True):
         return None, "candidate_disabled"
@@ -316,35 +301,39 @@ def _selection(target, name, policy, caps, state_path=None):
             return None, "quota_low"
     elif channel == "swarm" and not policy["allow_swarm"]:
         return None, "swarm_disabled"
-    selected = dict(target, model=model, mode=channel, read_only=ROLE_READ_ONLY[name])
+    selected = dict(target, model=model, mode=channel, read_only=read_only)
     selected.pop("enabled", None)
     if channel == "cli" and engine == "codex":
         selected["codex_fast"] = policy["codex_fast"]
     if channel == "invoke_subagent":
-        selected["type"] = "research" if ROLE_READ_ONLY[name] else "self"
+        selected["type"] = "research" if read_only else "self"
     return selected, None
 
-def _builtin_tails(name, policy):
-    if name in ("deep", "expert") and policy["allow_swarm"]:
+def _builtin_tails(name, policy, read_only):
+    if not read_only and name in ("deep", "expert") and policy["allow_swarm"]:
         yield dict(mode="swarm", channel="swarm", engine="agy", model=f"Gemini 4 Neon ({'Medium' if name == 'deep' else 'High'})",
                    effort="", read_only=False, requires_model_check=True)
     model = {"scout": "flash", "standard": "inherit", "panel": "flash"}.get(name, "pro")
     yield dict(mode="invoke_subagent", channel="invoke_subagent", engine="agy", model=model,
-               effort="", type="research" if ROLE_READ_ONLY[name] else "self", read_only=ROLE_READ_ONLY[name])
+               effort="", type="research" if read_only else "self", read_only=read_only)
 
-def _resolve_target(primary, name, policy, caps, state_path=None):
+def _resolve_target(primary, name, policy, caps, state_path, *, read_only, blind=False):
+    # Keep existing read-only Swarm routes for scout and non-blind panel.
+    swarm_skip = ("blind_requires_isolated" if blind else
+                  "read_only_requires_isolated" if read_only and not ROLE_READ_ONLY[name] else None)
     effort = "" if primary["effort"] == "same" else primary["effort"]
     resolved_model = dispatch_models.resolve_model_id(primary["engine"], primary["model"], effort, agy_state_path=state_path) if primary["channel"] == "cli" else primary["model"]
     chain = next((policy["fallbacks"][k] for k in dispatch_models.fallback_lookup_keys(primary["engine"], primary["model"], resolved_model) if k in policy["fallbacks"]), [])
     available, skipped = [], []
     for i, target in enumerate([primary, *chain]):
         candidate = dict(target, effort=effort) if target["effort"] == "same" else target
-        result, why = _selection(candidate, name, policy, caps, state_path)
+        result, why = ((None, swarm_skip) if swarm_skip and target["channel"] == "swarm" else
+                       _selection(candidate, policy, caps, state_path, read_only=read_only))
         if result is None:
             skipped.append(dict(channel=target["channel"], engine=target["engine"], model=target["model"], reason=why))
         elif not any(all(prior[k] == result[k] for k in ("channel", "engine", "model", "effort")) for prior in available):
             available.append(dict(result, reason="primary" if i == 0 else "fallback"))
-    for tail in _builtin_tails(name, policy):
+    for tail in _builtin_tails(name, policy, read_only):
         if not any(all(prior[k] == tail[k] for k in ("channel", "engine", "model", "effort")) for prior in available):
             available.append(dict(tail, reason="builtin_fallback"))
     selected, *fallbacks = available
@@ -356,45 +345,56 @@ def _panel_seat_meta(seat, order):
     seat["blind_reason"] = "independent_concurrent_call" if seat["blind_isolated"] else "shared_swarm_board"
     return seat
 
-def _resolve_panel(config, policy, caps, count, state_path=None):
+def _resolve_panel(config, policy, caps, count, state_path, *, read_only, blind):
     enabled = [seat for seat in config["seats"] if seat.get("enabled", True)]
-    skipped = []
-    if count is None:
-        seats = [_panel_seat_meta(_resolve_target(seat, "panel", policy, caps, state_path), i) for i, seat in enumerate(enabled, 1)]
-    else:
-        if type(count) is not int or count < 1:
-            raise ValueError("panel count must be a positive integer")
-        seats = []
-        for i, seat in enumerate(enabled, 1):
-            res = _resolve_target(seat, "panel", policy, caps, state_path)
-            if res["reason"] in ("primary", "fallback"):
-                seats.append(_panel_seat_meta(res, i))
-                if len(seats) >= count:
-                    break
-            else:
-                why = res["skipped"][0]["reason"] if res["skipped"] else "unavailable"
-                skipped.append(dict(order=i, channel=seat["channel"], engine=seat["engine"], model=seat["model"], reason=why))
-        next_order = max((s["order"] for s in seats), default=0)
-        while len(seats) < count:
-            next_order += 1
-            seats.append(_panel_seat_meta(dict(next(_builtin_tails("panel", policy)), reason="builtin_fallback", fallbacks=[], skipped=[]), next_order))
+    seats, skipped = [], []
+    for i, seat in enumerate(enabled, 1):
+        res = _resolve_target(seat, "panel", policy, caps, state_path, read_only=read_only, blind=blind)
+        if count is None or res["reason"] in ("primary", "fallback"):
+            seats.append(_panel_seat_meta(res, i))
+            if len(seats) == count:
+                break
+        else:
+            why = res["skipped"][0]["reason"] if res["skipped"] else "unavailable"
+            skipped.append(dict(order=i, channel=seat["channel"], engine=seat["engine"], model=seat["model"], reason=why))
+            if blind:
+                skipped[-1]["skipped"] = res["skipped"]
+    next_order = seats[-1]["order"] + 1 if seats else 1
+    for i in range(next_order, next_order + (count or 0) - len(seats)):
+        tail = next(_builtin_tails("panel", policy, read_only))
+        seats.append(_panel_seat_meta(dict(tail, reason="builtin_fallback", fallbacks=[], skipped=[]), i))
     channels = {seat["channel"] for seat in seats}
     out = dict(mode="panel", channel=next(iter(channels)) if len(channels) == 1 else "panel", read_only=True, seats=seats,
                blind_isolated=bool(seats) and all(s["blind_isolated"] for s in seats),
                reason=("shared_swarm_board" if "swarm" in channels else "panel_seats" if seats else "no_enabled_seats"))
     return dict(out, skipped_seats=skipped) if skipped else out
 
-def resolve_role(role, policy=None, capabilities=None, *, policy_path=None, state_path=None, count=None):
+def _degraded_route(read_only, loaded):
+    return dict(mode="degraded", channel="direct", read_only=read_only, degraded=True,
+                reason="policy_corrupted", warning=loaded["read_only_warning"])
+
+def resolve_role(role, policy=None, capabilities=None, *, policy_path=None, state_path=None, count=None, read_only=False, blind=False):
     if role not in ROLE_READ_ONLY:
         raise ValueError("unknown dispatch role")
-    policy = load_policy(policy_path)["policy"] if policy is None else policy
+    effective_ro = bool(ROLE_READ_ONLY[role] or read_only)
+    if policy is None:
+        if (loaded := load_policy(policy_path))["degraded"]:
+            return _degraded_route(effective_ro, loaded)
+        policy = loaded["policy"]
+    if count is not None and (type(count) is not int or not 1 <= count <= MAX_PANEL_COUNT):
+        raise ValueError(f"panel count must be an integer from 1 to {MAX_PANEL_COUNT}")
     if not policy["enabled"]:
         return dict(mode="disabled", channel="direct", reason="dispatch_disabled")
     caps = probe_capabilities(state_path) if capabilities is None else capabilities
     cfg = policy["roles"][role]
-    return _resolve_panel(cfg, policy, caps, count, state_path) if role == "panel" else _resolve_target(cfg["primary"], role, policy, caps, state_path)
+    if role == "panel":
+        return _resolve_panel(cfg, policy, caps, count, state_path, read_only=effective_ro, blind=blind)
+    return _resolve_target(cfg["primary"], role, policy, caps, state_path, read_only=effective_ro)
 
 def resolve_all(policy=None, capabilities=None, *, policy_path=None, state_path=None):
-    policy = load_policy(policy_path)["policy"] if policy is None else policy
+    if policy is None:
+        if (loaded := load_policy(policy_path))["degraded"]:
+            return {role: _degraded_route(read_only, loaded) for role, read_only in ROLE_READ_ONLY.items()}
+        policy = loaded["policy"]
     caps = probe_capabilities(state_path) if capabilities is None else capabilities
     return {role: resolve_role(role, policy, caps, state_path=state_path) for role in ROLE_READ_ONLY}

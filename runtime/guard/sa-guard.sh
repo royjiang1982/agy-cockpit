@@ -1,6 +1,6 @@
 #!/bin/sh
 # 子代理防派生与高危命令 PreToolUse 钩子。用法：sa-guard.sh <agy|codex|grok>
-# 主代理无活跃子代理标记时免启 Python/jq 快速放行；命中子代理或会话标记时单次 Python 完成全部守卫。
+# 既无子代理标记也无 AGY Swarm 名单时免启 Python；其余交由 Python 核实身份。
 engine=$1
 case "$engine" in
   agy|codex|grok) ;;
@@ -25,7 +25,19 @@ if [ "${SA_SUBAGENT:-}" != "1" ]; then
       esac
     done
   fi
-  if [ "$has_marker" -eq 0 ]; then
+  has_roster=0
+  if [ "$has_marker" -eq 0 ] && [ "$engine" = "agy" ]; then
+    brain_dir=${ZOMI_SWARM_BRAIN_DIR:-$HOME/.gemini/antigravity/brain}
+    for roster in "$brain_dir"/*/.system_generated/swarm/members.json \
+                  "$brain_dir"/.[!.]*/.system_generated/swarm/members.json \
+                  "$brain_dir"/..?*/.system_generated/swarm/members.json; do
+      if [ -f "$roster" ]; then
+        has_roster=1
+        break
+      fi
+    done
+  fi
+  if [ "$has_marker" -eq 0 ] && [ "$has_roster" -eq 0 ]; then
     [ "$engine" = "agy" ] && printf '{"decision":"ask"}\n'
     exit 0
   fi

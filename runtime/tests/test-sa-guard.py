@@ -22,6 +22,8 @@ def run_hook(platform, payload, subagent=True, extra_env=None, real=False):
     env = {**os.environ, 'SA_SUBAGENT': '1' if subagent else '0',
            'ZOMI_SUBAGENT_SESSIONS_DIR': SESSIONS.name, 'SA_GUARD_LOG': '/dev/null'}
     env.update(extra_env or {})
+    if subagent is None:
+        env.pop('SA_SUBAGENT', None)
     raw = payload if isinstance(payload, str) else json.dumps(payload)
     if real or os.environ.get('SA_GUARD_TEST_SUBPROCESS_ALL') == '1':
         CALLS['subprocess'] += 1
@@ -421,6 +423,7 @@ class GuardTests(unittest.TestCase):
             read_res = run_hook('agy', {'toolCall': {'name': 'read_file', 'args': {'Path': target}}}, subagent=True)
             self.assertEqual(json.loads(read_res.stdout)['decision'], 'allow', target)
 
+    def test_real_agy_swarm_worker_without_subagent_marker(self):
         with tempfile.TemporaryDirectory(prefix='sa-guard-swarm-') as brain_tmp:
             coord_id = 'coord-conv-001'
             worker_id = 'worker-conv-002'
@@ -433,11 +436,18 @@ class GuardTests(unittest.TestCase):
                     'worker-1': {'conversation_id': worker_id, 'role': 'worker'},
                 },
             }), encoding='utf-8')
+            tools = (
+                {'name': 'swarm', 'args': {}},
+                {'name': 'run_command', 'args': {'CommandLine': 'git push'}},
+            )
             env = {'ZOMI_SWARM_BRAIN_DIR': brain_tmp}
-            w_res = run_hook('agy', {'conversationId': worker_id, 'toolCall': {'name': 'swarm', 'args': {}}}, subagent=False, extra_env=env)
-            self.assertEqual(json.loads(w_res.stdout)['decision'], 'deny')
-            c_res = run_hook('agy', {'conversationId': coord_id, 'toolCall': {'name': 'swarm', 'args': {}}}, subagent=False, extra_env=env)
-            self.assertEqual(json.loads(c_res.stdout)['decision'], 'ask')
+            for sid, decision in ((worker_id, 'deny'), (coord_id, 'ask'), ('nonmember', 'ask')):
+                for tool in tools:
+                    with self.subTest(sid=sid, tool=tool['name']):
+                        payload = {'conversationId': sid, 'toolCall': tool}
+                        result = run_hook('agy', payload, subagent=None, extra_env=env, real=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(json.loads(result.stdout)['decision'], decision)
 
 
 if __name__ == '__main__':
