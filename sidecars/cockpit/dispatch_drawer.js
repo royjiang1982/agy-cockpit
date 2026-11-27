@@ -183,11 +183,8 @@
     const masterCb = el('input', { type: 'checkbox', className: 'ds-switch', checked: p.enabled, 'aria-label': '接管子代理编排' });
     masterCb.addEventListener('change', () => { p.enabled = masterCb.checked; commit(); });
     const masterCard = el('div', { className: 'ds-card' },
-      el('label', { className: 'ds-item ds-item-click' },
-        el('div', { className: 'ds-row-col' },
-          el('span', { className: 'ds-lbl' }, '接管子代理编排'),
-          el('span', { className: 'ds-item-desc' }, '开启后接管编排策略，忽略用户或项目配置；关闭则切回原有设置')),
-        masterCb));
+      el('label', { className: 'ds-item ds-item-click' }, el('div', { className: 'ds-row-col' },
+        el('span', { className: 'ds-lbl' }, '接管子代理编排'), el('span', { className: 'ds-item-desc' }, '开启后接管编排策略，忽略用户或项目配置；关闭则切回原有设置')), masterCb));
 
     const roleCard = el('div', { className: p.enabled ? 'ds-card' : 'ds-card ds-dimmed' });
     for (const [role, name] of ROLES) {
@@ -279,19 +276,25 @@
       const has = avail(), sameSeat = (a, b) => a.engine === b.engine && (findSpec(a.engine, a.model)?.id || a.model) === (findSpec(b.engine, b.model)?.id || b.model);
       const nextSeat = DEFAULT_SEAT_POOL.find(c => has.includes(c.engine) && !seats.some(s => sameSeat(s, c)))
         || DEFAULT_SEAT_POOL.find(c => has.includes(c.engine)) || DEFAULT_SEAT_POOL[0];
-      const nextList = [...seats.map(s => ({ ...s, enabled: true })), { ...nextSeat, enabled: true }];
-      p.roles.panel.seats = nextList; syncSwitches(p); view = { type: 'seat', index: nextList.length - 1 }; bodyEl.scrollTop = 0; commit();
+      go({ type: 'new-seat', seat: { ...nextSeat, enabled: true } });
     });
     return [el('div', { className: 'ds-caption' }, '按顺序选用：单方取 #1、两方取前 2 个，不可用自动顺延下一席位。'), listCard, addBtn];
   }
 
-  function renderSeatDetail(p, index) {
-    const seats = enabledSeats(p);
-    if (!seats[index]) { view = { type: 'panel' }; return renderPanelList(p); }
-    const kids = [renderTargetEditor(seats[index], {
-      onChange: next => { const copy = seats.map(s => ({ ...s, enabled: true })); copy[index] = { ...next, enabled: true }; p.roles.panel.seats = copy; syncSwitches(p); commit(); },
+  function renderSeatDetail(p, index, draftSeat = null) {
+    const seats = enabledSeats(p), isNew = Boolean(draftSeat);
+    if (!isNew && !seats[index]) { view = { type: 'panel' }; return renderPanelList(p); }
+    const kids = [renderTargetEditor(isNew ? draftSeat : seats[index], {
+      onChange: next => {
+        if (isNew) { view = { type: 'new-seat', seat: { ...next, enabled: true } }; render(); return; }
+        const copy = seats.map(s => ({ ...s, enabled: true })); copy[index] = { ...next, enabled: true }; p.roles.panel.seats = copy; syncSwitches(p); commit();
+      },
     })];
-    if (seats.length > 1) {
+    if (isNew) {
+      const saveBtn = el('button', { type: 'button', className: 'ds-primary-btn' }, '保存');
+      saveBtn.addEventListener('click', () => { p.roles.panel.seats = [...seats.map(s => ({ ...s, enabled: true })), { ...draftSeat, enabled: true }]; syncSwitches(p); view = { type: 'panel' }; bodyEl.scrollTop = 0; commit(); });
+      kids.push(saveBtn);
+    } else if (seats.length > 1) {
       const delBtn = el('button', { type: 'button', className: 'ds-danger-btn' }, '移除此席位');
       delBtn.addEventListener('click', () => { p.roles.panel.seats = seats.filter((_, i) => i !== index).map(s => ({ ...s, enabled: true })); syncSwitches(p); view = { type: 'panel' }; bodyEl.scrollTop = 0; commit(); });
       kids.push(delBtn);
@@ -304,9 +307,9 @@
     const prevScroll = bodyEl.scrollTop, p = draft, isHome = view.type === 'home';
     if (saved.read_only_warning) { warnEl.hidden = false; warnEl.dataset.tone = ''; warnText.textContent = '配置文件异常或来自更高版本，当前只读展示默认值。'; reloadBtn.hidden = true; }
     closeBtn.setAttribute('aria-label', isHome ? '关闭' : '返回');
-    titleEl.textContent = isHome ? '子代理设置' : view.type === 'role' ? (ROLES.find(r => r[0] === view.role)?.[1] || view.role) : view.type === 'panel' ? '多方会审' : `席位 #${view.index + 1}`;
+    titleEl.textContent = isHome ? '子代理设置' : view.type === 'role' ? (ROLES.find(r => r[0] === view.role)?.[1] || view.role) : view.type === 'panel' ? '多方会审' : view.type === 'new-seat' ? '添加席位' : `席位 #${view.index + 1}`;
     fields.className = isHome ? 'ds-fields' : 'ds-fields is-sub';
-    const kids = isHome ? renderHome(p) : view.type === 'role' ? renderRoleDetail(p, view.role) : view.type === 'panel' ? renderPanelList(p) : renderSeatDetail(p, view.index);
+    const kids = isHome ? renderHome(p) : view.type === 'role' ? renderRoleDetail(p, view.role) : view.type === 'panel' ? renderPanelList(p) : view.type === 'new-seat' ? renderSeatDetail(p, -1, view.seat) : renderSeatDetail(p, view.index);
     fields.replaceChildren(...kids);
     bodyEl.scrollTop = prevScroll;
     sync();
@@ -357,11 +360,7 @@
         pendingSave = false;
         const snapshot = structuredClone(draft);
         snapshot.revision = saved.policy.revision;
-        const post = () => {
-          const headers = { 'Content-Type': 'application/json', 'X-Cockpit-CSRF': csrf };
-          if (location.protocol === 'plugin:') headers['X-Cockpit-Plugin-Origin'] = location.origin;
-          return api(endpoint, { method: 'POST', cache: 'no-store', headers, body: JSON.stringify(snapshot) });
-        };
+        const post = () => api(endpoint, { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json', 'X-Cockpit-CSRF': csrf, ...(location.protocol === 'plugin:' ? { 'X-Cockpit-Plugin-Origin': location.origin } : {}) }, body: JSON.stringify(snapshot) });
         let out;
         try { out = await post(); }
         catch (e) { if (e.status === 403 && e.code === 'invalid CSRF token' && await refreshCsrf()) out = await post(); else throw e; }
@@ -382,7 +381,7 @@
     } finally { saving = false; }
   }
 
-  const stepBackOrClose = () => { if (view.type === 'seat') go({ type: 'panel' }); else if (view.type !== 'home') go({ type: 'home' }); else drawer.close(); };
+  const stepBackOrClose = () => { if (view.type === 'seat' || view.type === 'new-seat') go({ type: 'panel' }); else if (view.type !== 'home') go({ type: 'home' }); else drawer.close(); };
   closeBtn.addEventListener('click', stepBackOrClose);
   reloadBtn.addEventListener('click', () => load());
   trigger.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); });
