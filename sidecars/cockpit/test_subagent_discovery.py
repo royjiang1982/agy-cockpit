@@ -126,6 +126,44 @@ class SubagentDiscoveryTests(unittest.TestCase):
         self.assertEqual(list(stubs_resume.keys()), [old_sid])
         self.assertEqual(stubs_resume[old_sid]["step_status"], 2)
 
+    def test_large_raw_tail_binds_terminal_without_stdout(self):
+        parent = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        agy_sid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        codex_sid = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        droid_sid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        project = self.root / "project"
+        (project / "tmp").mkdir(parents=True)
+        bulk = b'{"type":"text_delta","delta":"' + "宽".encode() * 667_000 + b'"}\n'
+
+        def event(**fields):
+            return json.dumps(fields, ensure_ascii=False).encode() + b"\r\n"
+
+        rows = []
+        for idx, (engine, head, tail) in enumerate((
+            ("agy", event(event="init", agent="agy", model="head-model"),
+             event(event="result", agent="agy", conversation_id=agy_sid, result={"status": "SUCCESS"})),
+            ("codex", b"", event(type="thread.started", thread_id=codex_sid) + event(type="turn.completed")),
+            ("droid", event(event="init", agent="droid", conversation_id=droid_sid),
+             event(type="turn.completed") + event(event="result", agent="droid", conversation_id=droid_sid,
+                                                  result={"status": "ERROR", "error": "failed\u2028after\u2029turn"})),
+        ), 1):
+            raw = project / "tmp" / f"{engine}.jsonl"
+            unfinished = b'{"event":"result","result":{"status":"ERROR"}}'
+            raw.write_bytes(head + bulk + b"\xff\n" + tail + unfinished)
+            cmd = f"sa-run.sh tmp/{engine}.jsonl sa-{engine} --prompt hi"
+            args = json.dumps({"CommandLine": cmd, "Cwd": str(project)}).encode()
+            rows.append((idx, 132, 2, b"", _field_bytes(1, b"run_command") + _field_bytes(2, args)))
+
+        _build_db(self.app_dir / "conversations" / f"{parent}.db", [], rows)
+        stubs = {stub["id"]: stub for stub in subagent_discovery.discover_subagent_stubs(parent)}
+        self.assertEqual(set(stubs), {agy_sid, codex_sid, droid_sid})
+        self.assertEqual(stubs[agy_sid]["model_hint"], "head-model")
+        for sid in (agy_sid, codex_sid):
+            self.assertTrue(stubs[sid]["has_done_marker"])
+            self.assertFalse(stubs[sid]["has_err_marker"])
+        self.assertTrue(stubs[droid_sid]["has_err_marker"])
+        self.assertFalse(stubs[droid_sid]["has_done_marker"])
+
     def test_pi_timestamp_matches_nearest_unused_session_in_cwd(self):
         root = self.root / "pi"
         cwd = self.root / "project"

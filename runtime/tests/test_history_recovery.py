@@ -95,6 +95,19 @@ def test_legacy_session_handoff():
         assert ho_agy["carried_turns"][1]["prompt"] == "Legacy Agy Q2"
         assert ho_agy["carried_turns"][1]["response"] == "Legacy Agy A2"
 
+        # Reproduce the ledger response from turn_runner's joined ACP deltas.
+        first, second = inspected_agy["turns"]
+        streamed = dict(first, response="".join(["Legacy Agy Finding", " A", "Legacy Agy A1"]))
+        with patch.dict(os.environ, SA_SESSIONS_LEDGER_DIR=str(fake_home / "forced-ledger")):
+            sh.save_session_ledger({"session_id": "legacy-agy-sid", "turns": [streamed, second]})
+            forced = build_forced_handoff_prompt("agy", "legacy-agy-sid", "", "Next Droid task")
+        assert forced and forced.count("<previous_session_history") == 1
+        carried, clean = sh._unwrap_handoff_prompt(forced)
+        assert clean == "Next Droid task"
+        assert [(t["prompt"], t["response"]) for t in carried] == [
+            (t["prompt"], t["response"]) for t in (first, second)
+        ]
+
         # Verify agy step_type=23 (compaction/checkpoint) ignores pre-compaction gen_metadata rows
         con = sqlite3.connect(str(agy_db))
         con.execute("INSERT INTO steps VALUES (6, 23, 3, ?, ?)", (ts_blob, b""))
@@ -225,6 +238,35 @@ def test_cached_history():
     print('PASS: cached session path/content, changed-file refresh, isolated ledger locks and complete history')
 
 
+def test_repeated_history_merge():
+    spaced, double = 'pattern = "a b"', 'pattern = "a  b"'
+    para, plain = "part\n\nend", "partend"
+
+    def source(responses):
+        return {"turns": [{"prompt": "repeat", "response": r} for r in responses]}
+
+    with isolated_runtime() as root:
+        for local, ledger, expected in (
+            ([spaced, double], [], [spaced, double]),
+            ([], [spaced, double], [spaced, double]),
+            ([spaced], [double], [spaced, double]),
+            ([para, "middle", para], [plain, "middle", "part\r\nend", plain],
+             [para, "middle", para, plain]),
+            ([para, "middle", para], ["part\r\nend", "middle"], [para, "middle", para]),
+            (["A", "B", "A"], ["B", "X", "A"], ["A", "B", "X", "A"]),
+            ([], [plain, plain], [plain, plain]),
+        ):
+            with (
+                patch.object(sh, "inspect_local_session", return_value=source(local)),
+                patch.object(sh, "load_session_ledger", return_value=source(ledger)),
+            ):
+                merged = build_forced_handoff_prompt("agy", "repeated", "", "next", root)
+            carried, clean = sh._unwrap_handoff_prompt(merged)
+            assert clean == "next"
+            assert [t["response"] for t in carried] == expected, (local, ledger, carried)
+    print("PASS: repeated history stays ordered; only cross-source paragraph breaks are normalized")
+
+
 def test_linear_history_merge():
     def measure(size):
         work = 0
@@ -295,7 +337,7 @@ def test_linear_history_merge():
     print("PASS: linear 300-turn merge, complete ordered history, unlocked SQLite/formatting")
 
 
-CASES = (test_cached_history, test_legacy_session_handoff, test_linear_history_merge)
+CASES = (test_cached_history, test_legacy_session_handoff, test_repeated_history_merge, test_linear_history_merge)
 
 
 if __name__ == "__main__":

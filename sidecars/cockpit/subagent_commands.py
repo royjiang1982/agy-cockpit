@@ -7,11 +7,12 @@ from pathlib import Path
 
 from analyzer import UUID_PAT
 from cockpit_io import HOME
-from droid_acp_fallback import discovery_hints
+from droid_acp_fallback import parse_acp
 from subagent_labels import dispatch_paths, dispatch_patterns, extract_cli_task_label
 
 RE_SA_VIEW = re.compile(rf"▶\s*(agy|codex|claude|pi|droid|grok)\s+会话\s+({UUID_PAT})(?:（([^）]+)）)?")
 RE_CONV_ID = re.compile(rf'"conversation_id"\s*:\s*"({UUID_PAT})"')
+RE_THREAD_ID = re.compile(rf'"thread_id"\s*:\s*"({UUID_PAT})"')
 RE_SESSION_ID = re.compile(rf'"session_id"\s*:\s*"({UUID_PAT})"')
 RE_GROK_SESSION_ID = re.compile(rf'"sessionId"\s*:\s*"({UUID_PAT})"')
 RE_SA_RUN, RE_AGY_RESUME, RE_CODEX_RESUME, RE_DROID_RESUME, RE_GROK_RESUME, RE_PI_RESUME = dispatch_patterns(UUID_PAT)
@@ -131,9 +132,18 @@ def _probe_raw_file(raw_file, started_at):
     if started_at > 0 and stat.st_mtime < started_at - 5.0:
         return None
     if stat.st_size < 2_000_000:
-        return raw_file.read_text(encoding="utf-8", errors="replace"), True
-    with raw_file.open("r", encoding="utf-8", errors="replace") as stream:
-        return stream.read(16_384), False
+        return raw_file.read_bytes().decode("utf-8", errors="replace"), True
+    with raw_file.open("rb") as stream:
+        head = stream.read(16_384)
+        tail_start = max(len(head), stat.st_size - 32_768)
+        stream.seek(tail_start - 1)
+        starts_on_line = stream.read(1) == b"\n"
+        tail = stream.read(stat.st_size - tail_start)
+    if not starts_on_line:
+        tail = tail.partition(b"\n")[2]
+    # LF delimits JSONL records. Exclude cut records, including a still-in-flight EOF.
+    complete = head[:head.rfind(b"\n") + 1] + tail[:tail.rfind(b"\n") + 1]
+    return complete.decode("utf-8", errors="replace"), False
 
 
 def bind_dispatch(dispatch, combined_out, conv_id, t_start, matcher):
@@ -158,8 +168,16 @@ def bind_dispatch(dispatch, combined_out, conv_id, t_start, matcher):
                 rf_probe, append = probe
                 if append:
                     combined_out += "\n" + rf_probe
-                prog, sub_id, model_hint, effort_hint = discovery_hints(
-                    rf_probe, prog, sub_id, model_hint, effort_hint, conv_id)
+                meta = parse_acp(rf_probe)
+                prog = meta.get("agent", prog)
+                model_hint, effort_hint = meta.get("model", model_hint), meta.get("effort", effort_hint)
+                terminal = not append and meta["terminal"]
+                sid = meta.get("id")
+                if sid and sid != conv_id and (not sub_id or prog == "droid"):
+                    sub_id = sid
+                if terminal:
+                    # Extend the existing marker contract without retaining raw report text.
+                    combined_out += "\n■ ERROR" if meta["is_err"] else "\n■ 完成"
                 if sub_id:
                     matcher.remember_explicit(prog, sub_id)
                 if not sub_id and prog == "agy":
@@ -167,9 +185,7 @@ def bind_dispatch(dispatch, combined_out, conv_id, t_start, matcher):
                     if match and match[1] != conv_id:
                         sub_id = match[1]
                 elif not sub_id and prog == "codex":
-                    match = re.search(r'"thread_id"\s*:\s*"(' + UUID_PAT + r')"', rf_probe)
-                    if match:
-                        sub_id = match[1]
+                    sub_id = next((sid for sid in reversed(RE_THREAD_ID.findall(rf_probe)) if sid != conv_id), None)
                 elif not sub_id and prog == "grok":
                     match = RE_GROK_SESSION_ID.search(rf_probe)
                     if match and match[1] != conv_id:

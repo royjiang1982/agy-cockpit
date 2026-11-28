@@ -66,3 +66,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B runtime/tests/test-sa-guard.py
 ```
 
 After installation, reload Antigravity and open the **AGY Cockpit** panel from the sidebar (or click the **Settings** button inside the Subagents section to toggle orchestration takeover and customize per-role routes).
+
+## Runtime Operations
+
+- The bundled `sa-subagentd` uses `/tmp/dev-subagentd-$UID/daemon.sock` by default. Run `sa-subagentd status|restart|stop` from the installed plugin's `runtime/bin/`.
+- For policy debugging, pass `resolve.py --policy-path <path>` and set `SA_DISPATCH_POLICY_PATH=<path>` for the runtime wrappers so they use that same policy. `sa-codex` reads `codex_fast` from the policy; override it per run with `--fast` or `--no-fast`.
+- To enable the guard outside Antigravity, configure the host's PreToolUse hook in `~/.codex/hooks.json` or `~/.grok/config.toml` to invoke `~/.gemini/config/plugins/agy-cockpit/runtime/guard/sa-guard.sh` with the corresponding argument (`codex` or `grok`).

@@ -18,9 +18,10 @@ UUID = re.compile(r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
 def parse_acp(text: str) -> dict:
     """Reduce stream events in order, allowing result ERROR to beat turn.completed."""
     meta = {'calls': 0, 'recognized': False, 'terminal': False, 'is_err': False}
-    for line in text.splitlines():
+    # JSONL is LF-delimited; U+2028/U+2029 may appear literally inside JSON strings.
+    for line in text.split('\n'):
         try:
-            obj = json.loads(line)
+            obj = json.loads(line.rstrip('\r'))
         except (ValueError, TypeError):
             continue
         if not isinstance(obj, dict):
@@ -75,7 +76,7 @@ def discovery_hints(text, prog, sub_id, model, effort, parent_id):
 
 def _read(path):
     try:
-        return parse_acp(Path(path).read_text(encoding='utf-8', errors='replace')) if path else {}
+        return parse_acp(Path(path).read_bytes().decode('utf-8', errors='replace')) if path else {}
     except OSError:
         return {}
 

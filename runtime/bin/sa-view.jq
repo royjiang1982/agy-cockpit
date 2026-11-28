@@ -41,13 +41,14 @@ def records:
 
 def heartbeat($name; $status):
   ($name | tool_name) as $tool
-  | if $status == "completed" then "  ✓ \($tool)"
+  | if $status == "completed" then empty
     elif $status == "failed" then "  ✗ \($tool)"
     else "→ \($tool)" end;
 
 def command_completion:
   ((.exit_code // .exitCode | numbers) // null) as $code
-  | heartbeat("command"; if ($code != null and $code != 0) or .status == "failed" then "failed" else "completed" end)
+  | select(($code != null and $code != 0) or .status == "failed")
+  | "  ✗ command"
     + (if $code == null then "" else " (exit=\($code))" end);
 
 def claude_content: .message | object_or_empty | .content | arrays[] | objects;
@@ -58,10 +59,11 @@ def tool_lines:
     .step_update | objects | select(.step_type == "tool")
     | if .state == "ACTIVE" then heartbeat(.tool_name; "active")
       elif .state == "FAILED" or .state == "ERROR" then heartbeat(.tool_name; "failed")
-      elif .state == "COMPLETED" or (.tool_info | object_or_empty | .output) then heartbeat(.tool_name; "completed")
       else empty end
   elif .type == "tool_call" and (.item | type == "object") then heartbeat($item.name; $item.status)
   elif .type == "item.started" and $item.type == "command_execution" then "→ command"
+  elif .type == "item.started" and ($item.type | IN("mcp_tool_call", "tool_call", "file_change")) then
+    heartbeat($item.type; "active")
   elif .type == "item.completed" and (.delta | not) then
     $item | if .type == "command_execution" then command_completion
       elif (.type | IN(null, "reasoning", "agent_message", "user_message", "error")) then empty
@@ -112,25 +114,21 @@ def utf8_head($limit):
       | if ($text[:$mid] | utf8bytelength) <= $limit then fit($mid; $hi)
         else fit($lo; $mid - 1) end end;
     if ($text | utf8bytelength) <= $limit then $text else fit(0; $text | length) end;
-def reverse_text: explode | reverse | implode;
-
-def preview($bytes):
-  utf8_head(2500) as $head
-  | (.[-1500:] | reverse_text | utf8_head(1500) | reverse_text) as $tail
-  | "（正文共 \($bytes) 字节，已保留头尾）\n\($head)\n…（已省略中间内容）…\n\($tail)";
-
 def line_size: utf8bytelength + 1;
 
 # 视图总预算扣除足额正文和换行。各协议标记独立留额，噪声不能挤掉会话或终态。
 def control_budget:
-  {session: 165, result: 130, result_error: 215, quota: 158, warning: 42, turn_error: 44, turn_done: 44};
-def progress_budget: 1498 - (control_budget | add);
+  {session: 240, result: 130, result_error: 215, quota: 158, warning: 42, turn_error: 44, turn_done: 44};
+def progress_budget: 320;
 
 def show_control($row):
   $row.control as $kind | .control[$kind] as $left
   | if ($row.line | line_size) > $left and $left < 16 then .
     elif ($kind | IN("warning", "turn_error", "turn_done")) and .last_control[$kind] == $row.line then .
-    else .output = ($row.line | utf8_head($left - 1))
+    else .output = ($row.line
+        | if $kind == "session" and line_size > $left then
+            "…" as $suffix | utf8_head($left - ($suffix | line_size)) + $suffix
+          else utf8_head($left - 1) end)
       | .last_control[$kind] = $row.line
       | .control[$kind] -= (.output | line_size)
       | .last = null
@@ -145,18 +143,19 @@ def view($raw):
       .output = null
       | if $row.body != null then
           ($row.body | utf8bytelength) as $bytes
-          | .output = ($row.body | if $bytes > report_limit then preview($bytes) else . end)
+          | .output = (if $bytes > report_limit then "（正文 \($bytes) 字节，超出显示限额）" else $row.body end)
         elif $row.control != null then show_control($row)
         else
           ($row.tool != null) as $is_tool
           | ($row.tool // $row.misc) as $line
           | ($line | line_size) as $size
           | if $is_tool and (.folded or .last == $line) then .
-            elif ($is_tool and .count >= 60) or $size > .left then
+            # Reserve one of the 20 progress lines for a possible fold notice.
+            elif .count >= 19 or $size > .left then
               if $is_tool then .folded = true | .output = $fold_notice else . end
             else
-              .left -= $size | .output = $line
-              | if $is_tool then .count += 1 | .last = $line else .last = null end
+              .left -= $size | .count += 1 | .output = $line
+              | .last = (if $is_tool then $line else null end)
             end
         end;
       .output // empty);

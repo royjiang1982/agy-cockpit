@@ -1,4 +1,5 @@
-"""Linear, ordered union of local and ledger history for forced engine handoff."""
+"""Linear, ordered merge of local and ledger history for forced engine handoff."""
+from collections import defaultdict, deque
 import contextlib
 from typing import Optional
 
@@ -16,44 +17,40 @@ def build_forced_handoff_prompt(agent, session_id, cwd, prompt, state_dir=None) 
         local = session_handoff.inspect_local_session(agent, session_id) or {}
 
     def key(turn):
-        return str(turn.get("prompt") or "").strip(), str(turn.get("response") or "").strip()
+        # SQLite inserts paragraph breaks between steps; the stream joins deltas directly.
+        response = str(turn.get("response") or "").replace("\r", "").replace("\n", "")
+        return str(turn.get("prompt") or "").strip(), response
 
-    def normalize(source):
-        unique = {}
+    def expand(source):
         for turn in source:
             if not isinstance(turn, dict):
                 continue
             carried, clean = session_handoff._unwrap_handoff_prompt(str(turn.get("prompt") or ""), turn.get("ts", 0))
             for item in carried + [dict(turn, prompt=clean)]:
-                pair = key(item)
-                if any(pair):
-                    unique.setdefault(pair, item)
-        return list(unique.values())
+                if item["prompt"] or str(item.get("response") or "").strip():
+                    yield item
 
-    left, right = normalize(local.get("turns") or []), normalize(ledger.get("turns") or [])
-    positions = {key(turn): i for i, turn in enumerate(left)}
-    turns, seen, pending, cursor = [], set(), [], 0
+    left = list(expand(local.get("turns") or []))
+    positions = defaultdict(deque)
+    for i, turn in enumerate(left):
+        positions[key(turn)].append(i)
+    turns, pending, cursor = [], [], 0
 
-    def emit(items):
-        for item in items:
-            pair = key(item)
-            if pair not in seen:
-                seen.add(pair)
-                turns.append(item)
-
-    # Shared turns are anchors. Each source item is visited at most once;
-    # missing prefixes/suffixes from either source retain their original order.
-    for item in right:
-        index = positions.get(key(item))
-        if index is None:
+    # Pair only forward occurrences; earlier indices already went out with a local gap.
+    for item in expand(ledger.get("turns") or []):
+        matches = positions.get(key(item))
+        while matches and matches[0] < cursor:
+            matches.popleft()
+        if not matches:
             pending.append(item)
-        elif index >= cursor:
-            emit(left[cursor:index])
-            emit(pending)
-            pending.clear()
-            emit([left[index]])
-            cursor = index + 1
-    emit(left[cursor:])
-    emit(pending)
+            continue
+        index = matches.popleft()
+        turns.extend(left[cursor:index])
+        turns.extend(pending)
+        pending.clear()
+        turns.append(left[index])
+        cursor = index + 1
+    turns.extend(left[cursor:])
+    turns.extend(pending)
     _, clean_prompt = session_handoff._unwrap_handoff_prompt(prompt)
     return session_handoff.format_handoff_prompt(session_id, turns, clean_prompt) if turns else None

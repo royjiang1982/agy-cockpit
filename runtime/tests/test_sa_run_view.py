@@ -52,21 +52,23 @@ def result(body, status="SUCCESS", error=""):
 
 
 def test_compact_view(run):
-    tool_name = "检" * 40
+    tool_name = "检" * 3 + "t" * 37
     param = "parameter-not-for-view" * 200
     output = "output-not-for-view" * 200
     tool = {"type": "tool_call", "item": dict(name=tool_name + param + "\nsecond-line",
                                             status="pending", arguments=param)}
     finish = {"type": "tool_call", "item": {**tool["item"], "status": "completed", "output": output}}
+    failed_tool = {"type": "tool_call", "item": dict(name="read", status="failed", output=output)}
     notice = {"type": "quota_fallback", "from_agent": "agy", "from_model": "a",
               "to_agent": "codex", "to_model": "c", "rem_frac": 0.02}
     completed = run([
-        notice, {"type": "thread.started", "thread_id": "test-codex"}, "x" * 200 + "hidden-raw-tail",
-        tool, {"type": "text_delta", "delta": "hidden-text-delta"}, tool, finish, finish,
+        notice, {"type": "thread.started", "thread_id": "test-codex"}, "diagnostic",
+        tool, finish, {"type": "text_delta", "delta": "hidden-text-delta"}, tool, finish,
         {"type": "thinking", "text": "hidden-thought"},
         item("command_execution", phase="started", command=param),
         item("command_execution", exit_code=0, aggregated_output=output),
         item("command_execution", exit_code=7, aggregated_output=output),
+        failed_tool, failed_tool, item("file_change", phase="started"),
         item("file_change", changes=[output]), item("user_message", text="hidden-user-input"),
         item("agent_message", text="Only final body."), {"type": "turn.completed"}, result("Only final body."),
     ])
@@ -75,11 +77,12 @@ def test_compact_view(run):
     lines = out.splitlines()
     assert [line for line in lines if line.startswith("▶ ")] == ["▶ codex 会话 test-codex"]
     assert lines[0].startswith("⚡ 配额预检：") and "■ SUCCESS " in lines
-    assert lines.count("→ " + tool_name) == lines.count("  ✓ " + tool_name) == 1
-    assert "! " + "x" * 180 in lines
-    assert "→ command" in lines and "  ✓ command (exit=0)" in lines and "  ✗ command (exit=7)" in lines
-    assert "  ✓ file_change" in lines
-    for hidden in ("parameter-not-for-view", "output-not-for-view", "second-line", "hidden-", "💬"):
+    assert lines.count("→ " + tool_name) == 1
+    assert "! diagnostic" in lines
+    assert "→ command" in lines and "  ✗ command (exit=7)" in lines
+    assert lines.count("  ✗ read") == 1 and "→ file_change" in lines
+    assert not any(line.startswith(("✗ ", "  ✓ ")) for line in lines)
+    for hidden in ("parameter-not-for-view", "output-not-for-view", "second-line", "hidden-", "💬", "(exit=0)"):
         assert hidden not in out
     assert out.count("Only final body.") == 1 and not run.report.exists()
 
@@ -95,31 +98,32 @@ def test_tool_budget(run):
         assert not run.report.exists(), (prefix, run.report.stat().st_size)
         lines = completed.stdout.decode().splitlines()
         tools = [line for line in lines if line.startswith("→ ")]
-        assert 1 <= len(tools) <= 60
+        assert tools
         if prefix == "t":
-            assert len(tools) == 60
+            assert len(tools) == 19
         fold = [line for line in lines if line.startswith("…（后续工具心跳已折叠")]
         assert fold == [f"…（后续工具心跳已折叠，完整过程见 {run.raw}）"]
-        assert len("\n".join([*tools, *fold]).encode()) <= 1500
+        assert len(tools) + len(fold) <= 20
+        assert sum(len(line.encode()) + 1 for line in [*tools, *fold]) <= 320
         assert lines[-1] == body
 
 
 def test_long_report_and_cleanup(run):
-    # Cross both cut points inside a multi-byte character; preserve file LF and NUL bytes.
+    # No report bytes on stdout; published file preserves UTF-8, LF and NUL bytes.
     body = "开" * 1200 + " 中段👋\x00 " + "尾" * 6000 + "😊a\n\n"
     body_bytes = body.encode()
-    event = {"event": "init", "agent": "pi", "conversation_id": "test-pi", "init": {"model": "pi-test"}}
+    prefix = str(run.root) + "/"
+    session_path = prefix + "p" * (200 - len(prefix.encode()) - len("/session.jsonl")) + "/session.jsonl"
+    event = {"event": "init", "agent": "pi", "conversation_id": session_path, "init": {"model": "pi-test"}}
+    session = f"▶ pi 会话 {session_path}（pi-test）"
+    assert 165 < len(session.encode()) < 240
     completed = run([event, result(body), "diagnostic after result"])
     assert completed.returncode == 0 and not completed.stderr, completed.stderr
     assert len(completed.stdout) < 9500
-    out = completed.stdout.decode()
-    assert out.startswith("▶ pi 会话 test-pi（pi-test）\n■ SUCCESS \n")
-    assert out.splitlines()[-1] == f"完整报告：{run.report}"
-    intro, preview = out.split(f"（正文共 {len(body_bytes)} 字节，已保留头尾）\n")
-    assert intro == "▶ pi 会话 test-pi（pi-test）\n■ SUCCESS \n! diagnostic after result\n"
-    head, tail = preview.split("\n…（已省略中间内容）…\n")
-    assert head == body_bytes[:2500].decode(errors="ignore")
-    assert tail.split("\n完整报告：", 1)[0] == body_bytes[-1500:].decode(errors="ignore")
+    assert completed.stdout.decode().splitlines() == [
+        session, "■ SUCCESS ", "! diagnostic after result",
+        f"（正文 {len(body_bytes)} 字节，超出显示限额）", f"完整报告：{run.report}",
+    ]
     assert stat.S_IMODE(run.report.stat().st_mode) == 0o600 and run.report.read_bytes() == body_bytes
     assert set(run.raw.parent.iterdir()) == {run.raw, run.report}
 
@@ -127,6 +131,21 @@ def test_long_report_and_cleanup(run):
     completed = run([event, result(short)])
     assert completed.returncode == 0 and not completed.stderr, completed.stderr
     assert completed.stdout.decode().endswith(short + "\n") and not run.report.exists()
+
+
+def test_truncated_pi_session_is_marked(run):
+    prefix = "▶ pi 会话 "
+    lookalike = "/" + "p" * (239 - len(prefix.encode()) - len("/.jsonl")) + ".jsonl"
+    for session_path in (lookalike + "-continued.jsonl", "/" + "路径" * 48 + "/session.jsonl"):
+        assert len(session_path.encode()) > 240
+        event = {"event": "init", "agent": "pi", "conversation_id": session_path, "session_file": session_path}
+        completed = run([event, result("done")])
+        assert completed.returncode == 0 and not completed.stderr, completed.stderr
+        first_line = completed.stdout.partition(b"\n")[0]
+        line = first_line.decode("utf-8")
+        assert len(first_line) + 1 <= 240
+        assert line.startswith(prefix) and line.endswith("…"), line
+        assert (prefix + session_path).startswith(line.removesuffix("…")), line
 
 
 def test_codex_fallback_and_claude_result(run):
@@ -153,7 +172,7 @@ def test_codex_fallback_and_claude_result(run):
                          {"type": "result", "subtype": "error", "is_error": True, "result": long_body}], 9)
         assert completed.returncode == 9 and not completed.stderr, completed.stderr
         lines = completed.stdout.decode().splitlines()
-        assert lines[0].startswith(session + "（") and len(lines[0].encode()) < 165
+        assert lines[0].startswith(session + "（") and len(lines[0].encode()) < 240
         if model.isascii():
             assert lines[0] == f"{session}（{model[:48]}）"
         assert lines[1] == "■ ERROR" and lines[-1] == f"完整报告：{run.report}"
@@ -172,8 +191,7 @@ def test_report_path_protection(run):
     for child_rc in (0, 23):
         failed = run([result("长" * 3000)], child_rc, block_report=True, expected_rc=child_rc or 1)
         assert b"could not write report" in failed.stderr and os.fsencode(run.raw) in failed.stderr
-        for false_claim in ("完整报告：", "已写入"):
-            assert false_claim not in failed.stdout.decode()
+        assert failed.stdout.decode().splitlines() == ["■ SUCCESS ", "（正文 9000 字节，超出显示限额）"]
         assert run.report.is_dir() and set(run.raw.parent.iterdir()) == {run.raw, run.report}
         run.report.rmdir()
 
@@ -236,9 +254,9 @@ def test_final_body_selection(run):
         result(final), result("", "ERROR", "late failure"),
     ], 9)
     lines = completed.stdout.decode().splitlines()
-    assert lines[:3] == ["■ SUCCESS ", "■ SUCCESS ", "■ ERROR late failure"]
-    assert "old body" not in lines and "fallback" not in lines
-    assert lines[-1] == f"完整报告：{run.report}" and run.report.read_bytes() == final.encode()
+    assert lines == ["■ SUCCESS ", "■ SUCCESS ", "■ ERROR late failure",
+                     "（正文 8001 字节，超出显示限额）", f"完整报告：{run.report}"]
+    assert run.report.read_bytes() == final.encode()
 
     completed = run([
         result("stale result"), item("agent_message", text="draft"),
@@ -283,7 +301,7 @@ def test_error_control_budget(run):
 
 
 if __name__ == "__main__":
-    for case in (test_compact_view, test_tool_budget, test_long_report_and_cleanup,
+    for case in (test_compact_view, test_tool_budget, test_long_report_and_cleanup, test_truncated_pi_session_is_marked,
                  test_codex_fallback_and_claude_result, test_report_path_protection,
                  test_malformed_and_broken_view_drain, test_final_body_selection, test_error_control_budget):
         with tempfile.TemporaryDirectory(prefix="cockpit-view-test-") as root:
