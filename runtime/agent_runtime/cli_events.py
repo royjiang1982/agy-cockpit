@@ -13,11 +13,6 @@ def should_emit(event, emit_deltas=None):
                 event["item"].get("type") in ("agent_message", "reasoning")))
 
 
-def emit_event(event):
-    if should_emit(event):
-        print(json.dumps(event, ensure_ascii=False), flush=True)
-
-
 class CliOutput:
     """Filtered stdout and optional private local JSONL log, independent of transport."""
     def __init__(self, log_path=None):

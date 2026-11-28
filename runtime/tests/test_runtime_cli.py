@@ -72,7 +72,7 @@ def test_command_builders():
 
 
 def cli_emission_cases():
-    from agent_runtime.cli_events import emit_event
+    from agent_runtime.cli_events import CliOutput
     delta = dict(type="item.completed", delta=True, item=dict(type="agent_message", text="cumulative"))
     final = dict(type="item.completed", item=dict(type="agent_message", text="complete"))
     events = [dict(type="thread.started"), dict(type="item.started"), delta, final,
@@ -80,9 +80,9 @@ def cli_emission_cases():
               dict(event="result", result=dict(response="complete"))]
     for debug in ("0", "1"):
         out = io.StringIO()
-        with patch.dict(os.environ, SA_CODEX_EMIT_DELTAS=debug), contextlib.redirect_stdout(out):
+        with patch.dict(os.environ, SA_CODEX_EMIT_DELTAS=debug), contextlib.redirect_stdout(out), CliOutput() as cli_out:
             for event in events:
-                emit_event(event)
+                cli_out.emit(event)
         emitted = [json.loads(line) for line in out.getvalue().splitlines()]
         assert emitted == (events if debug == "1" else [e for e in events if e is not delta])
     with isolated_runtime() as home:
