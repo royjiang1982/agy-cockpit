@@ -1,44 +1,16 @@
 """Unified ACP (Agent Client Protocol) stream client for agy, droid, and grok."""
 import base64
-import json
 import mimetypes
 from pathlib import Path
-import queue
 import subprocess
 import threading
 
-from .acp_approvals import AcpAutoApprover, resolve_agy_mode
-from .native_questions import NativeQuestions
-from .proc_utils import agy_app_data_dir, split_model_effort
+from .acp_approvals import AcpAutoApprover
+from .acp_setup import (
+    agy_server_command, configure_session, droid_server_command, grok_server_command, model_id,
+)
+from .handoff_text import SUBAGENT_PREFIX
 from .resident import ResidentServer, ResidentTurn, SteeringRejected, SteeringUnknown
-
-
-def agy_server_command(cmd):
-    binary = cmd[0] if cmd else "agy"
-    base = [binary, "acp"]
-    app_dir = agy_app_data_dir()
-    if app_dir:
-        base.extend(["--app-data-dir", app_dir])
-    return base
-
-
-def droid_server_command(cmd):
-    binary = cmd[0] if cmd else "droid"
-    extra = []
-    i = 1
-    while i < len(cmd):
-        arg = cmd[i]
-        if arg in ("--append-system-prompt", "--append-system-prompt-file", "--settings") and i + 1 < len(cmd):
-            extra.extend([arg, cmd[i + 1]])
-            i += 2
-            continue
-        i += 1
-    return [binary, "exec", "--auto", "high", "-o", "acp", *extra]
-
-
-def grok_server_command(cmd):
-    binary = cmd[0] if cmd else "grok"
-    return [binary, "agent", "--always-approve", "stdio"]
 
 
 class AcpStream(ResidentTurn):
@@ -65,83 +37,24 @@ class AcpStream(ResidentTurn):
         client_name="agent-runtime",
     ):
         self.agent = str(agent or self.AGENT_NAME or "agy").strip().lower()
-        self.client_name = str(
-            getattr(resident, "client_name", "") or client_name or "agent-runtime"
-        )
-        self.resident = resident
-        self.is_resident_turn = resident is not None
-        self._inbox = inbox if resident else None
-        if resident and self._inbox is None:
-            self._inbox = resident.acquire(str(bot.get("session_id") or ""))
-            if self._inbox is None:
-                self.resident = resident = None
-                self.is_resident_turn = False
-        self.tool_token = tool_token
-        self._redact_buf = ""
-        self._redact_lock = threading.RLock()
-        self._retain_marker = False
-        self.is_subagent = is_subagent
-        self._marker_lock = threading.Lock()
-        self._marker = None
-        self._close_lock = threading.RLock()
-        self._released = False
-        self._protocol_done = threading.Event()
-
         spawn_env = dict(env)
-        if self.is_subagent and self.agent == "grok":
+        if is_subagent and self.agent == "grok":
             spawn_env["GROK_SUBAGENTS"] = "0"
-
-        server_cmd = self._normalize_server_command(cmd)
-        self.process = (
-            resident.process
-            if resident
-            else popen(
-                server_cmd,
-                cwd=cwd,
-                env=spawn_env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                start_new_session=True,
-            )
+        super().__init__(
+            self._normalize_server_command(cmd), cwd=cwd, env=spawn_env, bot=bot,
+            popen=popen, rpc_timeout=rpc_timeout, resident=resident, inbox=inbox,
+            is_subagent=is_subagent, tool_token=tool_token, client_name=client_name,
         )
-        self.pid = self.process.pid
-        self.stdout = self
-        self.rpc_timeout = rpc_timeout
-        self.delivery_state = "failed"
-        self.terminal_error = ""
         self.session_id = ""
-        self._result = None
-        self._pending = {}
-        self._next_id = 0
-        self._lock = threading.RLock()
-        self._write_lock = resident.write_lock if resident else threading.Lock()
-        self._events = queue.Queue()
-        self.questions = NativeQuestions(self.agent, self._write, self._events.put)
-        self._closed = threading.Event()
-        self._finished = threading.Event()
         self.approvals = AcpAutoApprover(
             self._write, lambda: self._closed.is_set() or self._finished.is_set(), self._finish
         )
-        self._prompt_sent = False
         self._prompt_id = None
         self._active_prompts = set()
         self._steer_requests = {}
         self._root_error = ""
         self._tools = {}
-        self._ready = threading.Event()
-        self._steered = set()
-        self._steering = []
-        self._reader = threading.Thread(target=self._read, daemon=True)
-        self._reader.start()
-        self._starter = threading.Thread(
-            target=self._start, args=(bot, prompt, image_paths, cwd), daemon=True
-        )
-        self._starter.start()
+        self._start_workers(bot, prompt, image_paths, cwd)
 
     def _normalize_server_command(self, cmd):
         if not cmd:
@@ -154,19 +67,6 @@ class AcpStream(ResidentTurn):
         if self.agent == "agy" and name == "agy" and "acp" not in cmd:
             return agy_server_command(cmd)
         return cmd
-
-    @property
-    def returncode(self):
-        return self._result if self._result is not None else self.process.returncode
-
-    def poll(self):
-        return self.returncode if self.is_resident_turn else self.process.poll()
-
-    def wait(self, timeout=None):
-        if self.is_resident_turn:
-            return self._resident_wait(timeout)
-        self.process.wait(timeout=timeout)
-        return self.returncode
 
     def cancel(self):
         self.approvals.cancel_all(send_cancel=not self._closed.is_set())
@@ -216,185 +116,40 @@ class AcpStream(ResidentTurn):
             self._steered.add(message_id)
         return True
 
-    def terminate(self):
-        if self.is_resident_turn:
-            try:
-                self.cancel()
-            except Exception:
-                pass
-            self.close()
-            return
-        self.process.terminate()
+    WRITE_BUSY = "ACP 控制通道忙，发送结果未确认"
+    WRITE_CLOSED = "ACP 连接已关闭，结果未确认"
+    WRITE_TIMEOUT = "ACP 写入超时，发送结果未确认，未自动重发"
 
-    def kill(self):
-        if self.is_resident_turn:
-            try:
-                self.cancel()
-            except Exception:
-                pass
-            self.close()
-            return
-        self.process.kill()
-
-    def close(self):
+    def _close_protocol(self):
         self.approvals.cancel_all(send_cancel=False)
-        if self.is_resident_turn:
-            return self._resident_close()
-        self.questions.close()
-        self._clear_subagent_marker()
-        try:
-            if self.process.stdin:
-                self.process.stdin.close()
-        except (OSError, ValueError):
-            pass
 
-    def __iter__(self):
-        while True:
-            event = self._events.get()
-            if event is None:
-                if self.terminal_error:
-                    raise RuntimeError(
-                        self.terminal_error.replace(self.tool_token, "<本轮授权>")
-                        if self.tool_token
-                        else self.terminal_error
-                    )
-                return
-            line = json.dumps(event, ensure_ascii=False) + "\n"
-            yield line.replace(self.tool_token, "<本轮授权>") if self.tool_token else line
+    def _prepare_write(self, message):
+        if message.get("method") == "session/prompt":
+            self.delivery_state = "unknown"
+            self._prompt_sent = True
+        return {"jsonrpc": "2.0", **message}
 
-    def _write(self, message):
-        if not self._write_lock.acquire(timeout=self.rpc_timeout):
-            raise RuntimeError("ACP 控制通道忙，发送结果未确认")
-        done = queue.Queue(maxsize=1)
+    def _request_id(self, method, prompt):
+        rid = self._allocate_id()
+        if prompt:
+            self._active_prompts.add(rid)
+            if self._prompt_id is None:
+                self._prompt_id = rid
+        return rid
 
-        def write():
-            try:
-                if self._closed.is_set():
-                    raise RuntimeError("ACP 连接已关闭，结果未确认")
-                if message.get("method") == "session/prompt":
-                    self.delivery_state = "unknown"
-                    self._prompt_sent = True
-                self.process.stdin.write(
-                    json.dumps({"jsonrpc": "2.0", **message}, ensure_ascii=False) + "\n"
-                )
-                self.process.stdin.flush()
-                done.put(None)
-            except Exception as exc:
-                done.put(exc)
-            finally:
-                self._write_lock.release()
+    def _request_timeout(self, method):
+        return RuntimeError(f"ACP {method} 确认超时，未自动重发")
 
-        threading.Thread(target=write, daemon=True).start()
-        try:
-            error = done.get(timeout=self.rpc_timeout)
-        except queue.Empty:
-            raise RuntimeError("ACP 写入超时，发送结果未确认，未自动重发") from None
-        if error:
-            raise error
+    def _request_result(self, method, reply):
+        if "error" in reply:
+            error = reply["error"]
+            msg = error.get("message", "请求失败") if isinstance(error, dict) else str(error)
+            raise RuntimeError(f"ACP {method}: {msg}")
+        return reply.get("result") or {}
 
-    def _rpc(self, method, params, *, prompt=False):
-        result = queue.Queue(maxsize=1)
-        with self._lock:
-            rid = self._allocate_id()
-            self._pending[rid] = result
-            if prompt:
-                self._active_prompts.add(rid)
-                if self._prompt_id is None:
-                    self._prompt_id = rid
-        try:
-            self._write({"id": rid, "method": method, "params": params})
-            try:
-                reply = result.get(timeout=None if prompt else self.rpc_timeout)
-            except queue.Empty:
-                raise RuntimeError(f"ACP {method} 确认超时，未自动重发") from None
-            if "error" in reply:
-                err_obj = reply["error"]
-                msg = err_obj.get("message", "请求失败") if isinstance(err_obj, dict) else str(err_obj)
-                raise RuntimeError(f"ACP {method}: {msg}")
-            return reply.get("result") or {}
-        finally:
-            with self._lock:
-                self._pending.pop(rid, None)
+    model_id = staticmethod(model_id)
 
-    def _finish(self, error=""):
-        with self._lock:
-            if self._finished.is_set():
-                return
-            self.terminal_error = error
-            self._result = 1 if error else 0
-            self._flush_redaction()
-            self._finished.set()
-            self.approvals.cancel_all(send_cancel=False)
-            self._maybe_clear_subagent_marker()
-            self.questions.close()
-            self._events.put({"type": "control_delivery", "state": self.delivery_state})
-            if not error:
-                self._events.put({"type": "turn.completed"})
-            self._events.put(None)
-
-    @staticmethod
-    def model_id(bot):
-        model = str(bot.get("model") or "gemini-4-carbon")
-        if model.endswith(("-low", "-medium", "-high", "-xhigh", "-extra", "-max")):
-            return model
-        effort = str(bot.get("reasoning_effort") or "high")
-        return model + "-" + (effort if effort in ("low", "medium", "high", "xhigh", "extra", "max") else "high")
-
-    def _configure_session(self, bot, session):
-        available = {
-            m.get("modelId")
-            for m in (session.get("models") or {}).get("availableModels", [])
-            if isinstance(m, dict) and m.get("modelId")
-        }
-        if self.agent == "agy":
-            model = self.model_id(bot)
-            if available and model not in available:
-                raise RuntimeError(f"当前 ACP 客户端不可使用模型 {model}，请选择可用模型")
-            self._rpc("session/set_model", {"sessionId": self.session_id, "modelId": model})
-            mode = resolve_agy_mode(bot, session)
-            self._rpc("session/set_mode", {"sessionId": self.session_id, "modeId": mode})
-            return model
-
-        if self.agent == "droid":
-            raw_model, effort = split_model_effort(
-                bot.get("model"), bot.get("reasoning_effort"), default_model="gpt-6.2-astra", default_effort=""
-            )
-            if available and raw_model not in available:
-                for suffix in ("-low", "-medium", "-high", "-xhigh", "-max"):
-                    if raw_model.endswith(suffix) and raw_model[: -len(suffix)] in available:
-                        if not effort:
-                            effort = suffix[1:]
-                        raw_model = raw_model[: -len(suffix)]
-                        break
-            if available and raw_model not in available:
-                raise RuntimeError(f"当前 Droid ACP 不可使用模型 {raw_model}")
-            self._rpc("session/set_model", {"sessionId": self.session_id, "modelId": raw_model})
-            effort = (effort or "xhigh").lower()
-            cfg_options = session.get("configOptions") or []
-            if any(isinstance(c, dict) and c.get("id") == "reasoning_effort" for c in cfg_options):
-                self._rpc(
-                    "session/set_config_option",
-                    {"sessionId": self.session_id, "configId": "reasoning_effort", "value": effort},
-                )
-            mode = str(bot.get("mode") or "auto-high")
-            self._rpc("session/set_mode", {"sessionId": self.session_id, "modeId": mode})
-            return f"{raw_model}:{effort}"
-
-        if self.agent == "grok":
-            raw_model = str(bot.get("model") or "grok-4.7").strip()
-            effort = str(bot.get("reasoning_effort") or "xhigh").strip().lower()
-            if available and raw_model not in available:
-                raise RuntimeError(f"当前 Grok ACP 不可使用模型 {raw_model}")
-            self._rpc("session/set_model", {"sessionId": self.session_id, "modelId": raw_model})
-            cfg_options = session.get("configOptions") or []
-            if any(isinstance(c, dict) and c.get("id") == "reasoning_effort" for c in cfg_options):
-                self._rpc(
-                    "session/set_config_option",
-                    {"sessionId": self.session_id, "configId": "reasoning_effort", "value": effort},
-                )
-            return f"{raw_model}:{effort}"
-
-        return str(bot.get("model") or "")
+    _configure_session = configure_session
 
     def _open_session(self, method, params):
         return self._rpc(method, params)
@@ -443,10 +198,7 @@ class AcpStream(ResidentTurn):
             )
             self._configure_session(bot, session)
             if self.is_subagent:
-                prompt = (
-                    "你是被派出的子代理（SA_SUBAGENT=1）。只遵守任务书，不派生子代理、不提交代码。\n\n"
-                    + prompt
-                )
+                prompt = SUBAGENT_PREFIX + "\n\n" + prompt
             content = [{"type": "text", "text": prompt}]
             if images and not (caps.get("promptCapabilities") or {}).get("image"):
                 raise RuntimeError(f"当前 {self.agent.upper()} ACP 不支持图片输入")
@@ -475,13 +227,7 @@ class AcpStream(ResidentTurn):
 
     def _read(self):
         try:
-            for raw in self._lines():
-                try:
-                    event = json.loads(raw)
-                except ValueError:
-                    continue
-                if not isinstance(event, dict):
-                    continue
+            for event in self._incoming_events():
                 if "id" in event and "method" not in event:
                     with self._lock:
                         waiter = self._pending.get(event["id"])
@@ -514,8 +260,7 @@ class AcpStream(ResidentTurn):
                             if not self._active_prompts:
                                 self._protocol_done.set()
                                 self._finish(self._root_error)
-                    if waiter:
-                        waiter.put_nowait(event)
+                    self._deliver(waiter, event)
                 elif "id" in event:
                     if event.get("method") == "session/request_permission":
                         params = event.get("params") or {}
@@ -567,13 +312,7 @@ class AcpStream(ResidentTurn):
                 for marker in self._steer_requests.values():
                     marker["error"] = SteeringUnknown("ACP 连接关闭，追加消息结果未确认")
                     marker["ack"].set()
-                for waiter in self._pending.values():
-                    try:
-                        waiter.put_nowait(
-                            {"error": {"message": "连接已关闭，任务结果未确认，未自动重发"}}
-                        )
-                    except queue.Full:
-                        pass
+            self._fail_pending({"error": {"message": "连接已关闭，任务结果未确认，未自动重发"}})
             self._finish("ACP 连接意外关闭，任务结果未确认，未自动重发")
 
     def _update(self, params):

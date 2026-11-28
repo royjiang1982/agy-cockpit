@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from _runtime_fixture import TIMEOUT, isolated_runtime
 from agent_runtime import session_files as sf, session_handoff as sh
+from agent_runtime import build_forced_handoff_prompt
 from agent_runtime.session_handoff import inspect_local_session, prepare_session_handoff
 
 
@@ -278,7 +279,7 @@ def test_linear_history_merge():
             patch.object(sh, "format_handoff_prompt", side_effect=format_prompt),
         ):
             lock = sf.ledger_lock("mock", state_dir)
-            prompt = sh.build_forced_handoff_prompt("agy", "mock", "", "next", state_dir)
+            prompt = build_forced_handoff_prompt("agy", "mock", "", "next", state_dir)
         assert observations == [("load", False), ("inspect", True), ("format", True)], observations
         carried, clean = sh._unwrap_handoff_prompt(prompt)
         assert [(t["prompt"], t["response"]) for t in carried] == [

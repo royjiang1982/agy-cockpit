@@ -1,7 +1,5 @@
 """Multiplexed stdio resident server and shared turn lifecycle across CLI engines."""
 import json
-import os
-from pathlib import Path
 import queue
 import secrets
 import subprocess
@@ -9,16 +7,9 @@ import threading
 import time
 
 from .proc_utils import terminate_proc_group
+from .stream_base import ResidentTurn, SteeringRejected, SteeringUnknown
 
 ACP_AGENTS = ("agy", "droid", "grok")
-
-
-class SteeringRejected(RuntimeError):
-    """The engine explicitly rejected the request; it is safe to defer it."""
-
-
-class SteeringUnknown(RuntimeError):
-    """The connection failed after writing; do not replay an uncertain request."""
 
 
 class ResidentServer:
@@ -314,114 +305,3 @@ class ResidentServer:
         except (OSError, ValueError):
             pass
 
-
-class ResidentTurn:
-    """Turn-only Popen semantics shared by all resident stream types."""
-
-    _markers_lock = threading.Lock()
-    _marker_counts = {}
-
-    def _allocate_id(self):
-        if self.is_resident_turn:
-            return self.resident.allocate_id(self._inbox)
-        self._next_id += 1
-        return self._next_id
-
-    def _lines(self):
-        if not self.is_resident_turn:
-            yield from self.process.stdout
-            return
-        while True:
-            raw = self._inbox.get()
-            if raw is None:
-                return
-            yield raw
-
-    def _resident_close(self):
-        with self._close_lock:
-            if self._released:
-                return
-            self._released = True
-            self.questions.close()
-            healthy = self._protocol_done.is_set() and not self._closed.is_set()
-            if healthy:
-                self._starter.join(timeout=0.4)
-                if self._starter.is_alive():
-                    healthy = False
-            if not healthy and not self.resident.closed:
-                self._retain_marker = True
-                with self.resident.lock:
-                    self.resident.retire_callbacks.append(self._clear_subagent_marker)
-            self._closed.set()
-            self._inbox.put(None)
-            self._reader.join(timeout=0.4)
-            self._maybe_clear_subagent_marker()
-            self.resident.release(self._inbox, healthy=healthy)
-
-    def _mark_subagent(self, sid):
-        if not self.is_subagent or not self.is_resident_turn:
-            return
-        if not sid or Path(sid).name != sid or sid in (".", ".."):
-            raise RuntimeError("子代理会话 ID 无效")
-        directory = Path(
-            os.environ.get("ZOMI_SUBAGENT_SESSIONS_DIR") or "/tmp/zomi-subagent-sessions"
-        )
-        directory.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(directory, 0o700)
-        except OSError:
-            pass
-        with self._marker_lock:
-            if self._finished.is_set() or self._released:
-                return
-            self._marker = directory / sid
-            with self._markers_lock:
-                self._marker.touch(exist_ok=True)
-                self._marker_counts[self._marker] = (
-                    self._marker_counts.get(self._marker, 0) + 1
-                )
-
-    def _maybe_clear_subagent_marker(self):
-        if (
-            not getattr(self, "_retain_marker", False)
-            or self._protocol_done.is_set()
-            or not self.is_resident_turn
-            or self.resident.closed
-        ):
-            self._clear_subagent_marker()
-
-    def _redact_stream_chunk(self, text, *, final=False):
-        token = self.tool_token
-        if not token:
-            return text
-        with self._redact_lock:
-            value = (self._redact_buf + text).replace(token, "<本轮授权>")
-            self._redact_buf = ""
-            if not final:
-                for size in range(min(len(token) - 1, len(value)), 0, -1):
-                    if value.endswith(token[:size]):
-                        self._redact_buf = value[-size:]
-                        return value[:-size]
-            return value
-
-    def _flush_redaction(self):
-        tail = self._redact_stream_chunk("", final=True)
-        if tail:
-            self._events.put({"type": "text_delta", "delta": tail})
-
-    def _clear_subagent_marker(self):
-        with self._marker_lock:
-            marker, self._marker = self._marker, None
-            if marker is not None:
-                with self._markers_lock:
-                    count = self._marker_counts.get(marker, 1) - 1
-                    if count > 0:
-                        self._marker_counts[marker] = count
-                    else:
-                        self._marker_counts.pop(marker, None)
-                        marker.unlink(missing_ok=True)
-
-    def _resident_wait(self, timeout):
-        if not self._finished.wait(timeout):
-            raise subprocess.TimeoutExpired("resident turn", timeout)
-        return self.returncode

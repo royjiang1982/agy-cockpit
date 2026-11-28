@@ -1,12 +1,9 @@
 """Codex stdio app-server transport with native in-turn steering and ResidentServer support."""
-import json
-import queue
 import subprocess
-import threading
 
-from .native_questions import NativeQuestions
+from .handoff_text import SUBAGENT_PREFIX
 from .proc_utils import split_model_effort
-from .resident import ResidentServer, ResidentTurn, SteeringRejected, SteeringUnknown
+from .resident import ResidentTurn, SteeringRejected, SteeringUnknown
 
 
 def codex_server_command(cmd):
@@ -39,192 +36,57 @@ class CodexStream(ResidentTurn):
         client_name="agent-runtime",
         emit_cumulative=True,
     ):
-        self.client_name = str(
-            getattr(resident, "client_name", "") or client_name or "agent-runtime"
+        self.agent = "codex"
+        super().__init__(
+            cmd, standalone_command=codex_server_command,
+            cwd=cwd, env=env, bot=bot, popen=popen, rpc_timeout=rpc_timeout,
+            resident=resident, inbox=inbox, is_subagent=is_subagent,
+            tool_token=tool_token, client_name=client_name,
         )
-        self.resident = resident
-        self.is_resident_turn = resident is not None
-        self._inbox = inbox if resident else None
-        if resident and self._inbox is None:
-            self._inbox = resident.acquire(str(bot.get("session_id") or ""))
-            if self._inbox is None:
-                self.resident = resident = None
-                self.is_resident_turn = False
-        self.tool_token = tool_token
-        self._redact_buf = ""
-        self._redact_lock = threading.RLock()
-        self._retain_marker = False
-        self.is_subagent = is_subagent
         self._emit_cumulative = not is_subagent or emit_cumulative
-        self._marker_lock = threading.Lock()
-        self._marker = None
-        self._close_lock = threading.RLock()
-        self._released = False
-        self._finished = threading.Event()
-        self._protocol_done = threading.Event()
-        self.process = (
-            resident.process
-            if resident
-            else popen(
-                codex_server_command(cmd),
-                cwd=cwd,
-                env=env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                start_new_session=True,
-            )
-        )
-        self.pid = self.process.pid
-        self.stdout = self
-        self._lock = threading.RLock()
-        self._write_lock = resident.write_lock if resident else threading.Lock()
-        self._pending = {}
-        self.delivery_state = "failed"
         self._turn_request_id = None
-        self.rpc_timeout = rpc_timeout
-        self.terminal_error = ""
         self._message_text = {}
-        self._next_id = 0
-        self._events = queue.Queue()
-        self.questions = NativeQuestions("codex", self._write, self._events.put)
-        self._closed = threading.Event()
-        self._ready = threading.Event()
         self.thread_id = ""
         self.turn_id = ""
-        self._turn_result = None
-        self._steered = set()
-        self._reader = threading.Thread(target=self._read, daemon=True)
-        self._reader.start()
-        self._starter = threading.Thread(
-            target=self._start, args=(bot, prompt, image_paths or [], cwd), daemon=True
-        )
-        self._starter.start()
-
-    @property
-    def returncode(self):
-        return self._turn_result if self._turn_result is not None else self.process.returncode
-
-    def poll(self):
-        return self.returncode if self.is_resident_turn else self.process.poll()
-
-    def wait(self, timeout=None):
-        if self.is_resident_turn:
-            return self._resident_wait(timeout)
-        self.process.wait(timeout=timeout)
-        return self.returncode
-
-    def terminate(self):
-        if self.is_resident_turn:
-            try:
-                self.cancel()
-            except Exception:
-                pass
-            self.close()
-            return
-        self.process.terminate()
-
-    def kill(self):
-        if self.is_resident_turn:
-            try:
-                self.cancel()
-            except Exception:
-                pass
-            self.close()
-            return
-        self.process.kill()
+        self._start_workers(bot, prompt, image_paths or [], cwd)
 
     def cancel(self):
         if self.thread_id and self.turn_id:
             self._rpc("turn/interrupt", {"threadId": self.thread_id, "turnId": self.turn_id})
 
-    def close(self):
-        if self.is_resident_turn:
-            return self._resident_close()
-        self.questions.close()
-        self._clear_subagent_marker()
-        if self.process.stdin:
-            try:
-                self.process.stdin.close()
-            except (OSError, ValueError):
-                pass
+    WRITE_ERROR = SteeringUnknown
+    WRITE_BUSY = "控制通道忙，发送结果未确认；未终止任务或自动重发"
+    WRITE_CLOSED = "底层连接已关闭，不能确认追加消息是否送达"
+    WRITE_TIMEOUT = "控制通道写入超时，结果未知；未终止任务或自动重发"
 
-    def __iter__(self):
-        for event in self.iter_events():
-            yield json.dumps(event, ensure_ascii=False) + "\n"
+    def _prepare_write(self, message):
+        if message.get("method") == "turn/start":
+            self._delivery("unknown")
+        return message
 
-    def iter_events(self):
-        while True:
-            event = self._events.get()
-            if event is None:
-                if self.terminal_error:
-                    raise RuntimeError(
-                        self.terminal_error.replace(self.tool_token, "<本轮授权>")
-                        if self.tool_token
-                        else self.terminal_error
-                    )
-                return
-            if self.tool_token:
-                event = json.loads(json.dumps(event, ensure_ascii=False).replace(self.tool_token, "<本轮授权>"))
-            yield event
-
-    def _write(self, message):
-        if not self._write_lock.acquire(timeout=self.rpc_timeout):
-            raise SteeringUnknown("控制通道忙，发送结果未确认；未终止任务或自动重发")
-        done = queue.Queue(maxsize=1)
-
-        def write():
-            try:
-                if self._closed.is_set():
-                    raise SteeringUnknown("底层连接已关闭，不能确认追加消息是否送达")
-                if message.get("method") == "turn/start":
-                    self._delivery("unknown")
-                self.process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
-                self.process.stdin.flush()
-                done.put(None)
-            except Exception as exc:
-                done.put(SteeringUnknown(f"控制通道写入失败，结果未知：{exc}"))
-            finally:
-                self._write_lock.release()
-
-        threading.Thread(target=write, daemon=True).start()
-        try:
-            error = done.get(timeout=self.rpc_timeout)
-        except queue.Empty:
-            raise SteeringUnknown("控制通道写入超时，结果未知；未终止任务或自动重发") from None
-        if error:
-            raise error
+    def _write_failure(self, exc):
+        return SteeringUnknown(f"控制通道写入失败，结果未知：{exc}")
 
     def _delivery(self, state):
         with self._lock:
             if self.delivery_state != "delivered":
                 self.delivery_state = state
 
-    def _rpc(self, method, params):
-        result = queue.Queue(maxsize=1)
-        with self._lock:
-            request_id = self._allocate_id()
-            self._pending[request_id] = result
-            if method == "turn/start":
-                self._turn_request_id = request_id
-        try:
-            self._write({"id": request_id, "method": method, "params": params})
-            try:
-                response = result.get(timeout=self.rpc_timeout)
-            except queue.Empty:
-                raise SteeringUnknown("控制请求确认超时，结果未知；未终止任务或自动重发") from None
-            if response.get("transport_closed"):
-                raise SteeringUnknown("底层连接已关闭，追加消息结果未知；未自动重发")
-            if "error" in response:
-                raise SteeringRejected(str(response["error"].get("message") or response["error"]))
-            return response.get("result") or {}
-        finally:
-            with self._lock:
-                self._pending.pop(request_id, None)
+    def _request_id(self, method, prompt):
+        rid = self._allocate_id()
+        if method == "turn/start":
+            self._turn_request_id = rid
+        return rid
+
+    def _request_timeout(self, method):
+        return SteeringUnknown("控制请求确认超时，结果未知；未终止任务或自动重发")
+
+    def _request_result(self, method, response):
+        if response.get("transport_closed"):
+            raise SteeringUnknown("底层连接已关闭，追加消息结果未知；未自动重发")
+        if "error" in response:
+            raise SteeringRejected(str(response["error"].get("message") or response["error"]))
+        return response.get("result") or {}
 
     @staticmethod
     def _input(text, images):
@@ -258,9 +120,7 @@ class CodexStream(ResidentTurn):
                 params["serviceTier"] = service_tier
             session = str(bot.get("session_id") or "")
             if self.is_subagent:
-                params["baseInstructions"] = (
-                    "你是被派出的子代理（SA_SUBAGENT=1）。只遵守任务书，不派生子代理、不提交代码。"
-                )
+                params["baseInstructions"] = SUBAGENT_PREFIX
             if session:
                 if self.is_resident_turn and not self.resident.bind_session(session, self._inbox):
                     raise RuntimeError("会话已被另一个回合占用")
@@ -279,7 +139,7 @@ class CodexStream(ResidentTurn):
                 turn_params["serviceTier"] = service_tier
             result = self._rpc("turn/start", turn_params)
             with self._lock:
-                if self._turn_result is None:
+                if self._result is None:
                     self.turn_id = result["turn"]["id"]
             self._ready.set()
             self._delivery("delivered")
@@ -293,7 +153,7 @@ class CodexStream(ResidentTurn):
             self._events.put({"type": "control_delivery", "state": self.delivery_state})
             self.terminal_error = str(exc)
             self._events.put({"type": "error", "message": str(exc)})
-            self._turn_result = 1
+            self._result = 1
             self._finished.set()
             self._clear_subagent_marker()
             self._events.put(None)
@@ -330,21 +190,13 @@ class CodexStream(ResidentTurn):
 
     def _read(self):
         try:
-            for raw in self._lines():
-                try:
-                    event = json.loads(raw)
-                except ValueError:
-                    continue
+            for event in self._incoming_events():
                 if "id" in event and "method" not in event:
                     with self._lock:
                         waiter = self._pending.get(event["id"])
                         if event["id"] == self._turn_request_id:
                             self._delivery("failed" if "error" in event else "delivered")
-                    if waiter:
-                        try:
-                            waiter.put_nowait(event)
-                        except queue.Full:
-                            pass
+                    self._deliver(waiter, event)
                     continue
                 method, params = event.get("method"), event.get("params") or {}
                 if "id" in event:
@@ -391,18 +243,13 @@ class CodexStream(ResidentTurn):
             self._maybe_clear_subagent_marker()
             self._flush_redaction()
             self.questions.close()
-            if self._turn_result is None:
+            if self._result is None:
                 self.terminal_error = self.terminal_error or "执行连接意外关闭，任务结果未确认"
             self._closed.set()
-            if self._turn_result is None:
-                self._turn_result = 1
+            if self._result is None:
+                self._result = 1
             self._finished.set()
-            with self._lock:
-                for waiter in self._pending.values():
-                    try:
-                        waiter.put_nowait({"transport_closed": True})
-                    except queue.Full:
-                        pass
+            self._fail_pending({"transport_closed": True})
             self._events.put(None)
 
     def _notification(self, method, p):
@@ -470,8 +317,8 @@ class CodexStream(ResidentTurn):
             turn = p.get("turn") or {}
             with self._lock:
                 self.turn_id = ""
-                self._turn_result = 0 if turn.get("status") == "completed" else 1
-            if self._turn_result != 0:
+                self._result = 0 if turn.get("status") == "completed" else 1
+            if self._result != 0:
                 self.terminal_error = str(
                     turn.get("error") or "执行未正常完成：" + str(turn.get("status"))
                 )

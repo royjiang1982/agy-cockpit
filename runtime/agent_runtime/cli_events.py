@@ -1,6 +1,7 @@
 """CLI-only emission policy; stream adapters and in-memory callbacks stay lossless."""
 import json
 import os
+from pathlib import Path
 
 
 def should_emit(event, emit_deltas=None):
@@ -22,7 +23,6 @@ class CliOutput:
     def __init__(self, log_path=None):
         self.log = None
         if log_path:
-            from pathlib import Path
             path = Path(log_path).expanduser()
             path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)

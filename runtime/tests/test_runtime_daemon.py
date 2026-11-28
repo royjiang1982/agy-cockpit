@@ -15,6 +15,7 @@ from _runtime_fixture import (
     TIMEOUT, daemon_request, isolated_env, isolated_runtime, running_daemon, signal_socket, write_rpc_server,
 )
 from agent_runtime import AgyAcpStream, SubagentDaemon, daemon as daemon_mod, terminate_proc_group
+from agent_runtime import daemon_client, turn_runner
 from runtime_process_cases import host_reaper_cases, test_terminate_process_group
 
 
@@ -25,7 +26,7 @@ def test_daemon_eof_cancels_acp():
         script = write_rpc_server(tmp, "fake_acp.py", setup="startup = True")
         with (
             patch.dict(os.environ, SA_AGY_QUOTA_PREFLIGHT="0"),
-            patch.object(daemon_mod, "build_server_cmd_and_stream_cls",
+            patch.object(turn_runner, "build_server_cmd_and_stream_cls",
                          return_value=([sys.executable, str(script), str(cancel_signal)], AgyAcpStream)),
             signal_socket(cancel_signal) as listener,
             running_daemon(SubagentDaemon(sock)),
@@ -74,27 +75,27 @@ class FakeMultiMsgCodexStream:
         self._inbox = kwargs.get("inbox")
         self.resident = kwargs.get("resident")
 
-    def __iter__(self):
-        yield json.dumps({"type": "thread.started", "thread_id": "th-multi"}) + "\n"
-        yield json.dumps({
+    def iter_events(self):
+        yield {"type": "thread.started", "thread_id": "th-multi"}
+        yield {
             "type": "item.completed",
             "delta": True,
             "item": {"id": "msg-1", "type": "agent_message", "text": "First segment. "},
-        }) + "\n"
-        yield json.dumps({
+        }
+        yield {
             "type": "item.completed",
             "item": {"id": "msg-1", "type": "agent_message", "text": "First segment. "},
-        }) + "\n"
-        yield json.dumps({
+        }
+        yield {
             "type": "item.completed",
             "delta": True,
             "item": {"id": "msg-2", "type": "agent_message", "text": "Second segment."},
-        }) + "\n"
-        yield json.dumps({
+        }
+        yield {
             "type": "item.completed",
             "item": {"id": "msg-2", "type": "agent_message", "text": "Second segment."},
-        }) + "\n"
-        yield json.dumps({"type": "turn.completed"}) + "\n"
+        }
+        yield {"type": "turn.completed"}
 
     def poll(self):
         return 0
@@ -109,7 +110,7 @@ def test_codex_message_segments():
         sock = tmp / "daemon.sock"
         cmd = [sys.executable, str(write_rpc_server(tmp, "fake_host.py"))]
         with (
-            patch.object(daemon_mod, "build_server_cmd_and_stream_cls", return_value=(cmd, FakeMultiMsgCodexStream)),
+            patch.object(turn_runner, "build_server_cmd_and_stream_cls", return_value=(cmd, FakeMultiMsgCodexStream)),
             running_daemon(SubagentDaemon(sock)),
             daemon_request(sock, action="run", agent="codex", cwd=str(tmp), prompt="hi") as frames,
         ):
@@ -130,7 +131,7 @@ def _track_replacement_daemon():
         return proc
 
     try:
-        with patch.object(daemon_mod.subprocess, "Popen", side_effect=launch):
+        with patch.object(daemon_client.subprocess, "Popen", side_effect=launch):
             yield spawned
     finally:
         if spawned:
@@ -156,6 +157,7 @@ def test_restart_recovers_stale_socket():
             pid = replacement.get("daemon_pid")
             assert replacement["ok"] is True and type(pid) is int and pid > 0, replacement
             assert len(spawned) == 1 and spawned[0].pid == pid
+            assert replacement["active_chains"] == 0  # Legacy status wire key.
     print("PASS: restart recovers a real stale Unix socket and returns a live daemon PID")
 
 
@@ -207,7 +209,7 @@ def test_query_rejects_malformed_frames():
         path.parent.mkdir(mode=0o700)
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
             server.bind(str(path))
-            with patch.object(daemon_mod.socket, "socket") as client:
+            with patch.object(daemon_client.socket, "socket") as client:
                 conn = client.return_value.__enter__.return_value
                 for response in ([], {"ok": 1}, {"ok": "true"},
                                  {"ok": False, "status": "stopped", "stale_socket": True},
@@ -223,7 +225,7 @@ def test_status_and_stop_exit_codes():
         for status, code in (("error", 1), ("stopped", 0)):
             response = {"ok": False, "status": status}
             stdout = io.StringIO()
-            with patch.object(daemon_mod, "query_daemon", return_value=response) as query, redirect_stdout(stdout):
+            with patch.object(daemon_client, "query_daemon", return_value=response) as query, redirect_stdout(stdout):
                 assert daemon_mod.main([command]) == code
                 query.assert_called_once_with(action)
             assert json.loads(stdout.getvalue()) == response
@@ -262,10 +264,10 @@ def test_restart_checks_replacement_daemon():
 
         stdout = io.StringIO()
         with (
-            isolated_runtime(), patch.object(daemon_mod, "query_daemon", side_effect=query),
-            patch.object(daemon_mod, "ensure_daemon_running", side_effect=launch),
-            patch.object(daemon_mod, "_ping_daemon", side_effect=lambda _: current == running),
-            patch.object(daemon_mod, "time", Mock(monotonic=Mock(side_effect=(0.0, 0.1, 3.0)))),
+            isolated_runtime(), patch.object(daemon_client, "query_daemon", side_effect=query),
+            patch.object(daemon_client, "ensure_daemon_running", side_effect=launch),
+            patch.object(daemon_client, "_ping_daemon", side_effect=lambda _: current == running),
+            patch.object(daemon_client, "time", Mock(monotonic=Mock(side_effect=(0.0, 0.1, 3.0)))),
             redirect_stdout(stdout),
         ):
             assert daemon_mod.main(["restart"]) == code, (before, after)
@@ -285,7 +287,7 @@ def test_failure_to_write_ledger_keeps_successful_result():
             super().__init__(*args, **kwargs)
             self.thread_id = "fake-sid"
 
-        def __iter__(self):
+        def iter_events(self):
             yield {"event": "init", "conversation_id": "fake-sid"}
             yield {"type": "text_delta", "delta": "第一行\n"}
             yield {"type": "text_delta", "delta": "second line", "used_tokens": 12}
@@ -294,8 +296,8 @@ def test_failure_to_write_ledger_keeps_successful_result():
         sock, stderr = root / "daemon.sock", io.StringIO()
         cmd = [sys.executable, str(write_rpc_server(root, "fake_host.py"))]
         with (
-            patch.object(daemon_mod, "build_server_cmd_and_stream_cls", return_value=(cmd, LedgerStream)),
-            patch.object(daemon_mod, "record_turn_completion", side_effect=OSError("ledger disk full")) as record,
+            patch.object(turn_runner, "build_server_cmd_and_stream_cls", return_value=(cmd, LedgerStream)),
+            patch.object(turn_runner, "record_turn_completion", side_effect=OSError("ledger disk full")) as record,
             redirect_stderr(stderr), running_daemon(SubagentDaemon(sock)),
             daemon_request(sock, action="run", agent="codex", cwd=str(root), prompt="test") as frames,
         ):

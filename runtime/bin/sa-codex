@@ -1,91 +1,14 @@
 #!/usr/bin/env python3
 """Standalone Codex App-Server subagent CLI over the Coding Agent ResidentServer daemon."""
-import argparse
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent_runtime.daemon import run_subagent_client
-from agent_runtime.dispatch_policy_reader import read_codex_fast
-from agent_runtime.proc_utils import split_model_effort
-
-DEFAULT_SERVICE_TIER = "fast"  # 未配置策略时使用
+from agent_runtime.cli_wrappers import run_cli
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--board", default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--name", default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--log-file", default=None)
-    parser.add_argument("-m", "--model", default="gpt-6.2-sol")
-    parser.add_argument("-c", "--config", action="append", default=[])
-    parser.add_argument("--effort", default=None)
-    parser.add_argument("--fast", action="store_true")
-    parser.add_argument("--no-fast", action="store_true")
-    parser.add_argument("--service-tier", default=None)
-    parser.add_argument("--prompt", default=None)
-    parser.add_argument("--conversation", default="")
-    parser.add_argument("-i", "--image", action="append", default=[])
-    parser.add_argument("--json", action="store_true")
-    parser.add_argument("--dangerously-bypass-approvals-and-sandbox", action="store_true")
-    parser.add_argument("--dangerously-bypass-hook-trust", action="store_true")
-    parser.add_argument("arguments", nargs="*")
-    args = parser.parse_intermixed_args()
-    positional = list(args.arguments)
-    if positional[:1] == ["exec"]:
-        positional.pop(0)
-    sid = args.conversation
-    if positional[:1] == ["resume"]:
-        if len(positional) < 2:
-            parser.error("resume 缺少会话 ID")
-        sid = positional[1]
-        positional = positional[2:]
-    prompt = args.prompt if args.prompt is not None else " ".join(positional)
-    if not prompt or not prompt.strip():
-        parser.error("任务书不能为空")
-    effort = args.effort
-    if args.fast and args.no_fast:
-        parser.error("--fast 与 --no-fast 冲突")
-    service_tier = None
-    if args.service_tier is not None:
-        service_tier = args.service_tier.strip().lower()
-    if args.fast:
-        if service_tier is not None and service_tier not in ("fast", "priority"):
-            parser.error("--fast 与 --service-tier 冲突")
-        service_tier = service_tier or "fast"
-    elif args.no_fast:
-        if service_tier is not None and service_tier in ("fast", "priority"):
-            parser.error("--no-fast 与 --service-tier 冲突")
-        if service_tier is None:
-            service_tier = ""
-    passthrough_config = []
-    for cfg in args.config:
-        if cfg.startswith("model_reasoning_effort="):
-            if effort is None:
-                effort = cfg.split("=", 1)[1].strip("'\"")
-            passthrough_config.append(cfg)
-        elif cfg.startswith("service_tier="):
-            if service_tier is None:
-                service_tier = cfg.split("=", 1)[1].strip().strip("'\"").lower()
-        else:
-            passthrough_config.append(cfg)
-    if service_tier is None:
-        fast = read_codex_fast()
-        service_tier = DEFAULT_SERVICE_TIER if fast is None else ("fast" if fast else "")
-    model, effort = split_model_effort(
-        args.model, effort, default_model="gpt-6.2-sol", default_effort="high"
-    )
-    return run_subagent_client(
-        log_file=args.log_file,
-        agent="codex",
-        model=model,
-        effort=effort,
-        service_tier=service_tier,
-        session_id=sid,
-        prompt=prompt,
-        config=passthrough_config,
-        image_paths=args.image,
-    )
+    return run_cli("codex", __doc__)
 
 
 if __name__ == "__main__":

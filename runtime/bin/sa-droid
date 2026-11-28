@@ -1,47 +1,14 @@
 #!/usr/bin/env python3
 """Standalone Droid ACP subagent CLI over the Coding Agent ResidentServer daemon."""
-import argparse
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent_runtime.daemon import run_subagent_client
-from agent_runtime.proc_utils import split_model_effort
+from agent_runtime.cli_wrappers import run_cli
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--board", default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--name", default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--log-file", default=None)
-    parser.add_argument("-m", "--model", default="gpt-6.2-astra")
-    parser.add_argument("-r", "--reasoning-effort", "--effort", dest="effort", default=None)
-    parser.add_argument("-s", "--session-id", "--conversation", dest="session_id", default="")
-    parser.add_argument("--auto", default="high")
-    parser.add_argument("-o", "--output-format", default="stream-json")
-    parser.add_argument("-p", "--prompt", default=None)
-    parser.add_argument("arguments", nargs="*")
-    args = parser.parse_intermixed_args()
-    positional = list(args.arguments)
-    if positional[:1] == ["exec"]:
-        positional.pop(0)
-    prompt = args.prompt if args.prompt is not None else " ".join(positional)
-    if not prompt or not prompt.strip():
-        parser.error("任务书不能为空")
-    mode_map = {"high": "auto-high", "medium": "auto-medium", "low": "auto-low", "spec": "spec"}
-    mode = mode_map.get(args.auto, "auto-high")
-    model, effort = split_model_effort(
-        args.model, args.effort, default_model="gpt-6.2-astra", default_effort="xhigh"
-    )
-    return run_subagent_client(
-        log_file=args.log_file,
-        agent="droid",
-        model=model,
-        effort=effort,
-        mode=mode,
-        session_id=args.session_id,
-        prompt=prompt,
-    )
+    return run_cli("droid", __doc__)
 
 
 if __name__ == "__main__":

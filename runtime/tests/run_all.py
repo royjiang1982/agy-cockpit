@@ -9,6 +9,7 @@ import tempfile
 from _runtime_fixture import isolated_env
 
 SUITES = (
+    "test_runtime_architecture.py",
     "test-sa-guard.py",
     "verify_dispatch_policy.py",
     "test_installer.py",

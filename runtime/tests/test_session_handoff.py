@@ -1,12 +1,11 @@
 """Session handoff envelopes and live daemon ledger migration."""
-import json
 import sys
 import threading
 import time
 from unittest.mock import patch
 
 from _runtime_fixture import TIMEOUT, daemon_request, isolated_runtime, running_daemon, write_rpc_server
-from agent_runtime import SubagentDaemon, daemon as daemon_mod
+from agent_runtime import SubagentDaemon, turn_runner
 from agent_runtime.session_handoff import (
     _unwrap_handoff_prompt, format_handoff_prompt, load_session_ledger, prepare_session_handoff, save_session_ledger,
 )
@@ -45,17 +44,17 @@ def test_session_auto_handoff():
                 self._block = block_stream[0]
                 self._fail_mid = fail_mid_stream[0]
 
-            def __iter__(self):
-                yield json.dumps({"event": "init", "agent": "agy", "conversation_id": self.session_id}) + "\n"
+            def iter_events(self):
+                yield {"event": "init", "agent": "agy", "conversation_id": self.session_id}
                 if self._block:
                     entered.set()
                     if not release.wait(TIMEOUT):
                         raise RuntimeError("test stream was not released")
                 if self._fail_mid:
-                    yield json.dumps({"type": "native_question", "questions": []}) + "\n"
+                    yield {"type": "native_question", "questions": []}
                     return
-                yield json.dumps({"type": "text_delta", "delta": self._reply}) + "\n"
-                yield json.dumps({"type": "turn.completed", "usage": {"total_tokens": self._tok}}) + "\n"
+                yield {"type": "text_delta", "delta": self._reply}
+                yield {"type": "turn.completed", "usage": {"total_tokens": self._tok}}
 
             def poll(self):
                 return 0
@@ -72,7 +71,7 @@ def test_session_auto_handoff():
 
         cmd = [sys.executable, str(write_rpc_server(tmp, "fake_host.py"))]
         with (
-            patch.object(daemon_mod, "build_server_cmd_and_stream_cls", return_value=(cmd, FakeHandoffStream)),
+            patch.object(turn_runner, "build_server_cmd_and_stream_cls", return_value=(cmd, FakeHandoffStream)),
             running_daemon(SubagentDaemon(sock_path)),
         ):
             # Turn 1: initial new session -> sid-1 (80k tokens)

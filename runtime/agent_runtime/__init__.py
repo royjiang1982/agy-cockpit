@@ -9,14 +9,10 @@ from .acp_stream import (
     grok_server_command,
 )
 from .codex_stream import CodexStream, codex_server_command
-from .daemon import (
-    SubagentDaemon,
-    ensure_daemon_running,
-    get_daemon_dir,
-    get_socket_path,
-    query_daemon,
-    run_subagent_client,
-)
+from .daemon import SubagentDaemon
+from .daemon_client import ensure_daemon_running, query_daemon, run_subagent_client
+from .daemon_config import get_daemon_dir, get_socket_path
+from .history_merge import build_forced_handoff_prompt
 from .native_questions import NativeQuestions
 from .pi_stream import PiRpcStream, pi_server_command
 from .proc_utils import (
@@ -55,6 +51,7 @@ __all__ = [
     "SubagentDaemon",
     "_terminate_proc_group",
     "agy_server_command",
+    "build_forced_handoff_prompt",
     "codex_server_command",
     "droid_server_command",
     "ensure_daemon_running",

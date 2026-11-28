@@ -12,7 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from _runtime_fixture import TIMEOUT, daemon_request, isolated_env, running_daemon, signal_socket, write_rpc_server
-from agent_runtime import agy_quota as q, daemon as d, session_handoff as sh
+from agent_runtime import AgyAcpStream, DroidAcpStream, agy_quota as q, daemon as d
+from agent_runtime import daemon_client, session_handoff as sh, turn_runner
 from test_agy_quota import OPUS, UsageFixture, reset
 
 
@@ -47,17 +48,17 @@ def e2e(good, root):
     env = isolated_env(home, {"SA_SUBAGENTD_DIR": str(sock.parent), "SA_SUBAGENT": "1"})
 
     def build(ag, cfg=None):
-        return [sys.executable, str(script), ag, str(log), str(gate)], d.DroidAcpStream if ag == "droid" else d.AgyAcpStream
+        return [sys.executable, str(script), ag, str(log), str(gate)], DroidAcpStream if ag == "droid" else AgyAcpStream
 
     with (
         patch.dict(os.environ, env, clear=True),
         patch.object(q, "_fetch_snapshot", side_effect=good.fetch),
-        patch.object(d, "build_server_cmd_and_stream_cls", side_effect=build),
+        patch.object(turn_runner, "build_server_cmd_and_stream_cls", side_effect=build),
         signal_socket(gate) as listener, running_daemon(d.SubagentDaemon(socket_path=sock)) as daemon,
     ):
         def client(sid="", prompt="task"):
             out = io.StringIO()
-            with contextlib.redirect_stdout(out), patch.object(d, "ensure_daemon_running", return_value=sock), patch.object(d.signal, "signal"):
+            with contextlib.redirect_stdout(out), patch.object(daemon_client, "ensure_daemon_running", return_value=sock), patch.object(daemon_client.signal, "signal"):
                 rc = d.run_subagent_client(agent="agy", model=OPUS, mode="plan", session_id=sid, cwd=str(root), prompt=prompt)
             return rc, [json.loads(line) for line in out.getvalue().splitlines()]
         def records(): return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
@@ -99,7 +100,7 @@ def e2e(good, root):
         before = len(records())
         assert direct(sid="missing-direct")[-1]["result"]["status"] == "ERROR" and len(records()) == before
         daemon.active_sessions.add("busy")
-        with patch.object(d, "preflight_agy_request", side_effect=AssertionError("must not inspect an active session")):
+        with patch.object(turn_runner, "preflight_agy_request", side_effect=AssertionError("must not inspect an active session")):
             assert direct(sid="busy")[-1]["result"]["status"] == "ERROR"
         daemon.active_sessions.discard("busy")
         good.set(0); good.gate, good.entered = threading.Event(), threading.Event()
@@ -121,7 +122,7 @@ def e2e(good, root):
         failure = root / "failed.py"
         failure.write_text("raise SystemExit(7)" + chr(10))
         good.set(0)
-        with patch.object(d, "build_server_cmd_and_stream_cls", return_value=([sys.executable, str(failure)], d.DroidAcpStream)):
+        with patch.object(turn_runner, "build_server_cmd_and_stream_cls", return_value=([sys.executable, str(failure)], DroidAcpStream)):
             rc, frames = client("legacy")
         assert rc == 1 and frames[-1]["agent"] == "droid" and frames[-1]["conversation_id"] == ""
         before = len(records())

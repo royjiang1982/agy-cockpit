@@ -17,6 +17,7 @@ from unittest.mock import Mock, call, patch
 
 from _runtime_fixture import isolated_env, isolated_runtime, write_rpc_server
 from agent_runtime import AgyAcpStream, CodexStream, DroidAcpStream, daemon, split_model_effort
+from agent_runtime import cli_wrappers, daemon_client
 from agent_runtime import codex_server_command, droid_server_command, grok_server_command, pi_server_command
 
 
@@ -105,9 +106,8 @@ def _check_jq(home):
 
 
 def client_transition_cases():
-    from agent_runtime import daemon as d
     core = {"agent", "model", "effort", "service_tier", "mode", "session_id", "cwd", "prompt", "config", "image_paths", "log_file"}
-    ignored_args = {key: "ignored" for key in inspect.signature(d.run_subagent_client).parameters if key not in core}
+    ignored_args = {key: "ignored" for key in inspect.signature(daemon.run_subagent_client).parameters if key not in core}
     package = Path(__file__).resolve().parents[1]
     # Every CLI still accepts legacy no-op arguments without passing them through.
     with isolated_runtime():
@@ -115,7 +115,7 @@ def client_transition_cases():
             argv = ["sa-" + engine, "--prompt", "exact prompt"]
             for key, value in ignored_args.items():
                 argv.extend(["--" + key, value])
-            with patch.object(sys, "argv", argv), patch.object(d, "run_subagent_client", return_value=0) as call:
+            with patch.object(sys, "argv", argv), patch.object(cli_wrappers, "run_subagent_client", return_value=0) as call:
                 entry = runpy.run_path(str(package / "bin" / ("sa-" + engine)))
                 assert entry["main"]() == 0
                 assert not (ignored_args.keys() & call.call_args.kwargs.keys())
@@ -144,9 +144,9 @@ def client_transition_cases():
                 worker = threading.Thread(target=peer, daemon=True)
                 worker.start()
                 out, log = io.StringIO(), root / "events.jsonl"
-                with patch.object(d, "ensure_daemon_running", return_value=sock), patch.object(d.signal, "signal"), \
+                with patch.object(daemon_client, "ensure_daemon_running", return_value=sock), patch.object(daemon_client.signal, "signal"), \
                         patch.dict(os.environ, SA_CODEX_EMIT_DELTAS=debug), contextlib.redirect_stdout(out):
-                    rc = d.run_subagent_client(agent="codex", model="mock", prompt="exact prompt",
+                    rc = daemon.run_subagent_client(agent="codex", model="mock", prompt="exact prompt",
                                                log_file=str(log), **ignored_args)
                 worker.join(5)
             assert not worker.is_alive() and not failures and rc == 0
@@ -160,12 +160,12 @@ def client_transition_cases():
             assert log.read_text() == out.getvalue() and log.stat().st_mode & 0o777 == 0o600
     # New dispatch accepts op-only as well as the old action key, without HTTP setup.
     with tempfile.TemporaryDirectory() as td:
-        daemon = d.SubagentDaemon(socket_path=Path(td) / "unused.sock")
+        server_daemon = daemon.SubagentDaemon(socket_path=Path(td) / "unused.sock")
         for key in ("action", "op"):
             left, right = socket.socketpair()
             left.sendall((json.dumps({key: "run", "prompt": "native"}) + "\n").encode())
-            with left, patch.object(daemon, "_handle_run") as run:
-                daemon._handle_client(right)
+            with left, patch.object(server_daemon, "_handle_run") as run:
+                server_daemon._handle_client(right)
                 assert run.call_count == 1 and run.call_args.args[1]["prompt"] == "native"
     print("PASS: five CLI legacy arguments, old-peer events, new action/op dispatch, local filtered logs")
 
@@ -184,6 +184,9 @@ def handle(msg):
         "thread/start": {"thread": {"id": "thread-1"}},
         "turn/start": {"turn": {"id": "turn-1"}},
     }[method]
+    if method == "initialize":
+        send(None)
+        send(["valid JSON, but not a protocol event"])
     send({"id": msg["id"], "result": result})
     if method == "turn/start":
         send({"method": "turn/completed", "params": {"turn": {"status": "completed"}}})
@@ -271,7 +274,7 @@ def _check_cli_dispatch():
     }
     for engine, extra in extras.items():
         script = Path(__file__).resolve().parents[1] / "bin" / f"sa-{engine}"
-        with patch.object(daemon, "run_subagent_client", return_value=0) as dispatch, patch.object(sys, "path", sys.path[:]):
+        with patch.object(cli_wrappers, "run_subagent_client", return_value=0) as dispatch, patch.object(sys, "path", sys.path[:]):
             main = runpy.run_path(str(script))["main"]
             for flags, model, effort in shared_cases + extra:
                 dispatch.reset_mock()
@@ -348,7 +351,7 @@ def codex_cases():
         stream._notification('error', dict(error='synthetic error'))
         stream.terminal_error = ''
         stream._events.put(None)
-        with patch('agent_runtime.codex_stream.json.dumps', side_effect=AssertionError('dict path must not serialize')):
+        with patch.object(json, 'dumps', side_effect=AssertionError('dict path must not serialize')):
             events = list(stream.iter_events())
         assert len(events) == (1003 if enabled else 3)
         assert events[-3]['item']['text'] == 'x' * 100000 and 'delta' not in events[-3]

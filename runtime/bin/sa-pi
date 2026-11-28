@@ -1,40 +1,14 @@
 #!/usr/bin/env python3
 """Standalone Pi RPC subagent CLI over the Coding Agent ResidentServer daemon."""
-import argparse
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent_runtime.daemon import run_subagent_client
-from agent_runtime.pi_stream import PI_THINKING_LEVELS
-from agent_runtime.proc_utils import split_model_effort
+from agent_runtime.cli_wrappers import run_cli
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--board", default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--name", default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--log-file", default=None)
-    parser.add_argument("-p", "--print", action="store_true")
-    parser.add_argument("--prompt", default=None)
-    parser.add_argument("-m", "--model", default="claude-opus-5-5:high")
-    parser.add_argument("--thinking", "--effort", dest="effort", default="")
-    parser.add_argument("--session", "--conversation", dest="session_id", default="")
-    parser.add_argument("--mode", default="json")
-    parser.add_argument("arguments", nargs="*")
-    args = parser.parse_intermixed_args()
-    prompt = args.prompt if args.prompt is not None else " ".join(args.arguments)
-    if not prompt or not prompt.strip():
-        parser.error("任务书不能为空")
-    model, effort = split_model_effort(args.model, args.effort, default_effort="high", valid_efforts=PI_THINKING_LEVELS)
-    return run_subagent_client(
-        log_file=args.log_file,
-        agent="pi",
-        model=model,
-        effort=effort,
-        session_id=args.session_id,
-        prompt=prompt,
-    )
+    return run_cli("pi", __doc__)
 
 
 if __name__ == "__main__":

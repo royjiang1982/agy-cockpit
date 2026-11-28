@@ -1,13 +1,10 @@
 """Pi CLI resident RPC mode stream transport (`pi --mode rpc`)."""
 import base64
-import json
 import mimetypes
 from pathlib import Path
-import queue
 import subprocess
-import threading
 
-from .native_questions import NativeQuestions
+from .handoff_text import SUBAGENT_PREFIX
 from .proc_utils import split_model_effort
 from .resident import ResidentTurn, SteeringRejected, SteeringUnknown
 
@@ -68,85 +65,19 @@ class PiRpcStream(ResidentTurn):
         tool_token=None,
     ):
         self.agent = "pi"
-        self.resident = resident
-        self.is_resident_turn = resident is not None
-        self._inbox = inbox if resident else None
-        if resident and self._inbox is None:
-            self._inbox = resident.acquire(str(bot.get("session_id") or ""))
-            if self._inbox is None:
-                self.resident = resident = None
-                self.is_resident_turn = False
-        self.tool_token = tool_token
-        self._redact_buf = ""
-        self._redact_lock = threading.RLock()
-        self._retain_marker = False
-        self.is_subagent = is_subagent
-        self._marker_lock = threading.Lock()
-        self._marker = None
-        self._close_lock = threading.RLock()
-        self._released = False
-        self._protocol_done = threading.Event()
         server_cmd = (
             pi_server_command(cmd)
             if (cmd and Path(cmd[0]).name.lower() == "pi" and "rpc" not in cmd)
             else cmd
         )
-        self.process = (
-            resident.process
-            if resident
-            else popen(
-                server_cmd,
-                cwd=cwd,
-                env=env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                start_new_session=True,
-            )
+        super().__init__(
+            server_cmd, cwd=cwd, env=env, bot=bot, popen=popen, rpc_timeout=rpc_timeout,
+            resident=resident, inbox=inbox, is_subagent=is_subagent, tool_token=tool_token,
         )
-        self.pid = self.process.pid
-        self.stdout = self
-        self.rpc_timeout = rpc_timeout
-        self.delivery_state = "failed"
-        self.terminal_error = ""
         self.session_id = ""
         self.session_file = ""
-        self._result = None
-        self._pending = {}
-        self._next_id = 0
-        self._lock = threading.RLock()
-        self._write_lock = resident.write_lock if resident else threading.Lock()
-        self._events = queue.Queue()
-        self.questions = NativeQuestions("pi", self._write, self._events.put)
-        self._closed = threading.Event()
-        self._finished = threading.Event()
-        self._prompt_sent = False
         self._root_error = ""
-        self._ready = threading.Event()
-        self._steered = set()
-        self._reader = threading.Thread(target=self._read, daemon=True)
-        self._reader.start()
-        self._starter = threading.Thread(
-            target=self._start, args=(bot, prompt, image_paths or (), cwd), daemon=True
-        )
-        self._starter.start()
-
-    @property
-    def returncode(self):
-        return self._result if self._result is not None else self.process.returncode
-
-    def poll(self):
-        return self.returncode if self.is_resident_turn else self.process.poll()
-
-    def wait(self, timeout=None):
-        if self.is_resident_turn:
-            return self._resident_wait(timeout)
-        self.process.wait(timeout=timeout)
-        return self.returncode
+        self._start_workers(bot, prompt, image_paths or (), cwd)
 
     def cancel(self):
         if self._prompt_sent and not self._finished.is_set():
@@ -176,112 +107,29 @@ class PiRpcStream(ResidentTurn):
             self._steered.add(message_id)
         return True
 
-    def terminate(self):
-        if self.is_resident_turn:
-            try:
-                self.cancel()
-            except Exception:
-                pass
-            self.close()
-            return
-        self.process.terminate()
+    WRITE_BUSY = "Pi RPC 控制通道忙，发送结果未确认"
+    WRITE_CLOSED = "Pi RPC 连接已关闭，结果未确认"
+    WRITE_TIMEOUT = "Pi RPC 写入超时，发送结果未确认"
 
-    def kill(self):
-        if self.is_resident_turn:
-            try:
-                self.cancel()
-            except Exception:
-                pass
-            self.close()
-            return
-        self.process.kill()
+    def _prepare_write(self, message):
+        if message.get("type") == "prompt":
+            self.delivery_state = "unknown"
+            self._prompt_sent = True
+        return message
 
-    def close(self):
-        if self.is_resident_turn:
-            return self._resident_close()
-        self.questions.close()
-        self._clear_subagent_marker()
-        try:
-            if self.process.stdin:
-                self.process.stdin.close()
-        except (OSError, ValueError):
-            pass
+    def _request_id(self, method, prompt):
+        return str(self._allocate_id())
 
-    def __iter__(self):
-        while True:
-            event = self._events.get()
-            if event is None:
-                if self.terminal_error:
-                    raise RuntimeError(
-                        self.terminal_error.replace(self.tool_token, "<本轮授权>")
-                        if self.tool_token
-                        else self.terminal_error
-                    )
-                return
-            line = json.dumps(event, ensure_ascii=False) + "\n"
-            yield line.replace(self.tool_token, "<本轮授权>") if self.tool_token else line
+    def _request_message(self, rid, method, params):
+        return {"id": rid, "type": method, **(params or {})}
 
-    def _write(self, message):
-        if not self._write_lock.acquire(timeout=self.rpc_timeout):
-            raise RuntimeError("Pi RPC 控制通道忙，发送结果未确认")
-        done = queue.Queue(maxsize=1)
+    def _request_timeout(self, method):
+        return RuntimeError(f"Pi RPC {method} 确认超时")
 
-        def write():
-            try:
-                if self._closed.is_set():
-                    raise RuntimeError("Pi RPC 连接已关闭，结果未确认")
-                if message.get("type") == "prompt":
-                    self.delivery_state = "unknown"
-                    self._prompt_sent = True
-                self.process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
-                self.process.stdin.flush()
-                done.put(None)
-            except Exception as exc:
-                done.put(exc)
-            finally:
-                self._write_lock.release()
-
-        threading.Thread(target=write, daemon=True).start()
-        try:
-            error = done.get(timeout=self.rpc_timeout)
-        except queue.Empty:
-            raise RuntimeError("Pi RPC 写入超时，发送结果未确认") from None
-        if error:
-            raise error
-
-    def _rpc(self, cmd_type, params=None):
-        result = queue.Queue(maxsize=1)
-        with self._lock:
-            rid = str(self._allocate_id())
-            self._pending[rid] = result
-        payload = {"id": rid, "type": cmd_type, **(params or {})}
-        try:
-            self._write(payload)
-            try:
-                reply = result.get(timeout=self.rpc_timeout)
-            except queue.Empty:
-                raise RuntimeError(f"Pi RPC {cmd_type} 确认超时") from None
-            if not reply.get("success", False):
-                raise RuntimeError(f"Pi RPC {cmd_type}: {reply.get('error', '请求失败')}")
-            return reply.get("data") or {}
-        finally:
-            with self._lock:
-                self._pending.pop(rid, None)
-
-    def _finish(self, error=""):
-        with self._lock:
-            if self._finished.is_set():
-                return
-            self.terminal_error = error
-            self._result = 1 if error else 0
-            self._flush_redaction()
-            self._finished.set()
-            self._maybe_clear_subagent_marker()
-            self.questions.close()
-            self._events.put({"type": "control_delivery", "state": self.delivery_state})
-            if not error:
-                self._events.put({"type": "turn.completed"})
-            self._events.put(None)
+    def _request_result(self, method, reply):
+        if not reply.get("success", False):
+            raise RuntimeError(f"Pi RPC {method}: {reply.get('error', '请求失败')}")
+        return reply.get("data") or {}
 
     def _resolve_and_set_model(self, bot):
         raw_model, effort = split_model_effort(
@@ -345,10 +193,7 @@ class PiRpcStream(ResidentTurn):
                 }
             )
             if self.is_subagent:
-                prompt = (
-                    "你是被派出的子代理（SA_SUBAGENT=1）。只遵守任务书，不派生子代理、不提交代码。\n\n"
-                    + prompt
-                )
+                prompt = SUBAGENT_PREFIX + "\n\n" + prompt
             img_payload = []
             for path in images or ():
                 mime = mimetypes.guess_type(path)[0] or ""
@@ -375,19 +220,12 @@ class PiRpcStream(ResidentTurn):
 
     def _read(self):
         try:
-            for raw in self._lines():
-                try:
-                    event = json.loads(raw)
-                except ValueError:
-                    continue
-                if not isinstance(event, dict):
-                    continue
+            for event in self._incoming_events():
                 etype = event.get("type")
                 if etype == "response" and "id" in event:
                     with self._lock:
                         waiter = self._pending.get(str(event["id"]))
-                    if waiter:
-                        waiter.put_nowait(event)
+                    self._deliver(waiter, event)
                     continue
                 if not self._prompt_sent:
                     continue
@@ -474,12 +312,5 @@ class PiRpcStream(ResidentTurn):
             self._finish("Pi RPC 读取失败：" + str(exc))
         finally:
             self._closed.set()
-            with self._lock:
-                for waiter in self._pending.values():
-                    try:
-                        waiter.put_nowait(
-                            {"success": False, "error": "连接已关闭，任务结果未确认"}
-                        )
-                    except queue.Full:
-                        pass
+            self._fail_pending({"success": False, "error": "连接已关闭，任务结果未确认"})
             self._finish("Pi RPC 连接意外关闭，任务结果未确认")

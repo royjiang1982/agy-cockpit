@@ -11,7 +11,7 @@ from unittest.mock import patch
 from _runtime_fixture import RUNTIME as ROOT, isolated_env
 sys.path.insert(0, str(ROOT.parent / "sidecars/cockpit"))
 import dispatch_policy as cockpit
-from agent_runtime import agy_quota as quota, daemon, dispatch_policy_reader as reader
+from agent_runtime import agy_quota as quota, cli_wrappers, dispatch_policy_reader as reader
 
 MODEL = "gemini-4-neon-medium"
 CODEX = str(ROOT / "bin/sa-codex")
@@ -48,7 +48,7 @@ class DispatchPolicyTests(unittest.TestCase):
         self.write_raw(json.dumps(dict(schema_version=1, **fields)).encode())
 
     def codex_tier(self, *flags):
-        with patch.object(daemon, "run_subagent_client", return_value=0) as call, \
+        with patch.object(cli_wrappers, "run_subagent_client", return_value=0) as call, \
                 patch.object(sys, "path", sys.path[:]), patch.object(sys, "argv", [CODEX, *flags, "task"]):
             self.assertEqual(runpy.run_path(CODEX)["main"](), 0)
             call.assert_called_once()
