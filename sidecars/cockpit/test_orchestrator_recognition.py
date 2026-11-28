@@ -1,6 +1,7 @@
 """Regression tests for Orchestrator recognition and Models Board rendering."""
 from __future__ import annotations
 
+from contextlib import closing
 from html.parser import HTMLParser
 import json
 import os
@@ -131,13 +132,16 @@ def _encode_gen_metadata(
     cache: int,
     out: int,
     max_ctx: int | None = None,
+    *,
+    bytes_step: bool = False,
 ) -> bytes:
     usage = _field_varint(2, inp) + _field_varint(3, out) + _field_varint(5, cache)
     f1 = _field_bytes(4, usage) + _field_varint(3, model_enum)
     if max_ctx is not None:
         cwm = _field_varint(1, inp + cache) + _field_varint(4, max_ctx)
         f1 += _field_bytes(9, _field_bytes(10, cwm))
-    return _field_bytes(1, f1) + _field_varint(2, step_idx)
+    step_field = _field_bytes(2, _varint(step_idx)) if bytes_step else _field_varint(2, step_idx)
+    return _field_bytes(1, f1) + step_field
 
 
 def _encode_user_step(model_enum: int) -> bytes:
@@ -194,6 +198,14 @@ class OrchestratorRecognitionTests(unittest.TestCase):
             self.assertEqual(analyzer.resolve_builtin_enum_from_parent(enum_id, "pro"), enum_id)
         for enum_id in (1322, 1402, 342):
             self.assertEqual(analyzer.resolve_builtin_enum_from_parent(enum_id, "pro"), 1437)
+
+    def test_length_delimited_gen_metadata_step_index(self):
+        with tempfile.TemporaryDirectory(prefix="cockpit-orch-") as tmp:
+            db = Path(tmp) / "trajectory.db"
+            _build_db(db, [_encode_gen_metadata(130, 1532, 20, 10, 5, bytes_step=True)], [])
+            with closing(sqlite3.connect(db)) as con:
+                *_, calls = analyzer._extract_sqlite_calls(con.cursor())
+            self.assertEqual([(call["step_idx"], call["prompt"]) for call in calls], [(130, 30)])
 
     def test_continuous_orchestrator_turns_keep_context_limit_and_real_switch_resets(self):
         with tempfile.TemporaryDirectory(prefix="cockpit-orch-ctx-") as tmp:

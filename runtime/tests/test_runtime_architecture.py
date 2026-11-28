@@ -5,6 +5,8 @@ from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 import unittest
 
+from _production_symbols import undefined_globals
+
 
 RUNTIME = Path(__file__).resolve().parents[1]
 PACKAGE = "agent_runtime"
@@ -57,6 +59,11 @@ def import_targets(node, package, modules):
 
 
 class RuntimeArchitectureTests(unittest.TestCase):
+    def test_production_has_no_undefined_globals(self):
+        issues = [issue for path, source in production_sources()
+                  for issue in undefined_globals(source, path.relative_to(RUNTIME))]
+        self.assertEqual(issues, [], "\n".join(issues))
+
     def test_production_imports_are_a_dag_without_reverse_or_delayed_local_imports(self):
         sources = {module_name(path): (path, source) for path, source in production_sources()}
         modules = {name for name in sources if name.split(".")[0] == PACKAGE}

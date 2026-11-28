@@ -5,14 +5,29 @@ import sys
 import shutil
 import time
 
-from _runtime_fixture import isolated_runtime, write_rpc_server
+from _runtime_fixture import TIMEOUT, isolated_runtime, write_rpc_server
 from agent_runtime import AgyAcpStream, DroidAcpStream, GrokAcpStream, PiRpcStream, ResidentServer
 from agent_runtime import terminate_proc_group
 
 
 def test_acp_and_pi_resident_streams():
     with isolated_runtime() as tmp:
-        fake_acp = write_rpc_server(tmp, "fake_acp.py", setup="startup = True")
+        fake_acp = write_rpc_server(tmp, "fake_acp.py", setup='''
+            startup = True
+            pending_roots = {}
+            original_prompt = handle_prompt
+            def handle_prompt(rid, sid, text):
+                if text.endswith("hello 1"):
+                    pending_roots[sid] = rid
+                    update(sid, text, "user_message_chunk")
+                    return  # Keep the root prompt open until steering is received.
+                if text == "follow up":
+                    update(sid, text, "user_message_chunk")
+                    original_prompt(rid, sid, text)
+                    reply(pending_roots.pop(sid), {"stopReason": "end_turn"})
+                else:
+                    original_prompt(rid, sid, text)
+        ''')
         fake_pi = write_rpc_server(tmp, "fake_pi.py", protocol="pi", setup='''
             original_handle = handle
             def handle(message):
@@ -45,9 +60,14 @@ def test_acp_and_pi_resident_streams():
                     prompt="hello 1",
                     resident=host,
                     is_subagent=True,
+                    rpc_timeout=TIMEOUT,
                 )
+                assert turn1._ready.wait(TIMEOUT), "ACP did not deliver the root echo"
+                assert turn1.steer("follow-up-id", "follow up")
+                turn1.wait(TIMEOUT)
                 events1 = [json.loads(line) for line in turn1]
                 turn1.close()
+                assert {"type": "item.started", "item": {"type": "user_message", "clientId": "follow-up-id"}} in events1, events1
                 assert any(e.get("type") == "text_delta" and "reply:sid-1" in e.get("delta", "") for e in events1), events1
 
                 # Reuse same ResidentServer for a second turn
@@ -81,6 +101,7 @@ def test_acp_and_pi_resident_streams():
                 ({"model": "provider/model:ultra"}, "model:ultra", "high"),
                 ({"model": "provider/model:max:minimal"}, "model:max", "minimal"),
                 ({"model": "provider/model:free:xhigh", "reasoning_effort": "low"}, "model:free", "low"),
+                ({"model": "provider/model:free", "reasoning_effort": "ultra"}, "model:free", None),
             ):
                 pi_wire.unlink(missing_ok=True)
                 pturn = PiRpcStream(
@@ -98,10 +119,12 @@ def test_acp_and_pi_resident_streams():
                 init = next(e["init"] for e in pevents if e.get("event") == "init")
                 provider, separator, _ = bot["model"].partition("/")
                 expected_model = f"{provider}/{model_id}" if separator else model_id
-                assert init["model"] == f"{expected_model}:{level}", pevents
-                set_model, set_level = map(json.loads, pi_wire.read_text().splitlines())
+                assert init["model"] == (f"{expected_model}:{level}" if level else expected_model), pevents
+                set_model, *thinking = map(json.loads, pi_wire.read_text().splitlines())
                 assert (set_model["type"], set_model["modelId"]) == ("set_model", model_id)
-                assert (set_level["type"], set_level["level"]) == ("set_thinking_level", level)
+                assert [(m["type"], m["level"]) for m in thinking] == (
+                    [("set_thinking_level", level)] if level else []
+                )
         finally:
             pi_host.shutdown()
 

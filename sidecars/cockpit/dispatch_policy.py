@@ -290,7 +290,9 @@ def _resolve_target(primary, name, policy, caps, state_path, *, read_only, blind
         resolved_model = dispatch_models.resolve_model_id(engine, raw_model, effort, agy_state_path=state_path, allow_codex_rpc="codex" in caps.get("available_engines", ()))
     keys = dispatch_models.fallback_lookup_keys(engine, raw_model, resolved_model, effort)
     chain = next((policy["fallbacks"][k] for k in keys if k in policy["fallbacks"]), [])
-    inherited_effort = resolve_effective_effort(raw_model, effort, engine=engine if primary["channel"] == "cli" else "")
+    # Resolve CLI defaults from the primary even if it will be skipped.
+    source_engine = engine if primary["channel"] == "cli" else ""
+    inherited_effort = resolve_effective_effort(raw_model, effort, engine=source_engine)
     available, skipped = [], []
     for i, target in enumerate([primary, *chain]):
         candidate = dict(target, effort=inherited_effort) if target["effort"] == "same" else target

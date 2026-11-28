@@ -118,22 +118,22 @@
     } else {
       fbs[key] = [...base.map(c => ({ ...c })), { ...droidFallbackFor(target), enabled: false }];
     }
-    if (key === canonKey) {
-      for (const k of Object.keys(fbs)) {
-        if (k === canonKey) continue;
-        const matchesAlias = k === exactKey || (spec && k.startsWith(ek + ':') && spec.re.test(k.slice(ek.length + 1).toLowerCase()));
-        if (!matchesAlias) continue;
-        const chain = (fbs[k] || []).filter(Boolean);
-        const nonDroid = chain.filter(c => c.engine !== 'droid');
-        if (!enabled) {
-          if (nonDroid.length) fbs[k] = nonDroid.map(c => ({ ...c }));
-          else delete fbs[k];
-        } else if (nonDroid.length) {
-          if (chain.some(c => c.engine === 'droid')) {
-            fbs[k] = chain.map(c => (c.engine === 'droid' ? { ...c, enabled: true } : { ...c }));
-          }
-        } else {
-          delete fbs[k];
+    if (key === canonKey && enabled) {
+      const targetEff = effortOf(target), defDroid = droidFallbackFor(target);
+      const isDefaultEnabledDroid = c => c.engine === 'droid'
+        && c.enabled !== false
+        && (c.channel || 'cli') === defDroid.channel
+        && (c.effort === 'same' || (!c.effort && !targetEff) || c.effort === targetEff)
+        && (c.model === defDroid.model || Boolean(spec && spec.re.test(String(c.model || '').toLowerCase())));
+      if (fbs[canonKey].length && fbs[canonKey].every(isDefaultEnabledDroid)) {
+        for (const k of Object.keys(fbs)) {
+          if (k === canonKey) continue;
+          const matchesAlias = k === exactKey || (spec && k.startsWith(ek + ':') && spec.re.test(k.slice(ek.length + 1).toLowerCase()));
+          if (!matchesAlias) continue;
+          const kEff = effortOf({ model: k.slice(ek.length + 1), effort: '' });
+          if (k !== exactKey && kEff && kEff !== targetEff) continue;
+          const chain = (fbs[k] || []).filter(Boolean);
+          if (chain.length && chain.every(isDefaultEnabledDroid)) delete fbs[k];
         }
       }
     }

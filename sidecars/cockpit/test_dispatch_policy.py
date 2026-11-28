@@ -244,6 +244,15 @@ class DispatchPolicyTests(DispatchFixture):
         self.assertEqual(empty["seats"], [])
         self.assertFalse(empty["blind_isolated"])
 
+    def test_codex_fallback_inherits_source_effort_even_when_primary_is_unavailable(self):
+        p = dp.default_policy()
+        for effort, expected in (("", "high"), ("xhigh", "xhigh")):
+            with self.subTest(effort=effort):
+                p["roles"]["deep"]["primary"] = dp._target("codex", "sol", effort)
+                resolved = dp.resolve_role("deep", p, {"available_engines": ["droid"]})
+                self.assertEqual((resolved["engine"], resolved["effort"], resolved["reason"]),
+                                 ("droid", expected, "fallback"))
+
     def test_fresh_quota_only_and_enabled_fallback_order(self):
         p = dp.default_policy()
         p["roles"]["deep"]["primary"] = dp._target("codex", "gpt-6.2-sol", "high")

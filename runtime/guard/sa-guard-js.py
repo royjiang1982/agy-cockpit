@@ -127,7 +127,8 @@ def _path_fragment_restricted(fragment, is_sensitive_fn, is_guard_fn):
 
 
 def _template_path_restricted(raw, is_sensitive_fn, is_guard_fn):
-    # Scan literal fragments and literals in interpolations without evaluating JS.
+    # Scan individual literals and join adjacent constant pieces, without evaluating JS.
+    runs = [[]]
     start = 0
     while True:
         token = _TEMPLATE_TOKEN_RE.search(raw, start)
@@ -136,15 +137,29 @@ def _template_path_restricted(raw, is_sensitive_fn, is_guard_fn):
         fragment = _decode_js_str(raw[start:token.start() if token else len(raw)])
         if _path_fragment_restricted(fragment, is_sensitive_fn, is_guard_fn):
             return True
+        runs[-1].append(fragment)
         if not token:
-            return False
+            break
         braced = _extract_js_braced(raw, token.start() + 1)
         if not braced:
             return True
         expression, start = braced
-        for literal in re.finditer(_JS_LIT_BODY, expression[1:-1]):
+        expression = expression[1:-1].strip()
+        constant = _JS_OPT_STR_VAL_RE.fullmatch(expression)
+        if constant:
+            value = _js_lit_val(constant)
+            if _path_fragment_restricted(value, is_sensitive_fn, is_guard_fn):
+                return True
+            runs[-1].append(value)
+            continue
+        runs.append([])
+        for literal in re.finditer(_JS_LIT_BODY, expression):
             if _path_fragment_restricted(_js_lit_val(literal), is_sensitive_fn, is_guard_fn):
                 return True
+    paths = ["".join(run) for run in runs]
+    if len(paths) > 1:
+        paths.append("<dynamic>".join(paths))
+    return any(_path_fragment_restricted(path, is_sensitive_fn, is_guard_fn) for path in paths)
 
 
 def _parse_js_top_level_props(opts_src: str) -> Optional[List[Tuple[str, Optional[str]]]]:

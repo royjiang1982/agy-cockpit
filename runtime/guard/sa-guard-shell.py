@@ -252,7 +252,28 @@ _INLINE_JS_LONG = ("--eval", "--print")
 _VALUE_OPTIONS = {
     "shell": {"--init-file", "--rcfile"},
     "python": {"--check-hash-based-pycs"},
-    "js": {"--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions"},
+    "js": {
+        "-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions",
+        "--input-type", "--env-file", "--env-file-if-exists", "--redirect-warnings", "--title",
+        "--max-old-space-size", "--max-old-space-size-percentage", "--max-semi-space-size",
+        "--allow-fs-read", "--allow-fs-write", "--cpu-prof-dir", "--cpu-prof-interval",
+        "--cpu-prof-name", "--diagnostic-dir", "--disable-proto", "--disable-warning",
+        "--dns-result-order", "--experimental-default-type", "--experimental-policy",
+        "--experimental-sea-config", "--experimental-test-isolation", "--heap-prof-dir",
+        "--heap-prof-interval", "--heap-prof-name", "--heapsnapshot-near-heap-limit",
+        "--heapsnapshot-signal", "--icu-data-dir", "--inspect-port", "--debug-port",
+        "--inspect-publish-uid", "--localstorage-file", "--max-http-header-size",
+        "--network-family-autoselection-attempt-timeout", "--openssl-config", "--policy-integrity",
+        "--report-dir", "--report-directory", "--report-filename", "--report-signal", "--run",
+        "--secure-heap", "--secure-heap-min", "--snapshot-blob", "--stack-trace-limit",
+        "--test-concurrency", "--test-coverage-branches", "--test-coverage-exclude",
+        "--test-coverage-functions", "--test-coverage-include", "--test-coverage-lines",
+        "--test-global-setup", "--test-isolation", "--test-name-pattern", "--test-reporter",
+        "--test-reporter-destination", "--test-rerun-failures", "--test-shard", "--test-skip-pattern",
+        "--test-timeout", "--tls-cipher-list", "--tls-keylog", "--trace-event-categories",
+        "--trace-event-file-pattern", "--trace-require-module", "--unhandled-rejections",
+        "--use-largepages", "--v8-pool-size", "--watch-kill-signal", "--watch-path",
+    },
 }
 _VALUE_OPTION_CLUSTER = {
     "shell": re.compile(r"[-+][abefhiklmnprstuvxBCEHPT]*[oO]"),
@@ -281,7 +302,9 @@ def inline_script(args, kind):
                 return attached, idx
         else:
             if arg in _VALUE_OPTIONS[kind] or _VALUE_OPTION_CLUSTER[kind].fullmatch(arg):
-                next(options, None)
+                # Node value options do not consume another flag as their operand.
+                if kind != "js" or (idx + 1 < len(args) and not args[idx + 1].startswith("-")):
+                    next(options, None)
             continue
         return (args[idx + 1] if idx + 1 < len(args) else None), idx + 1
     return None

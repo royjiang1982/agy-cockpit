@@ -51,6 +51,7 @@ class AcpStream(ResidentTurn):
         )
         self._prompt_id = None
         self._active_prompts = set()
+        self._steering: list[dict] = []
         self._steer_requests = {}
         self._root_error = ""
         self._tools = {}

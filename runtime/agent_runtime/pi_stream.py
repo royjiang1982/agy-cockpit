@@ -156,9 +156,11 @@ class PiRpcStream(ResidentTurn):
                     "set_model",
                     {"provider": match["provider"], "modelId": match["id"]},
                 )
+        display_model = raw_model or "default"
         if effort in PI_THINKING_LEVELS:
             self._rpc("set_thinking_level", {"level": effort})
-        return f"{raw_model or 'default'}:{effort}"
+            display_model = f"{display_model}:{effort}"
+        return display_model
 
     def _start(self, bot, prompt, images, cwd):
         try:

@@ -45,7 +45,7 @@ _FILE_CLI_PAT = '|'.join(re.escape(x) for x in sorted(_READ_CLIS | _WRITE_CLIS, 
 # Match only command positions, retaining quotes in arguments for shlex.
 _START = re.compile(
     r"""(?:^|[;&|`\n]|(?<![A-Za-z0-9_=.:"'/\\-])\(|\$\()[ \t]*"""
-    r"""(?:(?:\{|if|while|until|then|else|elif|do)[ \t]+)*"""
+    r"""(?:(?:\{|if|while|until|then|else|elif|do|!)[ \t]+)*"""
     r"""(?:(?:sudo|env|exec|nohup|command|time|xargs|npx)[ \t]+"""
     r"""(?:(?:-[uUgnLIPs]|--user|--group)[ \t]+[^\s;&|]+[ \t]+|--?[^\s;&|]+[ \t]+)*"""
     r"""|[A-Za-z_][A-Za-z0-9_]*=(?:[^\s;&|"']+|"[^"]*"|'[^']*')[ \t]+)*"""

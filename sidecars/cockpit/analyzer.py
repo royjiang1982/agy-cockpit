@@ -17,7 +17,7 @@ from cockpit_io import APP_DIRS, BoundedCache, cached_paths, connect_readonly, g
 from cost_schema import ACTIVE_STEP_STATUSES, ASK_QUESTION_STEP_STATUSES, CostEvent, ask_question_step, call_uid, payload_id
 from metric_items import add_model_usage
 from models_board import build_models_board
-from proto_wire import decode_proto, parse_annotation_text, parse_proto_duration
+from proto_wire import decode_proto, decode_varint, parse_annotation_text, parse_proto_duration
 from metric_rates import db_perf, proto_split, sum_known
 from pricing import (
     estimate_source,

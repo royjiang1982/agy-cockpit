@@ -36,6 +36,9 @@ class GuardTests(GuardAdapterCases, GuardFileCases, unittest.TestCase):
         for expected, examples in (
             (True, (
                 "{ agy --help; }",
+                "! git push",
+                "if ! agy -p hi; then :; fi",
+                "! agy -p hi",
                 "if agy --help; then true; fi",
                 "while agy --help; do true; done",
                 "until agy --help; do true; done",
@@ -60,6 +63,10 @@ class GuardTests(GuardAdapterCases, GuardFileCases, unittest.TestCase):
                 'while_loop agy --help',
                 'until-done agy --help',
                 'echo "if agy --help; then true; fi"',
+                'echo "! git push; if ! agy -p hi; then :; fi"',
+                'echo ! git push',
+                '! git status',
+                '! command -v agy',
                 'bash tool.sh -c',
                 'dash -- tool.sh -c',
                 'python3 tool.py -c',
@@ -68,6 +75,7 @@ class GuardTests(GuardAdapterCases, GuardFileCases, unittest.TestCase):
                 'node tool.js -p',
                 'node -- tool.js -e',
                 'node -r preload.js tool.js -p',
+                'node --input-type commonjs tool.js -e',
                 '{ git status; }',
                 'sh -c"printf ok"',
                 """python3 -c'print("ok")'""",
@@ -78,9 +86,12 @@ class GuardTests(GuardAdapterCases, GuardFileCases, unittest.TestCase):
                     self.assertEqual(blocked('agy', command), expected)
 
     def test_node_inline_options_and_template_paths(self):
-        js = 'require("child_process").execFileSync("agy", ["--help"])'
+        js = 'require("child_process").execFileSync("agy", ["-p", "hi"])'
         for option in ('-e ', '-e', '--eval ', '--eval=', '-p ', '--print=', '-pe ', '-ep ', '-iep ',
-                       '-pie ', '-r preload.js -e '):
+                       '-pie ', '-r preload.js -e ', '--input-type module -e ',
+                       '--require preload.js --import preload.mjs --loader loader.mjs -e ',
+                       '-C dev --conditions test --env-file fixture.conf -e ',
+                       '--redirect-warnings warnings.log --title test --max-old-space-size 512 -e '):
             with self.subTest(option=option):
                 self.assertTrue(blocked('agy', f"node {option}'{js}'"))
                 self.assertFalse(blocked('agy', f"node {option}'1 + 2'"))
@@ -93,6 +104,12 @@ class GuardTests(GuardAdapterCases, GuardFileCases, unittest.TestCase):
             ("${fixture}/.env.example", False),
             ("${fixture}/notes.txt", False),
             ('${".ssh/id_rsa"}', True),
+            ('${".e"}${"nv"}', True),
+            ('${".ssh"}/id_rsa', True),
+            ('${fixture}/${"hoo"}ks.json', True),
+            ('${fixture}/${".e"}nv/${name}', True),
+            ('${"note"}${"s"}.txt', False),
+            ('${".e"}${middle}${"nv"}', False),
             ('${flag ? "docs.txt" : "fixtures/hooks.json"}', True),
             (r'${"fixtures/.e\x6ev"}', True),
             ('${flag ? "docs.txt" : "notes.txt"}', False),

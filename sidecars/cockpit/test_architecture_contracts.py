@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -22,6 +23,11 @@ SHARED_WATCHED = {
     REPO / "skills/cockpit-dispatch/scripts/resolve.py",
     REPO / "runtime/agent_runtime/policy_contract.py",
 }
+RUNTIME_TESTS = REPO / "runtime" / "tests"
+if str(RUNTIME_TESTS) not in sys.path:
+    sys.path.insert(0, str(RUNTIME_TESTS))
+
+from _production_symbols import undefined_globals
 
 
 def _test_python(path):
@@ -141,6 +147,25 @@ class ArchitectureContracts(unittest.TestCase):
 
     def test_local_production_imports_are_top_level(self):
         self.assertEqual(self.delayed_imports, [], "Local imports must be at module top level")
+
+    def test_production_has_no_undefined_globals(self):
+        shared = {path for path in SHARED_WATCHED if not path.is_relative_to(REPO / "runtime")}
+        issues = [issue for path in sorted(_production_python() | shared)
+                  for issue in undefined_globals(path.read_text(encoding="utf-8"), path.relative_to(REPO))]
+        self.assertEqual(issues, [], "\n".join(issues))
+
+    def test_undefined_global_gate_distinguishes_local_and_module_bindings(self):
+        source = (
+            "from os import path\n"
+            "def read():\n"
+            "    from json import loads\n"
+            "    def inner(): return loads(path.basename(__file__))\n"
+            "    return inner\n"
+            "def missing(): return loads('null')\n"
+        )
+        issues = undefined_globals(source, "fixture.py")
+        self.assertEqual(len(issues), 1, issues)
+        self.assertIn("missing references undefined global 'loads'", issues[0])
 
     def test_hot_reload_watches_only_existing_production_files(self):
         watched = set(server.WATCHED_PY_FILES)

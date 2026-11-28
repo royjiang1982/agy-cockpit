@@ -42,6 +42,8 @@ def resolve_effective_effort(model, explicit_effort="", *, engine="agy"):
     explicit = (explicit_effort or "").strip().lower()
     if explicit and explicit != "same":
         return explicit
+    if engine == "codex":
+        return "high"  # sa-codex default when no reasoning effort is supplied.
     if engine != "agy":
         return ""
     return agy_model_effort(model) or AGY_DEFAULT_EFFORT.get(agy_model_family(model), "")
