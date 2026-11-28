@@ -291,7 +291,7 @@ class DispatchAPITests(unittest.TestCase):
             self.assertEqual(res, (200, b"test asset", mime + "; charset=utf-8"))
             self.assertEqual(self.request("HEAD", path)[1], b"")
             self.assertEqual(self.request("POST", path, headers=self.headers)[0], 405)
-        for path in ("/static/dispatch_drawer.txt", "/static/../test_dispatch_api.py",
+        for path in ("/static/dispatch_drawer.txt",
                      "/static/dispatch_drawer.js/../../index.html", "/static/dispatch_drawer.js%2f..",
                      "/static/dispatch_drawer.js;variant", "/static/%64ispatch_drawer.js",
                      "/api/dispatch-unknown", "/api/dispatch-policy;variant"):
@@ -300,6 +300,8 @@ class DispatchAPITests(unittest.TestCase):
     def test_dispatch_drawer_serves_real_assets_and_valid_javascript(self):
         assets = Path(__file__).resolve().parent
         with patch.object(dispatch_api, "_STATIC_DIR", assets):
+            for path in ("/static/server.py", "/static/../server.py"):
+                self.assertEqual(self.request("GET", path)[0], 404, path)
             for name, mime in (("dispatch_drawer.catalog.js", "text/javascript"),
                                ("dispatch_drawer.js", "text/javascript"),
                                ("dispatch_drawer.css", "text/css")):

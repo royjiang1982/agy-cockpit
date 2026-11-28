@@ -255,7 +255,6 @@ APP_DIRS = [
     ("App", HOME / ".gemini" / "antigravity"),
     ("CLI", HOME / ".gemini" / "antigravity-cli"),
 ]
-BRAIN_DIR = HOME / ".gemini" / "antigravity" / "brain"
 
 UUID_PAT = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 RE_INVOKE_ID = re.compile(rf'"conversationId"\s*:\s*"({UUID_PAT})"')
@@ -275,20 +274,6 @@ def snapshot_builtin_model_enum() -> dict[str, int]:
     """Stable copy so callers can iterate or serialize while other threads update the map."""
     with _BUILTIN_ENUM_LOCK:
         return dict(_BUILTIN_SUBAGENT_MODEL_ENUM)
-
-
-def encode_varint(val: int) -> bytes:
-    out = bytearray()
-    while val >= 0x80:
-        out.append((val & 0x7F) | 0x80)
-        val >>= 7
-    out.append(val & 0x7F)
-    return bytes(out)
-
-
-def encode_proto_bytes(fnum: int, payload: bytes) -> bytes:
-    tag = (fnum << 3) | 2
-    return encode_varint(tag) + encode_varint(len(payload)) + payload
 
 
 def decode_varint(buf: bytes, pos: int) -> tuple[int, int]:

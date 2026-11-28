@@ -26,14 +26,12 @@ from analyzer import HOME, cached_paths, log_lines, serialized
 from agy_quota import fetch_agy_quota
 from quota_sources import codex_rpc_windows as _extract_codex_rpc_windows, codex_rollout_windows
 from droid_ledger import parse_droid_reset_sec, droid_reset_precision, anchor_droid_quota
-from subagents import CODEX_SESSIONS_DIR, FACTORY_SESSIONS_DIR, GROK_SESSIONS_DIR, parse_iso_ts
+from subagents import CODEX_SESSIONS_DIR, FACTORY_SESSIONS_DIR, parse_iso_ts
 
 _PROBE_LOCK = threading.RLock()
 _ACTIVE_PROBES: dict[int, tuple[subprocess.Popen, tuple[int, ...]]] = {}
 _PROBES_PAUSED = False
 _MAX_PROBE_OUTPUT = 1024 * 1024
-_LAST_DROID_SUCCESS_MTIME = 0.0
-_LAST_GROK_SUCCESS_MTIME = 0.0
 
 
 def pause_probes():
@@ -103,11 +101,7 @@ def _probe_output(command, *, timeout, text=True, stderr=subprocess.DEVNULL):
 _CODEX_QUOTA_CACHE: tuple[tuple[str, float], dict[str, dict]] | None = None
 _LAST_CODEX_SCAN_TS: float = 0.0
 _DROID_QUOTA_CACHE: dict[str, dict] = {}
-_LAST_DROID_FETCH_TS: float = 0.0
-_LAST_DROID_SESSIONS_MTIME: float = 0.0
 _GROK_QUOTA_CACHE: dict[str, dict] = {}
-_LAST_GROK_FETCH_TS: float = 0.0
-_LAST_GROK_SESSIONS_MTIME: float = 0.0
 _AGY_CONFIG_FILE = HOME / ".gemini" / "config" / "config.json"
 _THEME_CFG_MTIME_NS: int = -1
 _THEME_CFG_CACHE: dict = {
@@ -279,16 +273,10 @@ def fetch_codex_quota(force_refresh: bool = False) -> dict[str, dict]:
     return _store_codex_quota(sig, out)
 
 
-def _parse_droid_reset_sec(tail: str) -> int:
-    """Parse `↻ 1 day`, `↻ 3h 20min`, or `↻ 45min` from Droid `/limits` output into seconds."""
-    return parse_droid_reset_sec(tail)
-
-
-
 @serialized(lambda *args, **kwargs: "droid-quota")
 def fetch_droid_quota(seed_cache: dict[str, dict] | None = None, force_refresh: bool = False) -> dict[str, dict]:
     """Fetch Droid (Factory) Standard Usage quota via `/limits` PTY probe if `droid` is installed."""
-    global _DROID_QUOTA_CACHE, _LAST_DROID_FETCH_TS, _LAST_DROID_SESSIONS_MTIME, _LAST_DROID_SUCCESS_MTIME
+    global _DROID_QUOTA_CACHE
     droid_bin = _find_cli_bin("droid")
     if droid_bin is None:
         return {}
@@ -303,27 +291,9 @@ def fetch_droid_quota(seed_cache: dict[str, dict] | None = None, force_refresh: 
     probe_cwd = str(probe_cwd_path)
     probe_slug_dir = FACTORY_SESSIONS_DIR / "-tmp-agy-cockpit-droid-probe"
 
-    max_s_mt = 0.0
-    if FACTORY_SESSIONS_DIR.exists():
-        try:
-            for p in cached_paths(FACTORY_SESSIONS_DIR, "*.settings.json", recursive=True):
-                try:
-                    jl = p.with_name(p.name[: -len(".settings.json")] + ".jsonl")
-                    if jl.exists() and jl.stat().st_size < 450:
-                        continue
-                    max_s_mt = max(max_s_mt, p.stat().st_mtime)
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    now = time.time()
-    _LAST_DROID_SESSIONS_MTIME = max(_LAST_DROID_SESSIONS_MTIME, max_s_mt)
     if not force_refresh:
         return {"droid-installed": {"installed": True}, **_DROID_QUOTA_CACHE}
 
-    _LAST_DROID_FETCH_TS = now
-    _LAST_DROID_SESSIONS_MTIME = max_s_mt
     pre_probe_files = set(probe_slug_dir.iterdir()) if probe_slug_dir.exists() else set()
     master_fd = -1
     slave_fd = -1
@@ -436,7 +406,7 @@ def fetch_droid_quota(seed_cache: dict[str, dict] | None = None, force_refresh: 
         if m_5h:
             parsed_any = True
             u5 = float(m_5h.group(1))
-            rsec5 = _parse_droid_reset_sec(m_5h.group(2))
+            rsec5 = parse_droid_reset_sec(m_5h.group(2))
             _DROID_QUOTA_CACHE["droid-5h"] = {
                 "reset_precision_sec": droid_reset_precision(m_5h.group(2)),
                 "rem_frac": max(0.0, min(1.0, (100.0 - u5) / 100.0)),
@@ -446,7 +416,7 @@ def fetch_droid_quota(seed_cache: dict[str, dict] | None = None, force_refresh: 
         if m_wk:
             parsed_any = True
             uwk = float(m_wk.group(1))
-            rsec_wk = _parse_droid_reset_sec(m_wk.group(2))
+            rsec_wk = parse_droid_reset_sec(m_wk.group(2))
             _DROID_QUOTA_CACHE["droid-weekly"] = {
                 "reset_precision_sec": droid_reset_precision(m_wk.group(2)),
                 "rem_frac": max(0.0, min(1.0, (100.0 - uwk) / 100.0)),
@@ -456,7 +426,7 @@ def fetch_droid_quota(seed_cache: dict[str, dict] | None = None, force_refresh: 
         if m_mo:
             parsed_any = True
             umo = float(m_mo.group(1))
-            rsec_mo = _parse_droid_reset_sec(m_mo.group(2))
+            rsec_mo = parse_droid_reset_sec(m_mo.group(2))
             _DROID_QUOTA_CACHE["droid-monthly"] = {
                 "reset_precision_sec": droid_reset_precision(m_mo.group(2)),
                 "rem_frac": max(0.0, min(1.0, (100.0 - umo) / 100.0)),
@@ -464,7 +434,6 @@ def fetch_droid_quota(seed_cache: dict[str, dict] | None = None, force_refresh: 
             }
 
     if parsed_any:
-        _LAST_DROID_SUCCESS_MTIME = max_s_mt
         _DROID_QUOTA_CACHE = anchor_droid_quota(_DROID_QUOTA_CACHE, previous, now_done)
     return {"droid-installed": {"installed": True}, **_DROID_QUOTA_CACHE}
 
@@ -513,30 +482,9 @@ def fetch_quota_buckets_with_meta(
     return parsed_buckets, agy_meta
 
 
-def fetch_quota_buckets(
-    force_refresh: bool = False,
-    seed_cache: dict[str, dict] | None = None,
-    *,
-    agy_force_refresh: bool | None = None,
-    ui_active: bool = False,
-) -> dict[str, dict]:
-    """Fetch user quota summary via official CLIs (AGY `/usage`, Codex sessions, Droid `/limits`, Grok stdio)."""
-    parsed_buckets, _ = fetch_quota_buckets_with_meta(
-        force_refresh=force_refresh,
-        seed_cache=seed_cache,
-        agy_force_refresh=agy_force_refresh,
-        ui_active=ui_active,
-    )
-    return parsed_buckets
-
-
-_GROK_IDLE_FORCE_PROBE_SEC = 900.0  # 15m idle sync cadence (within server 1800s stale window)
-
-
 @serialized(lambda *args, **kwargs: "grok-quota")
 def fetch_grok_quota(seed_cache: dict[str, dict] | None = None, force_refresh: bool = False) -> dict[str, dict]:
     """Fetch Grok (SuperGrok) weekly quota via `grok agent stdio` (`_x.ai/billing`) if `grok` is installed."""
-    global _GROK_QUOTA_CACHE, _LAST_GROK_FETCH_TS, _LAST_GROK_SESSIONS_MTIME, _LAST_GROK_SUCCESS_MTIME
     grok_bin = _find_cli_bin("grok")
     if grok_bin is None:
         return {}
@@ -546,27 +494,10 @@ def fetch_grok_quota(seed_cache: dict[str, dict] | None = None, force_refresh: b
             if isinstance(seed_cache.get(k), dict) and seed_cache[k].get("rem_frac") is not None:
                 _GROK_QUOTA_CACHE[k] = dict(seed_cache[k])
 
-    max_s_mt = 0.0
-    if GROK_SESSIONS_DIR.exists():
-        try:
-            for p in cached_paths(GROK_SESSIONS_DIR, "*/*/updates.jsonl"):
-                try:
-                    max_s_mt = max(max_s_mt, p.stat().st_mtime)
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    now = time.time()
-    _LAST_GROK_SESSIONS_MTIME = max(_LAST_GROK_SESSIONS_MTIME, max_s_mt)
     if not force_refresh:
         return {"grok-installed": {"installed": True}, **_GROK_QUOTA_CACHE}
 
-    _LAST_GROK_FETCH_TS = now
-    _LAST_GROK_SESSIONS_MTIME = max(_LAST_GROK_SESSIONS_MTIME, max_s_mt)
-
     proc: subprocess.Popen | None = None
-    parsed_ok = False
     try:
         proc = _start_probe(
             [grok_bin, "agent", "stdio"],
@@ -625,7 +556,6 @@ def fetch_grok_quota(seed_cache: dict[str, dict] | None = None, force_refresh: b
                     raw_used = cfg.get("creditUsagePercent")
                     rem_frac = grok_remaining(raw_used)
                     if rem_frac is not None:
-                        parsed_ok = True
                         _GROK_QUOTA_CACHE["grok-weekly"] = {
                             "rem_frac": rem_frac,
                             "reset_ts": reset_ts,
@@ -641,8 +571,6 @@ def fetch_grok_quota(seed_cache: dict[str, dict] | None = None, force_refresh: b
         if proc is not None:
             _finish_probe(proc)
 
-    if parsed_ok:
-        _LAST_GROK_SUCCESS_MTIME = max_s_mt
     return {"grok-installed": {"installed": True}, **_GROK_QUOTA_CACHE}
 
 

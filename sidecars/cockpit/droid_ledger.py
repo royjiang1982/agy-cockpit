@@ -225,10 +225,6 @@ def quota_stale(info, now, bid=""):
             or (bid.startswith("droid-") and reset <= 0 and not full_unstarted))
 
 
-def droid_probe_due(cache, now, force=False):
-    return force or any(bid not in cache or quota_stale(cache[bid], now, bid) for bid in _WINDOWS)
-
-
 def _precision(info, bid):
     if "reset_precision_sec" in info:
         return float(info["reset_precision_sec"] or 0)

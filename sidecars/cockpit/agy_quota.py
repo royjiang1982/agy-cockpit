@@ -8,15 +8,9 @@ import time
 from typing import Callable
 
 from analyzer import APP_DIRS, cached_paths, get_db_mtime, serialized
-from droid_ledger import quota_stale
 from subagents import parse_iso_ts
 
 AGY_BUCKET_IDS: tuple[str, ...] = ("gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly")
-AGY_ACTIVITY_COOLDOWN_SEC = 60.0
-AGY_SETTLE_SEC = 3.0
-AGY_STALE_COOLDOWN_SEC = 300.0
-AGY_MANUAL_COOLDOWN_SEC = 60.0
-AGY_MANUAL_ERROR_DEBOUNCE_SEC = 5.0
 AGY_CLI_TIMEOUT_SEC = 15.0
 
 _AGY_QUOTA_CACHE: dict[str, dict] = {}
@@ -106,10 +100,6 @@ def should_probe_agy_quota(
     if force_refresh:
         return True, "manual"
     return False, "cached"
-
-
-def get_last_agy_meta() -> dict:
-    return dict(_LAST_AGY_META)
 
 
 @serialized(lambda *args, **kwargs: "agy-quota")

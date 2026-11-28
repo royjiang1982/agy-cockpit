@@ -363,13 +363,3 @@ def fallback_lookup_keys(engine: str, model: str, resolved_model: str, effort: s
             if key not in keys:
                 keys.append(key)
     return tuple(keys)
-
-
-def latest_family_map(*, codex_cache_path: Path | None = None, grok_cache_path: Path | None = None,
-                      agy_state_path: Path | None = None, factory_cache_dir: Path | None = None) -> dict[str, dict[str, str]]:
-    return {
-        "agy": _latest_agy(agy_state_path),
-        "codex": _latest_codex(codex_cache_path),
-        "grok": _latest_grok(grok_cache_path),
-        "droid": _latest_droid(codex_cache_path, agy_state_path, grok_cache_path, factory_cache_dir),
-    }

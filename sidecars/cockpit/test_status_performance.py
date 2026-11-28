@@ -132,7 +132,7 @@ class CostRuntimeTests(unittest.TestCase):
             server._refresh_quota()
         self.assertEqual(server._COST_GENERATION, generation + 1)
         self.assertEqual(self.runtime._display_generation, generation)
-        current = server._get_live_quota()[BID]
+        current = server._get_live_quota_snapshot()[0][BID]
         self.assertEqual(current['observed_at'], REFRESHED_QUOTA[BID]['observed_at'])
         self.assertIs(current['estimate_ok'], True)
         self.assertAlmostEqual(current['estimate_usd'], 1.33)
@@ -141,7 +141,7 @@ class CostRuntimeTests(unittest.TestCase):
         server._refresh_window_costs()
         self.assertEqual(self.runtime._display_generation, server._COST_GENERATION)
         self.assert_aggregate_matches_legacy(REFRESHED_QUOTA)
-        current = server._get_live_quota()[BID]
+        current = server._get_live_quota_snapshot()[0][BID]
         self.assertIs(current['estimate_ok'], True)
         self.assertAlmostEqual(current['estimate_usd'], 1.58)
 

@@ -181,11 +181,6 @@ def get_model_map_epoch() -> int:
     return _MODEL_MAP_EPOCH
 
 
-def get_dynamic_models_snapshot() -> dict[int, tuple[str, str]]:
-    with _DYNAMIC_MODEL_LOCK:
-        return dict(_DYNAMIC_MODELS)
-
-
 def export_dynamic_models() -> dict[str, list[str]]:
     with _DYNAMIC_MODEL_LOCK:
         return {str(eid): [lbl, mid] for eid, (lbl, mid) in _DYNAMIC_MODELS.items()}

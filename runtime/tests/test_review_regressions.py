@@ -343,16 +343,34 @@ class InstallTests(unittest.TestCase):
                     self.assertIn(Path(rel).name, result.stderr)
                     self.assertFalse(target.exists())
 
-    def test_installs_real_source_to_temporary_directory(self):
+    def test_upgrades_real_source_without_leaving_legacy_tests_installed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             target = root / "target"
+            self.write(target / "plugin.json", '{"name": "agy-cockpit"}')
+            cockpit = target / "sidecars/cockpit"
+            self.write(cockpit / "test_dispatch_api.py", "# stale installed test\n")
+            self.write(cockpit / "_cost_test_fixture.py", "# stale installed fixture\n")
+            self.write(target / "runtime/tests/sentinel.py", "# stale installed test\n")
             result = self.install(REPO, target, root / "home")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("manifest verified", result.stdout)
             self.assertEqual((target / "plugin.json").read_bytes(), (REPO / "plugin.json").read_bytes())
             self.assertTrue(os.access(target / "runtime/bin/sa-agy", os.X_OK))
+            self.assertEqual(list(cockpit.glob("test_*.py")), [])
+            self.assertFalse((cockpit / "_cost_test_fixture.py").exists())
             self.assertFalse((target / "runtime/tests").exists())
+
+    def test_ignores_excluded_source_files_before_preflight(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root / "source")
+            cockpit = source / "sidecars/cockpit"
+            self.write(cockpit / "test_never_compile.py", "def broken(\n")
+            (cockpit / "_cost_test_fixture.py").symlink_to(root / "missing")
+            result = self.install(source, root / "target", root / "home")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("manifest verified", result.stdout)
 
     def test_rejects_case_alias_overlap_and_allows_unrelated_sibling_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:

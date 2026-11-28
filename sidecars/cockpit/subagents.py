@@ -1172,8 +1172,6 @@ def discover_subagent_stubs(conv_id: str) -> list[dict]:
     return [dict(stub) for stub in stubs]
 
 
-discover_subagents = discover_subagent_stubs
-
 def _resolve_subagent_status(st: dict, sub_running: bool | None = None, sub_err: bool = False) -> str:
     if st.get("killed"):
         return "killed"

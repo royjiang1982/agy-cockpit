@@ -2636,8 +2636,6 @@
   }
   syncCalTabs();
   let lastSubConvId = '';
-  let subListExpanded = false;
-  let latestSubRenderer = null;
   let latestSubItems = [];
 
   function fmtSubModel(model) {
@@ -2709,13 +2707,6 @@
       const item = Number.isInteger(idx) ? latestSubItems[idx] : null;
       if (item) showChartTip(rowEl, buildSubTipHtml(item), { kind: 'sub', key: String(idx) });
     }
-    subListDelegEl.addEventListener('click', e => {
-      const btn = e.target && e.target.closest ? e.target.closest('button[data-sub-list-toggle]') : null;
-      if (!btn || !subListDelegEl.contains(btn)) return;
-      subListExpanded = !subListExpanded;
-      if (activeTipSource && activeTipSource.kind === 'sub') hideChartTip();
-      if (latestSubRenderer) latestSubRenderer();
-    });
     subListDelegEl.addEventListener('mouseover', e => {
       const row = e.target && e.target.closest ? e.target.closest('.sub-bar-row') : null;
       if (row) openSubRowTip(row);
@@ -3913,9 +3904,7 @@
           subBadgeEl.textContent = '未派出';
           subEmptyEl.style.display = 'block';
           subListEl.style.display = 'none';
-          latestSubRenderer = null;
           latestSubItems = [];
-          subListExpanded = false;
           if (activeTipSource && activeTipSource.kind === 'sub') hideChartTip();
           setHtml(subListEl, '');
         }

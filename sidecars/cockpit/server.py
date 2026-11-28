@@ -17,7 +17,6 @@ import socket
 import sys
 import threading
 import time
-import uuid
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -87,14 +86,13 @@ WATCHED_PY_FILES = [
     SIDECAR_DIR / "pricing.py",
     SIDECAR_DIR / "analyzer.py",
     SIDECAR_DIR / "subagents.py",
-    *(SIDECAR_DIR / f"{name}.py" for name in ("subagent_labels", "test_subagent_labels")),
+    SIDECAR_DIR / "subagent_labels.py",
     SIDECAR_DIR / "rpc_quota.py",
     SIDECAR_DIR / "agy_quota.py",
-    *(SIDECAR_DIR / f"{name}.py" for name in ("dispatch_models", "dispatch_policy", "dispatch_api", "swarm_subagents", "test_dispatch_policy", "test_dispatch_api", "test_swarm_subagents")),
+    *(SIDECAR_DIR / f"{name}.py" for name in ("dispatch_models", "dispatch_policy", "dispatch_api", "swarm_subagents")),
     SIDECAR_DIR.parents[1] / "skills/cockpit-dispatch/scripts/resolve.py",
     SIDECAR_DIR.parents[1] / "runtime/agent_runtime/policy_contract.py",
     SIDECAR_DIR / "droid_ledger.py",
-    SIDECAR_DIR / "_cost_test_fixture.py",
     *(SIDECAR_DIR / f"{name}.py" for name in ("agy_cost_events", "cost_windows", "quota_sources", "grok_costs", "grok_timing", "cost_runtime", "annotation_index",
         "cost_migration", "cost_compaction", "cost_archive", "cost_updates", "calendar_models", "metric_rates", "metric_items", "metric_logs", "metric_pi", "metric_droid", "metric_codex", "metric_grok", "droid_acp_fallback")),
 ]
@@ -243,7 +241,9 @@ def _ui_asset() -> tuple[int, bytes]:
     global _HTML_CACHE
     with _HTML_LOCK:
         stat = INDEX_HTML_FILE.stat()
-        extra_paths = (SIDECAR_DIR / 'dispatch_drawer.css', SIDECAR_DIR / 'dispatch_drawer.js')
+        extra_paths = tuple(SIDECAR_DIR / name for name in (
+            'dispatch_drawer.css', 'dispatch_drawer.catalog.js', 'dispatch_drawer.js',
+        ))
         extra_sig = tuple((p.stat().st_mtime_ns, p.stat().st_size) if p.exists() else (0, 0) for p in extra_paths)
         csrf = dispatch_api.get_csrf_token().encode('ascii')
         signature = (stat.st_mtime_ns, stat.st_size, extra_sig, csrf)
@@ -784,10 +784,6 @@ def _refresh_quota(
             with _STATE_LOCK:
                 _save_persisted_state()
         return {**agy_meta, "refreshed": True}
-
-
-def _get_live_quota() -> dict[str, dict]:
-    return _get_live_quota_snapshot()[0]
 
 
 def _get_live_quota_snapshot() -> tuple[dict[str, dict], float]:

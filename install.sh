@@ -5,6 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_TARGET="${HOME}/.gemini/config/plugins/agy-cockpit"
 ALLOW_CUSTOM=0
 TARGET_DIR="${DEFAULT_TARGET}"
+EXCLUDED_NAMES='__pycache__
+*.pyc
+.DS_Store
+tests
+test_*.py
+*_test_fixture.py'
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -29,12 +35,14 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 echo "==> [1/4] 校验目标路径边界..."
-TARGET_REAL="$(python3 - "${TARGET_DIR}" "${DEFAULT_TARGET}" "${ALLOW_CUSTOM}" "${SCRIPT_DIR}" <<'PY'
+TARGET_REAL="$(python3 - "${TARGET_DIR}" "${DEFAULT_TARGET}" "${ALLOW_CUSTOM}" "${SCRIPT_DIR}" "${EXCLUDED_NAMES}" <<'PY'
 import json, sys
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 raw_target, raw_default, allow_custom = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
 src_real = Path(sys.argv[4]).resolve()
+excluded = sys.argv[5].splitlines()
 target = Path(raw_target).expanduser()
 default = Path(raw_default).expanduser()
 home = Path.home().resolve()
@@ -128,7 +136,7 @@ while paths:
 src_paths = [src_real / rel for rel in managed]
 while src_paths:
     sp = src_paths.pop()
-    if sp.name in ("__pycache__", ".DS_Store", "tests") or sp.suffix == ".pyc":
+    if any(fnmatchcase(sp.name, pattern) for pattern in excluded):
         continue
     if sp.is_symlink():
         raise SystemExit(f"拒绝安装：源树受管路径包含符号链接 ({sp})")
@@ -152,15 +160,20 @@ PY
 )"
 
 echo "==> [2/4] 预检 Python、JSON 和 Shell 语法..."
-python3 - "${SCRIPT_DIR}" <<'PY'
+python3 - "${SCRIPT_DIR}" "${EXCLUDED_NAMES}" <<'PY'
 import json, sys
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 root = Path(sys.argv[1])
+excluded = sys.argv[2].splitlines()
 targets = []
 for sub in ("assets", "rules", "skills/cockpit-dispatch", "sidecars/cockpit", "runtime"):
     base = root / sub
-    targets.extend(p for p in sorted(base.rglob("*.py")) if "__pycache__" not in p.parts and "tests" not in p.parts)
+    targets.extend(
+        p for p in sorted(base.rglob("*.py"))
+        if not any(fnmatchcase(part, pattern) for part in p.relative_to(base).parts for pattern in excluded)
+    )
 for path in sorted((root / "runtime/bin").glob("sa-*")):
     if not path.suffix and path.is_file():
         with path.open("rb") as script:
@@ -196,8 +209,11 @@ for dir_item in "assets" "rules" "skills/cockpit-dispatch" "sidecars/cockpit" "r
   dst="${TARGET_REAL}/${dir_item}"
   if [ -d "${src}" ]; then
     mkdir -p "$(dirname "${dst}")" "${stage_dir}/${dir_item}"
-    rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='.DS_Store' --exclude='tests' "${src}/" "${stage_dir}/${dir_item}/"
+    rsync -a --exclude-from=- "${src}/" "${stage_dir}/${dir_item}/" <<EOF
+${EXCLUDED_NAMES}
+EOF
     mkdir -p "${dst}"
+    # Delete stale test files from earlier installs; keep the destination's Python cache.
     rsync -a --delay-updates --delete \
       --exclude='__pycache__' \
       --exclude='*.pyc' \
@@ -214,11 +230,13 @@ for exe in "${TARGET_REAL}/runtime/bin/"sa-* "${TARGET_REAL}/runtime/guard/sa-gu
 done
 
 echo "==> [4/4] 核对已安装清单..."
-python3 - "${SCRIPT_DIR}" "${TARGET_REAL}" <<'PY'
+python3 - "${SCRIPT_DIR}" "${TARGET_REAL}" "${EXCLUDED_NAMES}" <<'PY'
 import hashlib, sys
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 src_root, dst_root = Path(sys.argv[1]), Path(sys.argv[2])
+excluded = sys.argv[3].splitlines()
 checked = 0
 for rel in ("plugin.json", "README.md", "hooks.json", "assets", "rules", "skills/cockpit-dispatch", "sidecars/cockpit", "runtime"):
     src = src_root / rel
@@ -226,7 +244,9 @@ for rel in ("plugin.json", "README.md", "hooks.json", "assets", "rules", "skills
         continue
     files = [src] if src.is_file() else [
         p for p in src.rglob("*")
-        if p.is_file() and "__pycache__" not in p.parts and "tests" not in p.parts and p.suffix != ".pyc" and p.name != ".DS_Store"
+        if not any(
+            fnmatchcase(part, pattern) for part in p.relative_to(src).parts for pattern in excluded
+        ) and p.is_file()
     ]
     for sp in files:
         dp = dst_root / sp.relative_to(src_root)

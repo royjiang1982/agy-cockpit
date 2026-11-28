@@ -125,7 +125,7 @@ class SubagentLabelTests(unittest.TestCase):
                         SUBAGENT_APP_DIRS=[("App", app)],
                         HOME=root,
                     ), patch.object(subagents, "analyze_codex_thread", return_value=None):
-                        stubs = {stub["id"]: stub for stub in subagents.discover_subagents(parent)}
+                        stubs = {stub["id"]: stub for stub in subagents.discover_subagent_stubs(parent)}
                         _, items = subagents.collect_subagents(parent)
                     self.assertEqual(stubs[first]["raw_file"], str(log))
                     self.assertTrue(Path(stubs[first]["raw_file"]).is_absolute())
