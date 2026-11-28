@@ -89,6 +89,23 @@ class BoundedCache(MutableMapping):
             return True
 
 
+# Discovery seeds the same path hints later used by the metrics readers.
+PI_SESSION_PATHS = BoundedCache(512)
+DROID_SETTINGS_PATHS = BoundedCache(512)
+GROK_SESSION_DIRS = BoundedCache(512)
+
+
+def dependency_signature(paths):
+    result = []
+    for path in sorted(set(map(str, paths))):
+        try:
+            st = Path(path).stat()
+            result.append((path, st.st_mtime_ns, st.st_size))
+        except OSError:
+            result.append((path, 0, 0))
+    return tuple(result)
+
+
 def serialized(key_fn):
     def decorate(fn):
         locks = [threading.RLock() for _ in range(64)]

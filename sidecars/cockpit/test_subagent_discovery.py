@@ -10,8 +10,14 @@ from unittest.mock import patch
 
 from cockpit_io import BoundedCache
 import droid_acp_fallback
+import metric_agy
+import metric_session
 import pricing
+import subagent_commands
+import subagent_discovery
+import subagent_session_index
 import subagents
+from subagent_payload import _parse_step132_payload
 from test_orchestrator_recognition import _build_db, _encode_gen_metadata, _field_bytes, _field_varint
 
 
@@ -25,13 +31,22 @@ class SubagentDiscoveryTests(unittest.TestCase):
         self.app_dirs = [("App", self.app_dir)]
         stack.enter_context(patch.dict(os.environ, {"HOME": str(self.root)}))
         stack.enter_context(patch.multiple(
-            subagents, HOME=self.root, APP_DIRS=self.app_dirs, SUBAGENT_APP_DIRS=self.app_dirs,
-            CODEX_SESSIONS_DIR=self.root / "codex", PI_SESSIONS_DIR=self.root / "pi",
-            FACTORY_SESSIONS_DIR=self.root / "factory", GROK_SESSIONS_DIR=self.root / "grok",
-            _SUBAGENT_STUBS_CACHE=BoundedCache(16), _COMPLETED_STEP_STUBS=BoundedCache(16),
-            _STEP_DEPENDENCIES=BoundedCache(16), _BUILTIN_SUBAGENT_MODEL_ENUM=BoundedCache(16),
-            _ANALYSIS_CACHE=BoundedCache(16),
+            subagents, SUBAGENT_APP_DIRS=self.app_dirs,
+            _BUILTIN_SUBAGENT_MODEL_ENUM=BoundedCache(16), _ANALYSIS_CACHE=BoundedCache(16),
         ))
+        stack.enter_context(patch.multiple(
+            subagent_discovery, APP_DIRS=self.app_dirs, _SUBAGENT_STUBS_CACHE=BoundedCache(16),
+            _COMPLETED_STEP_STUBS=BoundedCache(16), _STEP_DEPENDENCIES=BoundedCache(16),
+        ))
+        stack.enter_context(patch.object(subagent_commands, "HOME", self.root))
+        stack.enter_context(patch.multiple(
+            metric_agy, SUBAGENT_APP_DIRS=self.app_dirs,
+            _BUILTIN_SUBAGENT_MODEL_ENUM=subagents._BUILTIN_SUBAGENT_MODEL_ENUM,
+        ))
+        roots = dict(PI_SESSIONS_DIR=self.root / "pi", FACTORY_SESSIONS_DIR=self.root / "factory",
+                     GROK_SESSIONS_DIR=self.root / "grok")
+        stack.enter_context(patch.multiple(subagent_session_index, **roots))
+        stack.enter_context(patch.multiple(metric_session, CODEX_SESSIONS_DIR=self.root / "codex", **roots))
         stack.enter_context(patch.object(pricing, "_OBSERVED_MODEL_CTX_LIMITS", {}))
 
     def test_discovery_hints_resolves_new_handoff_session_ids_for_all_engines(self):
@@ -88,7 +103,7 @@ class SubagentDiscoveryTests(unittest.TestCase):
         _build_db(db_path, [], [(1, 132, 3, b"", p1), (2, 132, 2, b"", p2)])
 
         # Case 1: Handoff with init written -> keeps old_sid (done) AND adds new_sid (running)
-        stubs = {s["id"]: s for s in subagents.discover_subagent_stubs(parent_cid)}
+        stubs = {s["id"]: s for s in subagent_discovery.discover_subagent_stubs(parent_cid)}
         self.assertIn(old_sid, stubs)
         self.assertIn(new_sid, stubs)
         self.assertTrue(stubs[old_sid]["has_done_marker"])
@@ -100,16 +115,41 @@ class SubagentDiscoveryTests(unittest.TestCase):
             json.dumps({"event": "session_handoff", "from_session_id": old_sid}) + "\n",
             encoding="utf-8",
         )
-        stubs_pending = {s["id"]: s for s in subagents.discover_subagent_stubs(parent_cid)}
+        stubs_pending = {s["id"]: s for s in subagent_discovery.discover_subagent_stubs(parent_cid)}
         self.assertIn(old_sid, stubs_pending)
         self.assertIn("pending-2", stubs_pending)
         self.assertTrue(stubs_pending[old_sid]["has_done_marker"])
 
         # Case 3: Normal in-place resume (no session_handoff, no init yet) -> binds to old_sid
         rf2.write_text("", encoding="utf-8")
-        stubs_resume = {s["id"]: s for s in subagents.discover_subagent_stubs(parent_cid)}
+        stubs_resume = {s["id"]: s for s in subagent_discovery.discover_subagent_stubs(parent_cid)}
         self.assertEqual(list(stubs_resume.keys()), [old_sid])
         self.assertEqual(stubs_resume[old_sid]["step_status"], 2)
+
+    def test_pi_timestamp_matches_nearest_unused_session_in_cwd(self):
+        root = self.root / "pi"
+        cwd = self.root / "project"
+        slug = "--" + str(cwd).strip("/").replace("/", "-") + "--"
+        parent = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        nearest = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        second = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        for directory, seconds, sid in (
+            (slug, "11", nearest), (slug, "20", second), ("another-project", "10", parent),
+        ):
+            target = root / directory / f"2026-01-01T00-00-{seconds}-000Z_{sid}.jsonl"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.touch()
+
+        started = 1767225610  # 2026-01-01T00:00:10Z
+        payload = _field_bytes(1, b"run_command") + _field_bytes(
+            2, json.dumps({"CommandLine": "pi -p hi", "Cwd": str(cwd)}).encode(),
+        )
+        _build_db(
+            self.app_dir / "conversations" / f"{parent}.db", [],
+            [(idx, 132, 2, _field_bytes(1, _field_varint(1, started)), payload) for idx in (1, 2)],
+        )
+        stubs = subagent_discovery.discover_subagent_stubs(parent)
+        self.assertEqual([(stub["step_idx"], stub["id"]) for stub in stubs], [(1, nearest), (2, second)])
 
     def test_subagents_sorted_by_last_prompt_time_and_send_message_bumps_order(self):
         parent_cid = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
@@ -182,7 +222,7 @@ class SubagentDiscoveryTests(unittest.TestCase):
         f5 = _field_bytes(4, _field_bytes(1, b"call_1") + _field_bytes(2, b"run_command"))
         payload = _field_varint(1, 132) + _field_varint(4, 5) + _field_bytes(5, f5) + _field_bytes(140, f140)
 
-        tname, args, inline_txt = subagents._parse_step132_payload(payload)
+        tname, args, inline_txt = _parse_step132_payload(payload)
         self.assertEqual(tname, "run_command")
         self.assertEqual(args.get("CommandLine"), cmd)
         self.assertEqual(args.get("Cwd"), str(proj_dir))

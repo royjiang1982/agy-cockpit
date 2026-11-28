@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
+import subagent_commands
+import subagent_discovery
 import subagents
 from subagent_labels import clamp_task_label, dispatch_paths, extract_cli_task_label, format_native_label
 from test_orchestrator_recognition import _build_db, _field_bytes
@@ -79,18 +81,18 @@ class SubagentLabelTests(unittest.TestCase):
             ("sa-run.sh 20 2 tmp/run/foo.jsonl -- sa-codex", "tmp/run/foo.jsonl"),
         ):
             with self.subTest(command=command):
-                match = subagents.RE_SA_RUN.search(command)
+                match = subagent_commands.RE_SA_RUN.search(command)
                 self.assertIsNotNone(match)
                 self.assertEqual(dispatch_paths(match, Path("/home/example")), (path, "sa-codex"))
 
     def test_quoted_wrapper_resumes(self):
         sid = str(uuid4())
         for engine, option, pattern in (
-            ("agy", "--conversation", subagents.RE_AGY_RESUME),
-            ("codex", "resume", subagents.RE_CODEX_RESUME),
-            ("droid", "-s", subagents.RE_DROID_RESUME),
-            ("grok", "--resume", subagents.RE_GROK_RESUME),
-            ("pi", "--session", subagents.RE_PI_RESUME),
+            ("agy", "--conversation", subagent_commands.RE_AGY_RESUME),
+            ("codex", "resume", subagent_commands.RE_CODEX_RESUME),
+            ("droid", "-s", subagent_commands.RE_DROID_RESUME),
+            ("grok", "--resume", subagent_commands.RE_GROK_RESUME),
+            ("pi", "--session", subagent_commands.RE_PI_RESUME),
         ):
             for quote in ("\"", "'", ""):
                 with self.subTest(engine=engine, quote=quote):
@@ -119,13 +121,12 @@ class SubagentLabelTests(unittest.TestCase):
                         (3, 132, 2, b"", _tool_payload("invoke_subagent", TypeName="research", Task="## 目标\n排查缓存统计偏差。")),
                     ]
                     _build_db(app / "conversations" / f"{parent}.db", [], rows)
-                    with patch.multiple(
-                        subagents,
-                        APP_DIRS=[("App", app)],
-                        SUBAGENT_APP_DIRS=[("App", app)],
-                        HOME=root,
-                    ), patch.object(subagents, "analyze_codex_thread", return_value=None):
-                        stubs = {stub["id"]: stub for stub in subagents.discover_subagent_stubs(parent)}
+                    with (
+                        patch.object(subagent_discovery, "APP_DIRS", [("App", app)]),
+                        patch.object(subagent_commands, "HOME", root),
+                        patch.object(subagents, "analyze_codex_thread", return_value=None),
+                    ):
+                        stubs = {stub["id"]: stub for stub in subagent_discovery.discover_subagent_stubs(parent)}
                         _, items = subagents.collect_subagents(parent)
                     self.assertEqual(stubs[first]["raw_file"], str(log))
                     self.assertTrue(Path(stubs[first]["raw_file"]).is_absolute())

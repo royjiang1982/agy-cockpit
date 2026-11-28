@@ -245,6 +245,39 @@ class CompactionScanTests(ScanFixture):
         self.assertEqual(aggregate(self.files), aggregate(raw))
         self.assertNotIn("db:cid", json.loads(self.cache.read_text()).get("compacted_db_digests", {}))
 
+    def test_cli_scans_reuse_unchanged_rows_and_honor_grok_companion_mtimes(self):
+        codex, pi, grok = (self.root / engine for engine in ("codex", "pi", "grok"))
+        for attr, path in (("CODEX", codex), ("PI", pi), ("GROK", grok)):
+            self.patch(f"{attr}_SESSIONS_DIR", path)
+        codex_file = self.touch(codex / "nested" / "rollout.jsonl", NOW - 5)
+        pi_file = self.touch(pi / "nested" / "session.jsonl", NOW - 4)
+        grok_dir = grok / "cwd" / "session"
+        self.touch(grok_dir / "updates.jsonl", NOW - 6)
+        self.touch(grok_dir / "summary.json", NOW - 3)
+        initial = dict(cost_events=[event(NOW - 60, cost=2)])
+        revised = dict(cost_events=[event(NOW - 60, cost=3)])
+        with (
+            patch.object(server, "analyze_codex_thread", return_value=initial) as scan_codex,
+            patch.object(server, "analyze_pi_session", return_value=initial) as scan_pi,
+            patch.object(server, "analyze_grok_session", return_value=initial) as scan_grok,
+        ):
+            server._refresh_window_costs(force=True)
+            self.assertEqual({key: entry[0] for key, entry in self.files.items()}, {
+                f"codex:{codex_file}": NOW - 5, f"pi:{pi_file}": NOW - 4, f"grok:{grok_dir}": NOW - 3,
+            })
+            self.assertEqual(server._WINDOW_COSTS["grok-weekly"], 2)
+            server._refresh_window_costs(force=True)
+            scan_grok.assert_called_once_with(grok_dir)
+            self.touch(grok_dir / "usage.json", NOW - 1)
+            scan_grok.return_value = revised
+            server._refresh_window_costs(force=True)
+
+        scan_codex.assert_called_once_with(codex_file)
+        scan_pi.assert_called_once_with(pi_file)
+        self.assertEqual([call.args for call in scan_grok.call_args_list], [(grok_dir,), (grok_dir,)])
+        self.assertEqual(self.files[f"grok:{grok_dir}"][0], NOW - 1)
+        self.assertEqual(server._WINDOW_COSTS["grok-weekly"], 3)
+
     def test_droid_probes_zero_marks_empty_cache_hits_and_deleted_history(self):
         normal = self.touch(self.factory / "normal" / "x.settings.json", NOW - 1)
         probes = [self.touch(self.factory / slug / "x.settings.json", NOW - 1)

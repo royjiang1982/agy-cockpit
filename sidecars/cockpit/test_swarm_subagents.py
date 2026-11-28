@@ -8,10 +8,12 @@ import unittest
 from unittest.mock import patch
 
 import analyzer
+import metric_agy
 from cost_runtime import CostRows, CostRuntime
 from models_board import build_models_board
 from cockpit_io import BoundedCache, get_db_mtime
 import server
+import subagent_discovery
 import subagents
 import swarm_subagents as swarm
 from test_orchestrator_recognition import _build_db, _encode_gen_metadata, _field_bytes, _field_varint
@@ -45,10 +47,11 @@ class SwarmSubagentsTests(unittest.TestCase):
             (server, {"APP_DIRS": self.app_dirs, "_CONVERSATION_INDEX_CACHE": None,
                       "_CURRENT_ACTIVE_ID": "", "_PREV_VTIMES": {}, "_PREV_PBTXT_MTIMES_NS": {},
                       "_PREV_MAX_VTIME": 0.0}),
-            (subagents, {"APP_DIRS": self.app_dirs, "SUBAGENT_APP_DIRS": self.app_dirs,
-                         "_SUBAGENT_STUBS_CACHE": BoundedCache(16),
-                         "_COMPLETED_STEP_STUBS": BoundedCache(16),
-                         "_STEP_DEPENDENCIES": BoundedCache(16)}),
+            (subagents, {"SUBAGENT_APP_DIRS": self.app_dirs}),
+            (metric_agy, {"SUBAGENT_APP_DIRS": self.app_dirs}),
+            (subagent_discovery, {"APP_DIRS": self.app_dirs, "_SUBAGENT_STUBS_CACHE": BoundedCache(16),
+                                  "_COMPLETED_STEP_STUBS": BoundedCache(16),
+                                  "_STEP_DEPENDENCIES": BoundedCache(16)}),
             (analyzer, {"_ANALYSIS_CACHE": BoundedCache(16),
                         "_BUILTIN_SUBAGENT_MODEL_ENUM": {}}),
             (swarm, {"_SCAN_CACHE": None}),
@@ -114,15 +117,15 @@ class SwarmSubagentsTests(unittest.TestCase):
         self.create_db(PARENT)
         self.write_members(alice={"conversation_id": WORKER})
         first = swarm.swarm_dir_signature(PARENT, self.app_dirs)
-        self.assertEqual(subagents.discover_subagent_stubs(PARENT)[0]["prompt_ts"], NOW)
+        self.assertEqual(subagent_discovery.discover_subagent_stubs(PARENT)[0]["prompt_ts"], NOW)
         stamp = datetime.fromtimestamp(NOW + 1).strftime("%Y-%m-%d %H:%M:%S")
         self.append("coordinator", "ping @alice", stamp)
         self.assertNotEqual(first, swarm.swarm_dir_signature(PARENT, self.app_dirs))
-        self.assertEqual(subagents.discover_subagent_stubs(PARENT)[0]["prompt_ts"], NOW + 1)
+        self.assertEqual(subagent_discovery.discover_subagent_stubs(PARENT)[0]["prompt_ts"], NOW + 1)
         self.write_members(alice={"conversation_id": WORKER, "killed": True})
-        self.assertTrue(subagents.discover_subagent_stubs(PARENT)[0]["killed"])
+        self.assertTrue(subagent_discovery.discover_subagent_stubs(PARENT)[0]["killed"])
         self.roster.unlink()
-        self.assertEqual(subagents.discover_subagent_stubs(PARENT), [])
+        self.assertEqual(subagent_discovery.discover_subagent_stubs(PARENT), [])
 
     def test_worker_scan_cache_and_pinned_index(self):
         self.create_db(PARENT)
@@ -150,7 +153,7 @@ class SwarmSubagentsTests(unittest.TestCase):
         self.write_invoke_output(1)
         self.write_members(alice={"conversation_id": WORKER, "role": "reviewer", "killed": True})
         self.append("boss", "@alice please review", NOW + 1)
-        existing, = subagents.discover_subagent_stubs(PARENT)
+        existing, = subagent_discovery.discover_subagent_stubs(PARENT)
         self.assertEqual((existing["id"], existing["agent"], existing["label"]), (WORKER, "builtin", "original"))
         self.assertTrue(existing["is_swarm"])
         self.assertTrue(existing["killed"])

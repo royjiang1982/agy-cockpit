@@ -145,7 +145,10 @@ class ArchitectureContracts(unittest.TestCase):
     def test_hot_reload_watches_only_existing_production_files(self):
         watched = set(server.WATCHED_PY_FILES)
         production = _production_python()
-        self.assertEqual(sorted((production | SHARED_WATCHED) - watched), [], "Missing hot-reload files")
+        expected = production | SHARED_WATCHED
+        self.assertEqual(sorted(expected - watched), [], "Missing hot-reload files")
+        self.assertEqual(sorted(watched - expected), [], "Unexpected hot-reload files")
+        self.assertEqual(len(server.WATCHED_PY_FILES), len(watched), "Duplicate hot-reload paths")
         self.assertEqual(sorted(path for path in watched if not path.is_file()), [], "Invalid hot-reload paths")
         self.assertEqual(sorted(path for path in watched if _test_python(path)), [], "Tests in hot reload")
 

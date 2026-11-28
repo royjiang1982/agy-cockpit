@@ -68,7 +68,9 @@ from swarm_subagents import list_swarm_worker_ids
 from calendar_models import calendar_item, calendar_summary as _calendar_summary
 from cost_archive import CompactedRows, NormalizedCostRows
 from cost_compaction import should_rescan_transcript
-from cost_updates import commit_scan_updates, prepare_scan_updates, scan_droid_file, update_db
+from cost_context import CostContext
+from cost_scan import CostScanSource, scan_cli_session_costs
+from cost_updates import commit_scan_updates, prepare_scan_updates, update_db
 from droid_ledger import DroidLedger
 from cost_runtime import CostRuntime
 from cost_windows import attach_quota_costs, quota_status_fields
@@ -81,13 +83,13 @@ WATCHED_PY_FILES = [
     SIDECAR_DIR / "pricing.py",
     SIDECAR_DIR / "analyzer.py",
     SIDECAR_DIR / "subagents.py",
-    SIDECAR_DIR / "subagent_labels.py",
+    *(SIDECAR_DIR / f"{name}.py" for name in ("subagent_labels", "subagent_discovery", "subagent_commands", "subagent_payload", "subagent_session_index")),
     SIDECAR_DIR / "rpc_quota.py",
     SIDECAR_DIR / "agy_quota.py",
     *(SIDECAR_DIR / f"{name}.py" for name in ("dispatch_models", "dispatch_policy", "dispatch_api", "swarm_subagents")),
     SIDECAR_DIR.parents[1] / "skills/cockpit-dispatch/scripts/resolve.py",
     SIDECAR_DIR.parents[1] / "runtime/agent_runtime/policy_contract.py",
-    SIDECAR_DIR / "droid_ledger.py",
+    *(SIDECAR_DIR / f"{name}.py" for name in ("droid_ledger", "cost_context", "cost_scan", "metric_agy", "metric_session", "metric_cache")),
     *(SIDECAR_DIR / f"{name}.py" for name in ("agy_cost_events", "cost_windows", "quota_sources", "grok_costs", "grok_timing", "cost_runtime", "annotation_index",
         "cost_migration", "cost_compaction", "cost_archive", "cost_updates", "calendar_models", "metric_rates", "metric_items", "metric_logs", "metric_pi", "metric_droid", "metric_codex", "metric_grok", "droid_acp_fallback")),
 ]
@@ -142,6 +144,7 @@ _STOP_EVENT = threading.Event()
 _LOG = logging.getLogger(__name__)
 _COST_GENERATION = 0
 _COST_RUNTIME = CostRuntime()
+_COST_CONTEXT = CostContext(globals())
 _CONVERSATION_INDEX_CACHE: tuple[float, list[dict]] | None = None
 _INDEX_LOCK = threading.RLock()
 _SERVER_INSTANCE: ThreadingHTTPServer | None = None
@@ -491,15 +494,15 @@ def _get_live_calendar(now: float | None = None) -> dict:
 
 
 def _load_cost_events_cache() -> None:
-    _COST_RUNTIME.load(sys.modules[__name__])
+    _COST_RUNTIME.load(_COST_CONTEXT)
 
 
 def _save_cost_events_cache() -> None:
-    _COST_RUNTIME.save(sys.modules[__name__])
+    _COST_RUNTIME.save(_COST_CONTEXT)
 
 
 def _recompute_window_costs_from_memory() -> None:
-    _COST_RUNTIME.recompute(sys.modules[__name__])
+    _COST_RUNTIME.recompute(_COST_CONTEXT)
 
 
 def _update_conv_cost_events(
@@ -508,7 +511,7 @@ def _update_conv_cost_events(
     cost_events: list[tuple],
 ) -> None:
     events = NormalizedCostRows(_normalize_cost_event(item) for item in cost_events)
-    update_db(sys.modules[__name__], conv_id, mtime, events)
+    update_db(_COST_CONTEXT, conv_id, mtime, events)
 
 
 def _refresh_window_costs(force: bool = False) -> None:
@@ -523,7 +526,7 @@ def _refresh_window_costs(force: bool = False) -> None:
         and _APPLIED_PRICING_EPOCH == PRICING_EPOCH
         and (now - _LAST_COST_SCAN_TS) < 15.0
     ):
-        _COST_RUNTIME.tick(sys.modules[__name__])
+        _COST_RUNTIME.tick(_COST_CONTEXT)
         return
     _LAST_COST_SCAN_TS = now
 
@@ -631,87 +634,19 @@ def _refresh_window_costs(force: bool = False) -> None:
         except Exception:
             pass
 
-    if CODEX_SESSIONS_DIR.exists():
-        try:
-            for p in cached_paths(CODEX_SESSIONS_DIR, "*.jsonl", recursive=True):
-                try:
-                    mt = p.stat().st_mtime
-                    if mt < calendar_cutoff:
-                        continue
-                    key = f"codex:{p}"
-                    cached = reusable.get(key)
-                    if cached and abs(cached[0] - mt) < 0.001 and not needs_reprice(cached, mt, reprice_since):
-                        continue
-                    m_res = analyze_codex_thread(p)
-                    if m_res is None:
-                        continue
-                    updates[key] = (mt, list(m_res.get("cost_events") or []))
-                except Exception:
-                    continue
-        except Exception:
-            pass
+    sources = (
+        CostScanSource("codex", CODEX_SESSIONS_DIR, "*.jsonl", True, analyze_codex_thread),
+        CostScanSource("pi", PI_SESSIONS_DIR, "*.jsonl", True, analyze_pi_session),
+        CostScanSource("droid", FACTORY_SESSIONS_DIR, "*.settings.json", True),
+        CostScanSource("grok", GROK_SESSIONS_DIR, "*/*/updates.jsonl", False, analyze_grok_session,
+                       ("summary.json", "usage.json")),
+    )
+    scan_cli_session_costs(_COST_CONTEXT, sources, updates, reusable, events_snap,
+                           calendar_cutoff, reprice_since, cached_paths)
 
-    if PI_SESSIONS_DIR.exists():
-        try:
-            for p in cached_paths(PI_SESSIONS_DIR, "*.jsonl", recursive=True):
-                try:
-                    mt = p.stat().st_mtime
-                    if mt < calendar_cutoff:
-                        continue
-                    key = f"pi:{p}"
-                    cached = reusable.get(key)
-                    if cached and abs(cached[0] - mt) < 0.001 and not needs_reprice(cached, mt, reprice_since):
-                        continue
-                    m_res = analyze_pi_session(p)
-                    if m_res is None:
-                        continue
-                    updates[key] = (mt, list(m_res.get("cost_events") or []))
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    if FACTORY_SESSIONS_DIR.exists():
-        try:
-            for p in cached_paths(FACTORY_SESSIONS_DIR, "*.settings.json", recursive=True):
-                try:
-                    if scanned := scan_droid_file(sys.modules[__name__], p, reusable, events_snap, calendar_cutoff):
-                        updates[scanned[0]] = scanned[1]
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    if GROK_SESSIONS_DIR.exists():
-        try:
-            for p in cached_paths(GROK_SESSIONS_DIR, "*/*/updates.jsonl"):
-                try:
-                    sdir = p.parent
-                    mt = p.stat().st_mtime
-                    sum_p = sdir / "summary.json"
-                    if sum_p.exists():
-                        mt = max(mt, sum_p.stat().st_mtime)
-                    usage_p = sdir / "usage.json"
-                    if usage_p.exists():
-                        mt = max(mt, usage_p.stat().st_mtime)
-                    if mt < calendar_cutoff:
-                        continue
-                    key = f"grok:{sdir}"
-                    cached = reusable.get(key)
-                    if cached and abs(cached[0] - mt) < 0.001 and not needs_reprice(cached, mt, reprice_since):
-                        continue
-                    m_res = analyze_grok_session(sdir)
-                    if m_res is None:
-                        continue
-                    updates[key] = (mt, list(m_res.get("cost_events") or []))
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    prepared = prepare_scan_updates(sys.modules[__name__], updates, events_snap)
+    prepared = prepare_scan_updates(_COST_CONTEXT, updates, events_snap)
     with _COST_LOCK:
-        dirty, committed = commit_scan_updates(sys.modules[__name__], prepared)
+        dirty, committed = commit_scan_updates(_COST_CONTEXT, prepared)
         for cid, new_enum in applied_updates.items():
             if f"db:{cid}" not in committed:
                 continue
@@ -727,8 +662,8 @@ def _refresh_window_costs(force: bool = False) -> None:
             _COST_GENERATION += 1
         if pricing_changed:
             _APPLIED_PRICING_EPOCH = PRICING_EPOCH
-    _COST_RUNTIME.compact(sys.modules[__name__], now)
-    _COST_RUNTIME.tick(sys.modules[__name__], force=force)
+    _COST_RUNTIME.compact(_COST_CONTEXT, now)
+    _COST_RUNTIME.tick(_COST_CONTEXT, force=force)
 
 
 def _touch_ui_activity() -> None:
@@ -773,7 +708,7 @@ def _refresh_quota(
         )
         agy_ok = bool(agy_meta.get("ok", True)) or agy_meta.get("reason") == "not_installed"
         if parsed:
-            _COST_RUNTIME.refresh_quota(sys.modules[__name__], parsed, mark_fresh=agy_ok and has_bucket_data)
+            _COST_RUNTIME.refresh_quota(_COST_CONTEXT, parsed, mark_fresh=agy_ok and has_bucket_data)
             with _STATE_LOCK:
                 _save_persisted_state()
         return {**agy_meta, "refreshed": True}

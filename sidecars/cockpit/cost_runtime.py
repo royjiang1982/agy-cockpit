@@ -13,6 +13,7 @@ from cockpit_io import atomic_text_writer
 from cost_archive import (ARCHIVE_MAPS, NormalizedCostRows, cost_ticks, load_cached_files,
                           persisted_compaction, timezone_key as _timezone_key)
 from cost_compaction import plan_compaction, safe_cutoffs, source_exists
+from cost_context import CostContext
 from cost_migration import legacy_droid_keys, pending_keys
 from cost_schema import valid_event_time
 from cost_windows import EVENT_TIMING_REV, WindowCosts, cached_event_mtime, merge_quota_cache
@@ -92,7 +93,7 @@ def _write_snapshot(stream, header, files, normalize):
 
 
 class CostRuntime:
-    """Coordinate off-request cost work; ``state`` is the sidecar server module."""
+    """Coordinate off-request cost work with the explicit cost host."""
 
     def __init__(self):
         self._rows = CostRows()
@@ -108,41 +109,41 @@ class CostRuntime:
         self._last_save_attempt = float('-inf')
         self._last_compaction = float('-inf')
 
-    def load(self, state):
+    def load(self, state: CostContext):
         with self._load_lock:
-            if state._COST_CACHE_LOADED:
+            if state.cache_loaded:
                 return
-            raw, files, damage, epoch, repairs = {}, {}, set(), state.PRICING_EPOCH, False
+            raw, files, damage, epoch, repairs = {}, {}, set(), state.pricing_epoch, False
             try:
-                raw = json.loads(state._COST_CACHE_FILE.read_text(encoding="utf-8"))
-                if not isinstance(raw, dict) or raw.get("schema_version") not in (15, 16, 17, state._COST_CACHE_SCHEMA):
+                raw = json.loads(state.cache_path.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict) or raw.get("schema_version") not in (15, 16, 17, state.cache_schema):
                     raise ValueError("unsupported cost cache schema")
-                files, damage, repairs = load_cached_files(raw, state._normalize_cost_event, cached_event_mtime, state._LOG)
+                files, damage, repairs = load_cached_files(raw, state.normalize, cached_event_mtime, state.logger)
                 epoch = raw["pricing_epoch"] if type(raw.get("pricing_epoch")) is int else 0
             except FileNotFoundError:
                 pass
             except (ValueError, OSError, RecursionError) as exc:
-                state._LOG.error("cost cache: %s; original snapshot will not be overwritten", exc)
+                state.logger.error("cost cache: %s; original snapshot will not be overwritten", exc)
                 raw = {}
                 damage.add(None)
             raw = raw if isinstance(raw, dict) else {}
-            with state._COST_LOCK:
-                state._COST_FILE_EVENTS.update(files)
-                state._PENDING_REBUILD.update(pending_keys(raw, state._COST_CACHE_SCHEMA))
-                state._PENDING_REBUILD.update(key for key in damage if key is not None)
-                state._APPLIED_PRICING_EPOCH = epoch
-                state._DROID_LEDGER.load(raw.get("droid_watermarks"), legacy_droid_keys(raw))
+            with state.cost_lock:
+                state.files.update(files)
+                state.pending_rebuild.update(pending_keys(raw, state.cache_schema))
+                state.pending_rebuild.update(key for key in damage if key is not None)
+                state.applied_pricing_epoch = epoch
+                state.droid_ledger.load(raw.get("droid_watermarks"), legacy_droid_keys(raw))
                 models = raw.get("builtin_models")
                 if isinstance(models, dict):
-                    with state._BUILTIN_ENUM_LOCK:
-                        state._BUILTIN_SUBAGENT_MODEL_ENUM.update((k, v) for k, v in models.items() if type(v) is int)
+                    with state.builtin_enum_lock:
+                        state.builtin_models.update((k, v) for k, v in models.items() if type(v) is int)
                 applied = raw.get("db_applied_builtin")
                 if isinstance(applied, dict):
-                    state._DB_APPLIED_BUILTIN_ENUM.update((k, v) for k, v in applied.items() if type(v) is int)
+                    state.db_applied_builtin.update((k, v) for k, v in applied.items() if type(v) is int)
                 self.damaged = damage
-                state._COST_GENERATION += bool(repairs or raw.get("schema_version", state._COST_CACHE_SCHEMA)
-                                               < state._COST_CACHE_SCHEMA)
-                state._COST_CACHE_LOADED = True
+                state.generation += bool(repairs or raw.get("schema_version", state.cache_schema)
+                                               < state.cache_schema)
+                state.cache_loaded = True
 
     def known_empty_probe(self, key, stamp):
         return self._empty_probes.get(key) == stamp
@@ -160,120 +161,120 @@ class CostRuntime:
             self._empty_probes.popitem(last=False)
         return True
 
-    def recompute(self, state, *, force=True):
+    def recompute(self, state: CostContext, *, force=True):
         # Only cost producers (worker, startup, manual quota refresh) take this
         # lock. State and cost locks are never held together.
         with self._recompute_lock:
-            with state._STATE_LOCK:
-                quota = state._QUOTA_CACHE  # The server replaces this dict on refresh.
+            with state.state_lock:
+                quota = state.quota  # The server replaces this dict on refresh.
             costs = self._recompute_costs(state, quota, force=force)
             if costs is not None:
-                with state._STATE_LOCK:
-                    state._WINDOW_COSTS, state._WINDOW_ESTIMATES = costs
+                with state.state_lock:
+                    state.window_costs, state.window_estimates = costs
                 self._last_recompute = time.monotonic()
 
-    def refresh_quota(self, state, parsed: dict[str, dict], *, mark_fresh: bool):
+    def refresh_quota(self, state: CostContext, parsed: dict[str, dict], *, mark_fresh: bool):
         with self._recompute_lock:
-            with state._STATE_LOCK:
-                quota = merge_quota_cache(state._QUOTA_CACHE, parsed)
-            costs = self._recompute_costs(state, quota, force=True) if state._COST_CACHE_LOADED else None
+            with state.state_lock:
+                quota = merge_quota_cache(state.quota, parsed)
+            costs = self._recompute_costs(state, quota, force=True) if state.cache_loaded else None
             # Keep serving the previous pair until the new one is ready.
-            with state._STATE_LOCK:
-                state._QUOTA_CACHE = quota
+            with state.state_lock:
+                state.quota = quota
                 if costs is not None:
-                    state._WINDOW_COSTS, state._WINDOW_ESTIMATES = costs
+                    state.window_costs, state.window_estimates = costs
                 if mark_fresh:
-                    state._LAST_QUOTA_FETCH_TS = time.time()
+                    state.last_quota_fetch = time.time()
             if costs is not None:
                 self._last_recompute = time.monotonic()
 
-    def _recompute_costs(self, state, quota, *, force):
+    def _recompute_costs(self, state: CostContext, quota, *, force):
         # Called by the serialized publishers; the source rows can still change.
-        with state._COST_LOCK:
-            generation = state._COST_GENERATION
+        with state.cost_lock:
+            generation = state.generation
             age = time.monotonic() - self._last_recompute
             dirty = self._display_generation != generation or self._display_quota is not quota
             if not force and age < 15.0 and (not dirty or age < 0.75):
                 return None
             # Lists are replaced, not mutated, by the ingestion paths.
-            files = [(key, rows) for key, (_, rows) in state._COST_FILE_EVENTS.items()]
+            files = [(key, rows) for key, (_, rows) in state.files.items()]
         now = time.time()
-        daily, totals, estimates = self._rows.aggregate(files, quota, now, state._normalize_cost_event)
-        calendar = state._build_calendar(daily, now)
-        with state._COST_LOCK:
-            state._CALENDAR_DAYS, state._CALENDAR_CACHE = daily, calendar
+        daily, totals, estimates = self._rows.aggregate(files, quota, now, state.normalize)
+        calendar = state.build_calendar(daily, now)
+        with state.cost_lock:
+            state.calendar_days, state.calendar = daily, calendar
             # Record the snapshot's generation, not the source's current one, so
             # the next eligible tick picks up rows written during aggregation.
             self._display_generation, self._display_quota = generation, quota
         return totals, estimates
 
-    def compact(self, state, now):
+    def compact(self, state: CostContext, now):
         # The scan runs on the worker, not the status path. Compute outside the
         # locks and discard the plan if analysis publishes newer source rows.
         clock = time.monotonic()
         if clock - self._last_compaction < 300:
             return
         self._last_compaction = clock
-        with state._STATE_LOCK:
-            quota = state._QUOTA_CACHE
-        with state._COST_LOCK:
-            generation = state._COST_GENERATION
-            files = dict(state._COST_FILE_EVENTS)
-            pending = set(state._PENDING_REBUILD)
+        with state.state_lock:
+            quota = state.quota
+        with state.cost_lock:
+            generation = state.generation
+            files = dict(state.files)
+            pending = set(state.pending_rebuild)
             damage = set(self.damaged)
-            protected_empty = {k for k, (_, rows) in files.items() if not rows and state._DROID_LEDGER.has_usage(k)}
-        changes = plan_compaction(files, pending, quota, now, state._normalize_cost_event,
-                                  lambda key: source_exists(key, state.SUBAGENT_APP_DIRS), protected_empty, damage)
-        with state._COST_LOCK:
-            if generation != state._COST_GENERATION:
+            protected_empty = {k for k, (_, rows) in files.items() if not rows and state.droid_ledger.has_usage(k)}
+        changes = plan_compaction(files, pending, quota, now, state.normalize,
+                                  lambda key: source_exists(key, state.app_dirs), protected_empty, damage)
+        with state.cost_lock:
+            if generation != state.generation:
                 self._last_compaction = float('-inf')
                 return
             for key, entry in changes.items():
                 if entry is None:
-                    state._COST_FILE_EVENTS.pop(key, None)
-                    state._PENDING_REBUILD.discard(key)
+                    state.files.pop(key, None)
+                    state.pending_rebuild.discard(key)
                 else:
-                    state._COST_FILE_EVENTS[key] = entry
-            dirty = state._DROID_LEDGER.prune(state._COST_FILE_EVENTS)
+                    state.files[key] = entry
+            dirty = state.droid_ledger.prune(state.files)
             if dirty or changes:
-                state._COST_GENERATION += 1
+                state.generation += 1
 
-    def tick(self, state, *, force=False):
+    def tick(self, state: CostContext, *, force=False):
         self.recompute(state, force=force)
-        with state._COST_LOCK:
-            save_due = (self._saved_generation != state._COST_GENERATION
+        with state.cost_lock:
+            save_due = (self._saved_generation != state.generation
                         and time.monotonic() - self._last_save_attempt >= 15.0)
         if save_due:
-            state._save_cost_events_cache()
+            state.save()
 
-    def save(self, state):
+    def save(self, state: CostContext):
         # Serializing saves prevents an older snapshot from replacing a newer
         # one on disk. Record only the generation actually written.
         with self._save_lock:
-            with state._COST_LOCK:
-                generation = state._COST_GENERATION
+            with state.cost_lock:
+                generation = state.generation
                 self._last_save_attempt = time.monotonic()
                 if self.damaged:
                     return
-                files = dict(state._COST_FILE_EVENTS)
-                pending = tuple(state._PENDING_REBUILD)
+                files = dict(state.files)
+                pending = tuple(state.pending_rebuild)
                 header = {
-                    'schema_version': state._COST_CACHE_SCHEMA,
+                    'schema_version': state.cache_schema,
                     'event_timing_rev': EVENT_TIMING_REV,
-                    'pricing_epoch': state.PRICING_EPOCH,
-                    'droid_watermarks': state._DROID_LEDGER.dump(files),
-                    'builtin_models': state.snapshot_builtin_model_enum(),
-                    'db_applied_builtin': dict(state._DB_APPLIED_BUILTIN_ENUM),
+                    'pricing_epoch': state.pricing_epoch,
+                    'droid_watermarks': state.droid_ledger.dump(files),
+                    'builtin_models': state.snapshot_builtin_models(),
+                    'db_applied_builtin': dict(state.db_applied_builtin),
                 }
             header['pending_rebuild'] = sorted(pending)
             header.update(persisted_compaction(files))
-            path = state._COST_CACHE_FILE
+            path = state.cache_path
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with atomic_text_writer(path) as stream:
-                    _write_snapshot(stream, header, files, state._normalize_cost_event)
+                    _write_snapshot(stream, header, files, state.normalize)
             except Exception:
-                state._LOG.exception('cannot persist cost event cache')
+                state.logger.exception('cannot persist cost event cache')
                 return
-            with state._COST_LOCK:
+            with state.cost_lock:
                 self._saved_generation = generation
