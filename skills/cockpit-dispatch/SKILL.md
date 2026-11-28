@@ -60,7 +60,7 @@ python3 ~/.gemini/config/plugins/agy-cockpit/skills/cockpit-dispatch/scripts/res
 ### 1. `channel == "cli"`（插件内置常驻引擎，已装对应官方 CLI 时首选）
 插件自包含常驻子代理运行时（`~/.gemini/config/plugins/agy-cockpit/runtime/bin/`），通过 `sa-subagentd`（Unix Socket `/tmp/dev-subagentd-$UID/daemon.sock`）复用常驻连接。不得用 `agy -p` 执行任务；该限制不含运行时内部的配额探测。
 
-**统一执行格式**：`sa-run.sh` 是前台包装器，只显示极简工具心跳和最终结论（正文不超过 8,000 字节时完整显示），每次截断覆盖同名 `.jsonl`；续接须换新日志文件名。后台与超时兜底由宿主工具负责（轻侦察 `120s` / 慢轨 `270s`），同回合先向用户简述分工，再切后台等待唤醒。
+**统一执行格式**：`sa-run.sh` 是前台包装器，只显示极简工具心跳和最终结论（正文不超过 8,000 字节时完整显示），每次截断覆盖同名 `.jsonl`；续接须换新日志文件名。后台与超时兜底由宿主工具负责（轻侦察 `120s` / 慢轨 `300s`），同回合先向用户简述分工，再切后台等待唤醒。
 
 `.jsonl` 日志文件名建议使用不超过 10 字的核心任务名，方便在 Cockpit 面板辨认。
 
