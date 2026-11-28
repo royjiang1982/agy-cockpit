@@ -10,9 +10,18 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
+
+_RUNTIME_DIR = str(Path(__file__).resolve().parents[2] / "runtime")
+if _RUNTIME_DIR not in sys.path:
+    sys.path.insert(0, _RUNTIME_DIR)
+from agent_runtime.policy_contract import (
+    AGY_CLAUDE_RE as _RE_AGY_CLAUDE, AGY_GEMINI_RE as _RE_AGY_GEMINI,
+    AGY_DEFAULT_EFFORT as _AGY_DEFAULT_EFFORT, agy_model_family,
+)
 
 _CODEX_CACHE = Path.home() / ".codex/models_cache.json"
 _DEFAULT_CODEX_CACHE = _CODEX_CACHE
@@ -32,16 +41,9 @@ _AGY_DEFAULTS = {
     "carbon": "gemini-4-carbon", "flash": "gemini-3.8-flash",
     "opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5-5",
 }
-_AGY_DEFAULT_EFFORT = {
-    "hydrogen": "high", "neon": "medium", "argon": "medium", "carbon": "medium",
-    "flash": "high", "opus": "high", "sonnet": "high",
-}
-
 _RE_CODEX = re.compile(r"^gpt-(\d+(?:\.\d+)*)-([a-z]+)$")
 _RE_GROK = re.compile(r"^grok-(\d+(?:\.\d+)*)$")
 _RE_GROK_FAST = re.compile(r"^grok-(\d+(?:\.\d+)*)-(?:build-)?fast$")
-_RE_AGY_GEMINI = re.compile(r"^gemini-(\d+(?:\.\d+)*)-(hydrogen|neon|argon|carbon|flash)(?:-(?:low|medium|high|xhigh|max|ultra))?$")
-_RE_AGY_CLAUDE = re.compile(r"^claude-(opus|sonnet)-(\d+(?:[.-]\d+)*)(?:-(?:low|medium|high|xhigh|max|ultra))?$")
 
 
 def _ver_tuple(text: str) -> tuple[int, ...]:
@@ -309,13 +311,7 @@ def family_of(engine: str, model: str) -> str | None:
             return "grok-fast"
         return "grok" if _RE_GROK.fullmatch(low) else None
     if engine == "agy":
-        if low in _AGY_DEFAULTS:
-            return low
-        mg = _RE_AGY_GEMINI.fullmatch(low)
-        if mg:
-            return mg.group(2)
-        mc = _RE_AGY_CLAUDE.fullmatch(low)
-        return mc.group(1) if mc else None
+        return agy_model_family(low)
     if engine == "droid":
         return family_of("codex", low) or family_of("agy", low) or family_of("grok", low)
     return None
@@ -358,6 +354,8 @@ def fallback_lookup_keys(engine: str, model: str, resolved_model: str, effort: s
         elif engine == "agy":
             eff = effort if effort and effort != "same" else _AGY_DEFAULT_EFFORT[fam]
             offline_id = f"{_AGY_DEFAULTS[fam]}-{eff}"
+        elif engine == "droid":
+            offline_id = _CODEX_DEFAULTS.get(fam) or _AGY_DEFAULTS.get(fam) or _GROK_DEFAULTS.get(fam)
     keys: list[str] = []
     for cand in (model, resolved_model, offline_id, fam):
         if cand:

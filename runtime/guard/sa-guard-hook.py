@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Single-process PreToolUse guard entrypoint for sa-guard.sh."""
-import importlib.util
-from functools import lru_cache
+from importlib import import_module
 import json
 import os
 from pathlib import Path
@@ -15,15 +14,14 @@ _CODEX_SPAWN_RE = re.compile(r'spawn_agent|subagent', re.IGNORECASE)
 _GROK_SPAWN_RE = re.compile(r'^(?:spawn_subagent|spawn_agent|Task|Agent)$|subagent', re.IGNORECASE)
 
 
-@lru_cache(maxsize=1)
+_SPAWN_RE = {'agy': _AGY_SPAWN_RE, 'codex': _CODEX_SPAWN_RE, 'grok': _GROK_SPAWN_RE}
+_DIR = str(Path(__file__).resolve().parent)
+if _DIR not in sys.path:
+    sys.path.insert(0, _DIR)
+
+
 def _load_literals():
-    lit_path = Path(__file__).with_name('sa-guard-literals.py')
-    spec = importlib.util.spec_from_file_location('sa_guard_literals', lit_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f'cannot load {lit_path}')
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return import_module('sa-guard-literals')
 
 
 def _extract_session_id(data):
@@ -95,31 +93,6 @@ def _allow(engine, subagent):
     return 0, stdout, ''
 
 
-def _extract_tool_and_cmd(engine, data):
-    if engine == 'agy':
-        tc = data.get('toolCall') if isinstance(data.get('toolCall'), dict) else {}
-        name = str(tc.get('name') or '')
-        args = tc.get('args') if isinstance(tc.get('args'), dict) else {}
-        cmd = str(args.get('CommandLine') or '')
-        workdir = str(args.get('Cwd') or data.get('cwd') or '').strip() or None
-        return name, cmd, bool(_AGY_SPAWN_RE.search(name)), workdir
-    if engine == 'codex':
-        name = str(data.get('tool_name') or '')
-        ti = data.get('tool_input') if isinstance(data.get('tool_input'), dict) else {}
-        workdir = str(ti.get('workdir') or ti.get('cwd') or data.get('cwd') or '').strip() or None
-        # Codex passes apply_patch diffs in tool_input.command; payload_restricted validates targets.
-        if name.strip().lower() == 'apply_patch':
-            return name, '', False, workdir
-        cmd = str(ti.get('command') or ti.get('cmd') or '')
-        return name, cmd, bool(_CODEX_SPAWN_RE.search(name)), workdir
-    name = str(data.get('toolName') or data.get('tool_name') or '')
-    ti1 = data.get('toolInput') if isinstance(data.get('toolInput'), dict) else {}
-    ti2 = data.get('tool_input') if isinstance(data.get('tool_input'), dict) else {}
-    cmd = str(ti1.get('command') or ti1.get('cmd') or ti2.get('command') or ti2.get('cmd') or '')
-    workdir = str(ti1.get('workdir') or ti1.get('cwd') or ti2.get('workdir') or ti2.get('cwd') or data.get('cwd') or '').strip() or None
-    return name, cmd, bool(_GROK_SPAWN_RE.search(name)), workdir
-
-
 def evaluate_guard(platform, payload, env_map=None) -> tuple[int, str, str]:
     """Return (exit code, stdout, stderr) for raw JSON or a decoded payload.
 
@@ -130,22 +103,23 @@ def evaluate_guard(platform, payload, env_map=None) -> tuple[int, str, str]:
     if engine not in ('agy', 'codex', 'grok'):
         return 0, '', ''
     env_map = os.environ if env_map is None else env_map
-    raw = payload if isinstance(payload, str) else json.dumps(payload)
     try:
-        data = json.loads(raw)
-    except (ValueError, TypeError):
+        data = json.loads(payload) if isinstance(payload, str) else payload
+    except (ValueError, TypeError, RecursionError):
         data = None
+
+    if not isinstance(data, dict):
+        if env_map.get('SA_SUBAGENT') == '1' or env_map.get('SA_GUARD_SUBAGENT_HINT') == '1':
+            return _deny(engine)
+        return _allow(engine, subagent=False)
 
     if not _is_subagent(data, env_map):
         return _allow(engine, subagent=False)
 
-    if not isinstance(data, dict):
-        return _deny(engine)
-
     try:
         guard_lib = _load_literals()
-        _, raw_cmd, spawn_blocked, workdir = _extract_tool_and_cmd(engine, data)
-        if spawn_blocked or guard_lib.payload_restricted(engine, raw, base_dir=workdir):
+        name, raw_args, raw_cmd, workdir = guard_lib.unpack_tool(engine, data)
+        if _SPAWN_RE[engine].search(name) or guard_lib.tool_paths_restricted(name, raw_args, base_dir=workdir):
             return _deny(engine)
         if raw_cmd.strip() and guard_lib.restricted(raw_cmd + '\n', base_dir=workdir):
             return _deny(engine)

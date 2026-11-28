@@ -219,7 +219,8 @@ def python_ast_restricted(
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
-                aliases[a.asname or a.name.split(".")[0]] = a.name
+                root = a.name.split(".", 1)[0]
+                aliases[a.asname or root] = a.name if a.asname else root
         elif isinstance(node, ast.ImportFrom) and node.module:
             for a in node.names:
                 aliases[a.asname or a.name] = f"{node.module}.{a.name}"

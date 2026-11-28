@@ -67,7 +67,7 @@
   const engKeyOf = x => (x.channel === 'invoke_subagent' ? 'native' : x.channel === 'swarm' ? 'swarm' : x.engine);
   const modelsFor = ek => CATALOG[ek] || [];
   const findSpec = (ek, mod) => modelsFor(ek).find(s => s.re.test(String(mod || '').toLowerCase()));
-  const effortOf = x => x.effort || (/-?(low|medium|high|xhigh|max|ultra)$/i.exec(x.model || '')?.[1]?.toLowerCase() || '');
+  const effortOf = x => x.effort || (/(?:[-:])(low|medium|high|xhigh|max|ultra)$/i.exec(x.model || '')?.[1]?.toLowerCase() || '');
   const buildTarget = (ek, spec, effort, extra = {}) => {
     const eff = spec.efforts.includes(effort)
       ? effort
@@ -84,9 +84,17 @@
       if (k in fbs) return [k, fbs[k] || []];
     }
     if (spec) {
+      const eff = effortOf(primary);
+      let fallbackMatch = null;
       for (const [k, chain] of Object.entries(fbs)) {
-        if (k.startsWith(ek + ':') && spec.re.test(k.slice(ek.length + 1).toLowerCase())) return [k, chain || []];
+        if (!k.startsWith(ek + ':')) continue;
+        const mod = k.slice(ek.length + 1);
+        if (!spec.re.test(mod.toLowerCase())) continue;
+        const kEff = effortOf({ model: mod, effort: '' });
+        if (!kEff || !eff || kEff === eff) return [k, chain || []];
+        if (!fallbackMatch) fallbackMatch = [k, chain || []];
       }
+      if (fallbackMatch) return fallbackMatch;
     }
     return [`${ek}:${spec?.id || primary.model}`, []];
   }
@@ -94,15 +102,41 @@
     return findFallbackEntry(p, target)[1].find(c => c && c.enabled !== false && c.engine === 'droid') || null;
   }
   function syncFallback(p, target, enabled) {
-    const ek = target.engine, spec = findSpec(ek, target.model), canonKey = `${ek}:${spec?.id || target.model}`;
+    if (!target || target.engine === 'droid') return;
+    const ek = target.engine, spec = findSpec(ek, target.model);
+    const exactKey = `${ek}:${target.model}`, canonKey = `${ek}:${spec?.id || target.model}`;
     const fbs = p.fallbacks || (p.fallbacks = {});
-    for (const k of Object.keys(fbs)) {
-      if (k === canonKey) continue;
-      if (k === `${ek}:${target.model}` || (spec && k.startsWith(ek + ':') && spec.re.test(k.slice(ek.length + 1).toLowerCase()))) {
-        delete fbs[k];
+    const key = (exactKey !== canonKey && exactKey in fbs) ? exactKey : canonKey;
+    const base = (fbs[key] || []).filter(Boolean);
+    const droidIdx = base.findIndex(c => c.engine === 'droid');
+    if (enabled) {
+      fbs[key] = droidIdx >= 0
+        ? base.map((c, i) => (i === droidIdx ? { ...c, enabled: true } : { ...c }))
+        : [...base.map(c => ({ ...c })), { ...droidFallbackFor(target), enabled: true }];
+    } else if (droidIdx >= 0) {
+      fbs[key] = base.map(c => (c.engine === 'droid' ? { ...c, enabled: false } : { ...c }));
+    } else {
+      fbs[key] = [...base.map(c => ({ ...c })), { ...droidFallbackFor(target), enabled: false }];
+    }
+    if (key === canonKey) {
+      for (const k of Object.keys(fbs)) {
+        if (k === canonKey) continue;
+        const matchesAlias = k === exactKey || (spec && k.startsWith(ek + ':') && spec.re.test(k.slice(ek.length + 1).toLowerCase()));
+        if (!matchesAlias) continue;
+        const chain = (fbs[k] || []).filter(Boolean);
+        const nonDroid = chain.filter(c => c.engine !== 'droid');
+        if (!enabled) {
+          if (nonDroid.length) fbs[k] = nonDroid.map(c => ({ ...c }));
+          else delete fbs[k];
+        } else if (nonDroid.length) {
+          if (chain.some(c => c.engine === 'droid')) {
+            fbs[k] = chain.map(c => (c.engine === 'droid' ? { ...c, enabled: true } : { ...c }));
+          }
+        } else {
+          delete fbs[k];
+        }
       }
     }
-    fbs[canonKey] = [{ ...droidFallbackFor(target), enabled }];
   }
   function fmtTarget(x) {
     const ek = engKeyOf(x), em = ENG[ek] || { label: ek, brand: 'agy' };
@@ -157,9 +191,10 @@
     card.append(modBlock);
 
     if (PRIMARY_ENGINES.includes(ek) && spec.efforts.length) {
-      const curEff = spec.efforts.includes(curEffRaw) ? curEffRaw : spec.efforts[0];
+      const efforts = curEffRaw && !spec.efforts.includes(curEffRaw) ? [...spec.efforts, curEffRaw] : spec.efforts;
+      const curEff = efforts.includes(curEffRaw) ? curEffRaw : '';
       card.append(el('div', { className: 'ds-block' }, el('div', { className: 'ds-block-lbl' }, '推理档位'),
-        el('div', { className: 'ds-seg' }, ...spec.efforts.map(e => {
+        el('div', { className: 'ds-seg' }, ...efforts.map(e => {
           const btn = el('button', { type: 'button', className: e === curEff ? 'is-on' : '' }, EFF[e] || e);
           btn.addEventListener('click', () => { if (e !== curEff) onChange(buildTarget(ek, spec, e)); });
           return btn;

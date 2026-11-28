@@ -47,13 +47,21 @@ case "$0" in
   */*) dir=${0%/*} ;;
   *) dir=. ;;
 esac
+# Only explicit or potential subagents reach Python. The hint is not identity:
+# it is used only when a payload can't be decoded to verify the session.
 rc=0
-printf '%s\n' "$in" | python3 "$dir/sa-guard-hook.py" "$engine" || rc=$?
-if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && [ "${SA_SUBAGENT:-}" = "1" ]; then
-  if [ "$engine" = "agy" ]; then
-    printf '{"decision":"deny","reason":"sa-guard internal error"}\n'
-    exit 0
-  fi
-  exit 2
-fi
+out=$(printf '%s\n' "$in" | SA_GUARD_SUBAGENT_HINT=1 python3 "$dir/sa-guard-hook.py" "$engine") || rc=$?
+case "$engine:$rc" in
+  *:0|codex:2) ;;
+  grok:2)
+    case "$out" in
+      '{"decision":"deny","reason":'*'}') ;;
+      *) out='{"decision":"deny","reason":"sa-guard internal error"}' ;;
+    esac
+    ;;
+  agy:*) rc=0; out='{"decision":"deny","reason":"sa-guard internal error"}' ;;
+  grok:*) rc=2; out='{"decision":"deny","reason":"sa-guard internal error"}' ;;
+  *) rc=2; out= ;;
+esac
+[ -z "$out" ] || printf '%s\n' "$out"
 exit "$rc"

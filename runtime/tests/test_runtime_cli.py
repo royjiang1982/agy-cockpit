@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 import queue
 import runpy
+import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -82,6 +84,18 @@ def cli_emission_cases():
                 emit_event(event)
         emitted = [json.loads(line) for line in out.getvalue().splitlines()]
         assert emitted == (events if debug == "1" else [e for e in events if e is not delta])
+    jq = shutil.which("jq")
+    if jq:
+        frames = [dict(type="item.completed", item=dict(type="error", **fields)) for fields in (
+            {}, {"message": None}, {"message": "bypass-hook-trust notice"}, {"message": "visible warning"},
+        )] + [dict(type="turn.completed")]
+        view = Path(__file__).resolve().parents[1] / "bin/sa-view.jq"
+        output = subprocess.run([jq, "-Rrf", str(view)], text=True, capture_output=True, check=True, timeout=10,
+                                input="".join(json.dumps(frame) + "\n" for frame in frames))
+        assert output.stdout.splitlines() == ["⚠ null", "⚠ null", "⚠ visible warning", "■ 完成"], output
+        assert not output.stderr
+    else:
+        print("SKIP: sa-view.jq stream regression (jq not installed)")
     print("PASS: CLI delta filtering, debug opt-in and complete final/result")
 
 
@@ -238,6 +252,15 @@ def _check_cli_dispatch():
         "droid": [
             ([], astra, "xhigh"),
             (["-m", f"{astra}:xhigh", "-r", "high"], astra, "high"),
+        ],
+        "pi": [
+            ([], "claude-opus-5-5", "high"),
+            (["-m", "provider/model:free"], "provider/model:free", "high"),
+            (["-m", "provider/model:ultra"], "provider/model:ultra", "high"),
+            (["-m", "provider/model:max"], "provider/model:max", "high"),
+            (["-m", "provider/model:ultra:minimal"], "provider/model:ultra", "minimal"),
+            (["-m", "provider/model:free:low"], "provider/model:free", "low"),
+            (["-m", "provider/model:free:low", "--thinking", "off"], "provider/model:free", "off"),
         ],
     }
     for engine, extra in extras.items():

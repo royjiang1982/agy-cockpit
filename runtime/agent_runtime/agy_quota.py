@@ -11,6 +11,7 @@ import time
 from . import quota_guard
 from .dispatch_policy_reader import default_agy_fallback, read_agy_policy
 from .history_merge import build_forced_handoff_prompt
+from .policy_contract import resolve_effective_effort
 from .proc_utils import find_cli_binary, terminate_proc_group
 from .session_handoff import _unwrap_handoff_prompt
 
@@ -148,12 +149,13 @@ def _quota_for_model(model):
 
 
 def _fallback(model, policy_target=None, effort=""):
-    target_model, target_effort = default_agy_fallback(model, effort=effort)
     override = os.environ.get("SA_AGY_FALLBACK_MODEL")
     if override is None and policy_target is not None:
-        target_model, policy_effort = policy_target
-        if policy_effort != "same":
-            target_effort = policy_effort
+        target_model, target_effort = policy_target
+        if target_effort == "same":
+            target_effort = resolve_effective_effort(model, effort)
+    else:
+        target_model, target_effort = default_agy_fallback(model, effort=effort)
     return ((override or "").strip() or target_model,
             os.environ.get("SA_AGY_FALLBACK_EFFORT", "").strip() or target_effort)
 

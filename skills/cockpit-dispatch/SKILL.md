@@ -45,8 +45,9 @@ python3 ~/.gemini/config/plugins/agy-cockpit/skills/cockpit-dispatch/scripts/res
 
 - `mode == "disabled"`：立即退出 Cockpit 规则，切回用户/项目原有设置。 `mode == "degraded"`：停止派单，报告策略文件损坏（含 `warning`）；不套用默认路由、不擅自外发。
 - `--all` 一次查看 5 个角色的解析结果与原因（`reason`）。`--read-only` 仅用于单角色，不能与 `--all` 同用；高危独立验收用 `--role expert --read-only`，该路由及兜底均为只读，不走 Swarm，内置固定 `research`。
-- 盲审必须用 `--role panel --blind`（仅限 `panel`），排除席位首选与兜底中的 Swarm 共享板；无席位时 `blind_isolated` 为假。
-- `--role panel --count N` 取前 N 个可用席位（`1 ≤ N ≤ 12`）；不可用则顺延，配置席位不足时用内置只读席位补足。可与 `--blind` 合用，如 `--role panel --blind --count 2`。
+- 盲审必须用 `--role panel --blind`（仅限 `panel`，建议配合 `--count N`，如 `--role panel --blind --count 2`），排除席位首选与兜底中的 Swarm 共享板；无席位时 `blind_isolated` 为假。
+- `--role panel --count N`（`1 ≤ N ≤ 12`）与省略 `--count` 行为不同：指定 `--count N` 时，首选与备选均不可用的席位记入 `skipped_seats` 并顺延下一席，席位不足再以内置只读席位补足至 N；省略 `--count` 则按序返回全部已启用席位（不可用席位直接落为 `builtin_fallback` 不跳过，且空席位列表不自动补齐）。
+- 调试覆盖策略文件若传 `--policy-path <path>`，须同步设置环境变量 `SA_DISPATCH_POLICY_PATH=<path>`，确保 `sa-agy`/`sa-codex` 运行时一致生效。
 
 ---
 
@@ -68,12 +69,12 @@ PLUGIN_BIN=~/.gemini/config/plugins/agy-cockpit/runtime/bin
 "$PLUGIN_BIN/sa-run.sh" tmp/<任务>/<名>.jsonl "$PLUGIN_BIN/sa-<engine>" <参数> --prompt "<任务书>"
 ```
 
-各引擎参数约定（`effort` 为空串时省略 `--effort`/`-r`）：
+各引擎参数约定（`effort` 为空串时省略 `--effort`/`-r`/`--thinking`）：
 - `sa-agy`：`--model <model>`（完整模型 ID，不传独立 `--effort`；低配额时可按策略预检切换引擎）。
 - `sa-codex`：`-m <model> --effort <effort>`（`codex_fast` 由 `sa-codex` 自动读取 Cockpit 策略生效，单次可用 `--fast`/`--no-fast` 覆盖）。
 - `sa-droid`：`-m <model> -r <effort>`。
 - `sa-grok`：`-m <model> --effort <effort>`。
-- `sa-pi`：`-m <model>:<effort>`（无 `effort` 时仅 `-m <model>`）。
+- `sa-pi`：`-m <model> --thinking <effort>`（无 `effort` 时省略 `--thinking`，避免与带冒号模型名冲突）。
 
 **会话续接与守护运维**（同一工作线最多续接 ~3 轮，上下文膨胀后新开）：
 - 从 `.jsonl` 最终 `event: "result"` 记录读取 `agent`（实际的 `effective_agent`）与 `conversation_id`（Codex 用 `thread_id`）。低配额触发引擎切换后，按该记录的实际引擎选续接包装器，不用最初派发的包装器或旧会话 ID。最终报告取 `result.response`（或 Codex 最后一条非 delta 的 `agent_message`）。
@@ -110,6 +111,7 @@ PLUGIN_BIN=~/.gemini/config/plugins/agy-cockpit/runtime/bin
 - **Context**：已知资料、路径、约束决策、目标受众或口径定义。
 - **Constraints**：允许改动范围、单文件 ≤400 行抽独立叶子（历史大文件 ≤20 行接线）、禁区与最小必要原则。
 - **交付标准（DoD）**：只列目标单测/类型检查等定点命令（或视频/选品交付口径），附变更文件与真实结果。
+- **只读验收变体（`--role expert --read-only`）**：开头改用「被派出子代理 · 纯只读独立验收（禁止写/改/删文件、派生子代理）」，去掉 `Constraints` 中的允许修改范围及文末「子代理须知」中的改文件与自修条款，仅保留只读审阅与定点核验要求。
 
 ### C. 多方盲审任务书（`panel`，纯只读并发）
 - **盲审纪律**：主代理不充任席位；各席拿同一材料并发独立作答、互不见面，开头显式声明「被派出子代理 · 纯只读独立评审，禁止写文件或派生子代理」。

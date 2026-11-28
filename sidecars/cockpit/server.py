@@ -92,6 +92,7 @@ WATCHED_PY_FILES = [
     SIDECAR_DIR / "agy_quota.py",
     *(SIDECAR_DIR / f"{name}.py" for name in ("dispatch_models", "dispatch_policy", "dispatch_api", "swarm_subagents", "test_dispatch_policy", "test_dispatch_api", "test_swarm_subagents")),
     SIDECAR_DIR.parents[1] / "skills/cockpit-dispatch/scripts/resolve.py",
+    SIDECAR_DIR.parents[1] / "runtime/agent_runtime/policy_contract.py",
     SIDECAR_DIR / "droid_ledger.py",
     SIDECAR_DIR / "_cost_test_fixture.py",
     *(SIDECAR_DIR / f"{name}.py" for name in ("agy_cost_events", "cost_windows", "quota_sources", "grok_costs", "grok_timing", "cost_runtime", "annotation_index",

@@ -22,7 +22,7 @@ elif .type == "thread.started" then "▶ codex 会话 \(.thread_id)"
 elif .type == "item.started" and .item.type == "command_execution" then "→ \(.item.command | short)"
 elif .type == "item.completed" and .item.type == "command_execution" then "  ✓ exit=\(.item.exit_code) \(.item.aggregated_output | short)"
 elif .type == "item.completed" and .item.type == "agent_message" and (.delta | not) then "💬 \(.item.text)"
-elif .type == "item.completed" and .item.type == "error" then (if (.item.message | test("bypass-hook-trust")) then empty else "⚠ \(.item.message | short)" end)
+elif .type == "item.completed" and .item.type == "error" then (if ((.item.message // "") | test("bypass-hook-trust")) then empty else "⚠ \(.item.message | short)" end)
 elif .type == "item.completed" and .item.type != "reasoning" and (.delta | not) then "· \(.item.type) \(.item | del(.id, .type) | short)"
 elif .type == "turn.completed" then (if .usage then "■ 完成（输入 \(.usage.input_tokens // 0)，输出 \(.usage.output_tokens // 0)）" else "■ 完成" end)
 elif .type == "turn.failed" or .type == "error" then "✗ \(. | short)"

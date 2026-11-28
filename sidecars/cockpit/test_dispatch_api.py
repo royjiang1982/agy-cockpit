@@ -216,17 +216,19 @@ class DispatchAPITests(unittest.TestCase):
         base = {k: v for k, v in self.headers.items() if k != "Origin"}
         proxy_headers = {**base, "Host": f"localhost:{self.port + 5}", "X-Cockpit-Plugin-Origin": plugin_origin}
         self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 1}, proxy_headers)[0], 200)
+        self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 2},
+                                      dict(proxy_headers, **{"X-Cockpit-Plugin-Origin": "plugin://agy-cockpit"}))[0], 200)
         for bad in (
             {**proxy_headers, "X-Cockpit-Plugin-Origin": f"plugin://agy-cockpit--cockpit-{self.port + 1}"},
             {**proxy_headers, "Host": "evil.example"},
             {**proxy_headers, "Origin": "https://evil.example"},
             {**proxy_headers, "X-Cockpit-CSRF": "wrong"},
         ):
-            self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 2}, bad)[0], 403)
-        self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", b'{"revision":2}',
+            self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 3}, bad)[0], 403)
+        self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", b'{"revision":3}',
                                       {**proxy_headers, "Content-Length": "14"},
                                       extra_headers=[("Host", f"localhost:{self.port + 5}")])[0], 403)
-        self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", b'{"revision":2}',
+        self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", b'{"revision":3}',
                                       {**proxy_headers, "Content-Length": "14"},
                                       extra_headers=[("Origin", "https://evil.example"), ("Origin", "https://evil2.example")])[0], 403)
 
@@ -259,6 +261,11 @@ class DispatchAPITests(unittest.TestCase):
                      b'{"roles":{"scout":1,"scout":2}}', b'{', b'{"revision": true}'):
             with self.subTest(body=str(body)[:45]):
                 self.assertEqual(self.request("POST", "/api/dispatch-policy", body, self.headers)[0], 400)
+        for constant in (b"NaN", b"Infinity", b"-Infinity"):
+            status, reply, _ = self.request("POST", "/api/dispatch-policy/reset",
+                                           b'{"revision":' + constant + b'}', self.headers)
+            self.assertEqual(status, 400)
+            self.assertIn("invalid JSON constant", reply["error"])
         self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 1, "unknown": 1}, self.headers)[0], 400)
         self.assertFalse(self.path.exists())
 

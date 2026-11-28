@@ -15,7 +15,15 @@ def test_acp_and_pi_resident_streams():
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         fake_acp = write_rpc_server(tmp, "fake_acp.py", setup="startup = True")
-        fake_pi = write_rpc_server(tmp, "fake_pi.py", protocol="pi")
+        fake_pi = write_rpc_server(tmp, "fake_pi.py", protocol="pi", setup='''
+            original_handle = handle
+            def handle(message):
+                if message.get("type") in ("set_model", "set_thinking_level"):
+                    with open("pi-wire.jsonl", "a") as wire:
+                        wire.write(json.dumps(message) + chr(10))
+                return original_handle(message)
+        ''')
+        pi_wire = tmp / "pi-wire.jsonl"
 
         prev_markers = os.environ.get("ZOMI_SUBAGENT_SESSIONS_DIR")
         os.environ["ZOMI_SUBAGENT_SESSIONS_DIR"] = str(tmp / "markers")
@@ -72,18 +80,33 @@ def test_acp_and_pi_resident_streams():
                 agent="pi",
             )
             try:
-                pturn = PiRpcStream(
-                    [sys.executable, str(fake_pi)],
-                    cwd=str(tmp),
-                    env=env,
-                    bot={"model": "claude-opus-5-5", "reasoning_effort": "high"},
-                    prompt="hello pi",
-                    resident=pi_host,
-                    is_subagent=True,
-                )
-                pevents = [json.loads(line) for line in pturn]
-                pturn.close()
-                assert any(e.get("type") == "text_delta" and e.get("delta") == "pi-ok" for e in pevents), pevents
+                for bot, model_id, level in (
+                    ({"model": "claude-opus-5-5", "reasoning_effort": "high"}, "claude-opus-5-5", "high"),
+                    ({"model": "provider/model:free"}, "model:free", "high"),
+                    ({"model": "provider/model:ultra"}, "model:ultra", "high"),
+                    ({"model": "provider/model:max:minimal"}, "model:max", "minimal"),
+                    ({"model": "provider/model:free:xhigh", "reasoning_effort": "low"}, "model:free", "low"),
+                ):
+                    pi_wire.unlink(missing_ok=True)
+                    pturn = PiRpcStream(
+                        [sys.executable, str(fake_pi)],
+                        cwd=str(tmp),
+                        env=env,
+                        bot=bot,
+                        prompt="hello pi",
+                        resident=pi_host,
+                        is_subagent=True,
+                    )
+                    pevents = [json.loads(line) for line in pturn]
+                    pturn.close()
+                    assert any(e.get("type") == "text_delta" and e.get("delta") == "pi-ok" for e in pevents), pevents
+                    init = next(e["init"] for e in pevents if e.get("event") == "init")
+                    provider, separator, _ = bot["model"].partition("/")
+                    expected_model = f"{provider}/{model_id}" if separator else model_id
+                    assert init["model"] == f"{expected_model}:{level}", pevents
+                    set_model, set_level = map(json.loads, pi_wire.read_text().splitlines())
+                    assert (set_model["type"], set_model["modelId"]) == ("set_model", model_id)
+                    assert (set_level["type"], set_level["level"]) == ("set_thinking_level", level)
             finally:
                 pi_host.shutdown()
 

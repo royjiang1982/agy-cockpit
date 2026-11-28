@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Node/JS embedded heredoc static inspection for sa-guard."""
+"""Node/JS embedded script static inspection for sa-guard."""
 from __future__ import annotations
 
 import posixpath
@@ -109,6 +109,42 @@ def _extract_js_braced(text: str, pos: int) -> Optional[Tuple[str, int]]:
                 return text[pos : i + 1], i + 1
         i += 1
     return None
+
+
+_TEMPLATE_TOKEN_RE = re.compile(r"\\(?:\r\n|[^\r]|\r)|\$\{", re.DOTALL)
+_GUARD_COMPONENT_RE = re.compile(r"hooks\.json|sa-guard(?:-[A-Za-z0-9_.-]+|\.sh)?")
+
+
+def _path_fragment_restricted(fragment, is_sensitive_fn, is_guard_fn):
+    if fragment is None:
+        return True  # An undecodable literal is not a known-safe path.
+    path = fragment.replace("\\", "/").strip("/")
+    if is_sensitive_fn(fragment) or is_guard_fn(fragment) or is_guard_fn("~/" + path):
+        return True
+    parts = path.split("/")
+    return any(_GUARD_COMPONENT_RE.fullmatch(part) or is_sensitive_fn(part)
+               or is_sensitive_fn("~/" + "/".join(parts[i:i + 2])) for i, part in enumerate(parts))
+
+
+def _template_path_restricted(raw, is_sensitive_fn, is_guard_fn):
+    # Scan literal fragments and literals in interpolations without evaluating JS.
+    start = 0
+    while True:
+        token = _TEMPLATE_TOKEN_RE.search(raw, start)
+        while token and token[0] != "${":
+            token = _TEMPLATE_TOKEN_RE.search(raw, token.end())
+        fragment = _decode_js_str(raw[start:token.start() if token else len(raw)])
+        if _path_fragment_restricted(fragment, is_sensitive_fn, is_guard_fn):
+            return True
+        if not token:
+            return False
+        braced = _extract_js_braced(raw, token.start() + 1)
+        if not braced:
+            return True
+        expression, start = braced
+        for literal in re.finditer(_JS_LIT_BODY, expression[1:-1]):
+            if _path_fragment_restricted(_js_lit_val(literal), is_sensitive_fn, is_guard_fn):
+                return True
 
 
 def _parse_js_top_level_props(opts_src: str) -> Optional[List[Tuple[str, Optional[str]]]]:
@@ -290,7 +326,7 @@ def js_script_restricted(
     is_guard_fn: Callable[[str], bool],
     safe_tmp_fn: Callable[[Optional[str]], bool],
 ) -> bool:
-    """Conservatively inspect Node/JS heredoc snippets."""
+    """Conservatively inspect Node/JS snippets."""
     if _JS_CHILD_PROC_RE.search(body):
         matched_any = False
         for call_m in _JS_EXEC_CALL_RE.finditer(body):
@@ -319,7 +355,9 @@ def js_script_restricted(
     for m in re.finditer(_JS_LIT_BODY, body):
         lit = _js_lit_val(m)
         if lit is None:
-            if has_fs and (m.group("bq") is None or "${" not in m.group("bq")):
+            template = m.group("bq")
+            if has_fs and (template is None or "${" not in template or
+                           _template_path_restricted(template, is_sensitive_fn, is_guard_fn)):
                 return True
             continue
         if len(lit) <= 260 and (is_sensitive_fn(lit) or (has_fs and is_guard_fn(lit))):

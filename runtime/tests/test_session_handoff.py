@@ -434,7 +434,8 @@ def session_cases():
         path.write_text(turn('first', 'answer'))
         original_read = Path.read_text
         def read(p, *args, **kwargs):
-            assert not sh._LEDGER_LOCK._is_owned()
+            if p == path:
+                assert not sf.ledger_lock("cache-sid", Path(td))._is_owned()
             return original_read(p, *args, **kwargs)
         with patch.object(Path, 'rglob', autospec=True, wraps=Path.rglob) as scan:
             # autospec+wraps is not a real generator on every Python version.

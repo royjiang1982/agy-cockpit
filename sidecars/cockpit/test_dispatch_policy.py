@@ -185,6 +185,35 @@ class DispatchPolicyTests(unittest.TestCase):
         self.assertEqual((route["model"], route["reason"]), ("pro", "fallback"))
         self.assertEqual(route["skipped"][0]["reason"], "cli_unavailable")
 
+    def test_same_fallback_inherits_concrete_agy_effort_if_unspecified(self):
+        p = dp.default_policy()
+        model = "gemini-4-hydrogen-xhigh"
+        p["fallbacks"][f"agy:{model}"] = [dp._target("droid", "fixture-model", "same")]
+        for effort, expected in (("", "xhigh"), ("low", "low")):
+            with self.subTest(effort=effort):
+                p["roles"]["scout"]["primary"] = dp._target("agy", model, effort)
+                route = dp.resolve_role("scout", p, {"available_engines": ["droid"]})
+                self.assertEqual((route["engine"], route["effort"], route["reason"]), ("droid", expected, "fallback"))
+
+    def test_offline_droid_family_uses_concrete_fallback(self):
+        p = dp.default_policy()
+        p["roles"]["scout"]["primary"] = dp._target("droid", "sol")
+        p["fallbacks"] = {"droid:gpt-6.2-sol": [dp._target("agy", "pro", channel="invoke_subagent")]}
+        route = dp.resolve_role("scout", p, {"available_engines": []})
+        self.assertEqual((route["model"], route["reason"]), ("pro", "fallback"))
+
+    def test_panel_fills_orders_after_both_skipped_and_selected_seats(self):
+        p = dp.default_policy()
+        local = dp._target("agy", "inherit", channel="invoke_subagent")
+        p["roles"]["panel"]["seats"] = [local, dp._target("agy", "hydrogen"), dp._target("droid", "sol")]
+        base = p["roles"]["panel"]["seats"]
+        for config, seats, skipped in ((base, [1, 4, 5], [2, 3]), (base[1:] + base[:1], [3, 4, 5], [1, 2])):
+            p["roles"]["panel"]["seats"] = config
+            route = dp.resolve_role("panel", p, {"available_engines": []}, count=3)
+            self.assertEqual([seat["order"] for seat in route["seats"]], seats)
+            self.assertEqual([seat["order"] for seat in route["skipped_seats"]], skipped)
+            self.assertTrue(all(seat["reason"] == "builtin_fallback" for seat in route["seats"][1:]))
+
     def test_explicit_codex_version_does_not_use_default_versions_fallback(self):
         p = dp.default_policy()
         p["roles"]["scout"]["primary"] = dp._target("codex", "gpt-6.1-sol", "high")

@@ -3,29 +3,17 @@
 from __future__ import annotations
 
 from bisect import bisect_right
-from functools import lru_cache
-import importlib.util
-from pathlib import Path
+from importlib import import_module
 import re
 import shlex
 from typing import Callable, List, Optional, Sequence, Tuple
 
+SHELLS = frozenset(("sh", "bash", "zsh", "dash", "ksh"))
 _REDIR_TARGET = r"""(?:[^\s;&|()<>"']+|"[^"\r\n]*"|'[^'\r\n]*')+"""
 _REDIR_RE = re.compile(rf"""(?:[0-9]+)?(?P<op>>\||>>?|<(?!<))(?![<&>])[ \t]*(?P<target>{_REDIR_TARGET})""")
 _TMP_DELETE_RE = re.compile(r"^(?:/tmp/[^/]+|(?:tmp|\./tmp|(?:[^\s;&|]+/)?tmp)(?:/|$))")
 _CD_HEAD_RE = re.compile(r"^[ \t]*(?:\{[ \t]+)?(?:builtin[ \t]+)?cd(?=[ \t]|$)")
 _EXIT_RE = re.compile(r"^[ \t]*(?:exit|return)(?:[ \t;)]|$)")
-
-
-@lru_cache(maxsize=4)
-def _load_sibling(filename: str):
-    path = Path(__file__).with_name(filename)
-    spec = importlib.util.spec_from_file_location(filename.replace("-", "_").removesuffix(".py"), path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def safe_tmp_target(path: Optional[str]) -> bool:
@@ -244,14 +232,59 @@ def script_heredoc_restricted(
     if kind == "data":
         return False
     if kind == "python":
-        return _load_sibling("sa-guard-ast.py").python_ast_restricted(
+        return import_module("sa-guard-ast").python_ast_restricted(
             body, shell_restricted_fn, is_sensitive_fn, is_guard_fn, safe_tmp_target
         )
     if kind == "js":
-        return _load_sibling("sa-guard-js.py").js_script_restricted(
+        return import_module("sa-guard-js").js_script_restricted(
             body, shell_restricted_fn, is_sensitive_fn, is_guard_fn, safe_tmp_target
         )
     return True
+
+
+_SHELL_FLAGS = "abcefhiklmnoprstuvxBCEHOPT"
+_INLINE_SHORT = {
+    "shell": (re.compile(r"-[abefhiklmnprstuvxBCEHPT]*c"), _SHELL_FLAGS),
+    "python": (re.compile(r"-[bBdEiIOPqRsSuvx]*c"), ""),
+    "js": (re.compile(r"-[ir]*[ep]"), "eipr"),
+}
+_INLINE_JS_LONG = ("--eval", "--print")
+_VALUE_OPTIONS = {
+    "shell": {"--init-file", "--rcfile"},
+    "python": {"--check-hash-based-pycs"},
+    "js": {"--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions"},
+}
+_VALUE_OPTION_CLUSTER = {
+    "shell": re.compile(r"[-+][abefhiklmnprstuvxBCEHPT]*[oO]"),
+    "python": re.compile(r"-[bBdEiIOPqRsSuvx]*[WX]"),
+    "js": re.compile(r"-i*r"),
+}
+
+
+def inline_script(args, kind):
+    """Find (code, operand index) among interpreter options, not script arguments."""
+    short_flag, trailing_flags = _INLINE_SHORT[kind]
+    options = iter(enumerate(args))
+    for idx, arg in options:
+        shell_plus_flag = kind == "shell" and arg.startswith("+") and arg != "+"
+        if arg in ("--", "-") or not (arg.startswith("-") or shell_plus_flag):
+            break
+        if kind == "python" and re.match(r"-[bBdEiIOPqRsSuvx]*m", arg):
+            break  # -m ends interpreter options, just like a filename.
+        name, eq, attached = arg.partition("=")
+        if kind == "js" and name in _INLINE_JS_LONG:
+            if eq:
+                return attached, idx
+        elif (short := short_flag.match(arg)):
+            attached = arg[short.end():]
+            if attached and any(ch not in trailing_flags for ch in attached):
+                return attached, idx
+        else:
+            if arg in _VALUE_OPTIONS[kind] or _VALUE_OPTION_CLUSTER[kind].fullmatch(arg):
+                next(options, None)
+            continue
+        return (args[idx + 1] if idx + 1 < len(args) else None), idx + 1
+    return None
 
 
 def read_cli_restricted(
@@ -261,16 +294,19 @@ def read_cli_restricted(
     is_sensitive_fn: Callable[[str], bool],
     is_guard_fn: Callable[[str], bool],
 ) -> bool:
-    """Validate `_READ_CLIS` arguments including inline `python -c` and `sed -i` targets."""
+    """Validate file operands and inspect inline interpreter scripts as code."""
+    inline = None
     if name in ("python", "python3"):
-        for idx, arg in enumerate(args[:-1]):
-            if arg == "-c" or (arg.startswith("-") and not arg.startswith("--") and "c" in arg[1:]):
-                if _load_sibling("sa-guard-ast.py").python_ast_restricted(
-                    args[idx + 1], shell_restricted_fn, is_sensitive_fn, is_guard_fn, safe_tmp_target
-                ):
-                    return True
-                non_code = [a for j, a in enumerate(args) if j != idx + 1]
-                return any(is_sensitive_fn(a) for a in non_code)
+        kind = "python"
+        inline = inline_script(args, kind)
+    elif name == "node":
+        kind = "js"
+        inline = inline_script(args, kind)
+    if inline:
+        code, code_idx = inline
+        if code is None or script_heredoc_restricted(kind, code, shell_restricted_fn, is_sensitive_fn, is_guard_fn):
+            return True
+        return any(is_sensitive_fn(arg) for idx, arg in enumerate(args) if idx != code_idx)
     if name == "sed" and any(re.match(r"^-[Eernzsu]*i", a) or a.startswith("--in-place") for a in args):
         if any(is_sensitive_fn(arg) or is_guard_fn(arg) for arg in args):
             return True

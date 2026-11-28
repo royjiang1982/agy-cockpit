@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hmac
-import json
 import re
 import secrets
 from pathlib import Path
@@ -47,7 +46,9 @@ def verify_write_request(handler, expected_host_port):
         raise WriteRequestError(403, "invalid origin")
     origin = origins[0] if len(origins) == 1 else None
     plugin_origin = f"plugin://agy-cockpit--cockpit-{expected_host_port}"
-    proxied_plugin = len(origins) == 0 and _single(headers, "X-Cockpit-Plugin-Origin") == plugin_origin
+    proxied_plugin = not origins and _single(headers, "X-Cockpit-Plugin-Origin") in (
+        "plugin://agy-cockpit", plugin_origin,
+    )
     exact_hosts = {f"{name}:{expected_host_port}" for name in ("localhost", "127.0.0.1", "[::1]")}
     hosts = headers.get_all("Host", [])
     host = hosts[0] if len(hosts) == 1 else None
@@ -74,7 +75,7 @@ def verify_write_request(handler, expected_host_port):
     try:
         if len(body) != length:
             raise ValueError("truncated body")
-        payload = json.loads(body.decode("utf-8"), object_pairs_hook=dispatch_policy.unique_json_object)
+        payload = dispatch_policy.strict_json_loads(body.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("expected a JSON object")
         return payload

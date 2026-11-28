@@ -13,7 +13,10 @@ import threading
 import time
 from pathlib import Path
 
-import dispatch_models
+import dispatch_models  # Adds the bundled runtime to sys.path.
+from agent_runtime.policy_contract import (
+    EFFORTS, resolve_effective_effort, resolve_policy_path, strict_json_loads, unique_json_object, valid_model,
+)
 
 DATA_DIR = Path.home() / ".gemini/antigravity/sidecar_data/statusline"
 STATE_PATH = DATA_DIR / "view_state.json"
@@ -21,11 +24,7 @@ SCHEMA_VERSION = 1
 ROLE_READ_ONLY = {"scout": True, "standard": False, "deep": False, "expert": False, "panel": True}
 ENGINES = ("agy", "codex", "droid", "grok", "pi")
 CHANNELS = ("cli", "invoke_subagent", "swarm")
-EFFORTS = ("", "low", "medium", "high", "xhigh", "max", "ultra", "same")
 NATIVE_MODELS = ("flash_lite", "flash", "inherit", "pro")
-_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/() -]{0,80}", re.ASCII)
-_NAMESPACED_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.:-]*")
-_LABEL = re.compile(r"[^()]*(?: \([A-Za-z0-9._ -]+\))?")
 MAX_QUOTA_AGE_SEC = 300
 MAX_PANEL_COUNT = 12
 _LOCK, _REAL_WHICH = threading.Lock(), shutil.which
@@ -79,14 +78,10 @@ def _bool(value):
 def _revision(value):
     if type(value) is not int or value < 1:
         raise ValueError("revision must be a positive integer")
-def _model_name(name):
-    return (isinstance(name, str) and _MODEL.fullmatch(name) and ".." not in name
-            and name == name.strip() and not re.search(r"(?:^| )--?\S", name)
-            and (_NAMESPACED_MODEL.fullmatch(name) if "/" in name else _LABEL.fullmatch(name)))
 def _validate_target(target, allow_enabled=False):
     _fields(target, ("channel", "engine", "model", "effort"), ("enabled",) if allow_enabled else ())
     channel, engine, model, effort = (target[key] for key in ("channel", "engine", "model", "effort"))
-    if channel not in CHANNELS or engine not in ENGINES or effort not in EFFORTS or not _model_name(model):
+    if channel not in CHANNELS or engine not in ENGINES or effort not in EFFORTS or not valid_model(model):
         raise ValueError("invalid dispatch target")
     if channel != "cli" and engine != "agy":
         raise ValueError("native targets must use agy")
@@ -129,36 +124,25 @@ def validate_policy(payload):
         raise ValueError("fallbacks must be an object")
     for key, targets in fallbacks.items():
         engine, sep, model = key.partition(":") if isinstance(key, str) else ("", "", "")
-        if not sep or engine not in ENGINES or not _model_name(model) or not isinstance(targets, list):
+        if not sep or engine not in ENGINES or not valid_model(model) or not isinstance(targets, list):
             raise ValueError("invalid fallback key or list")
         for target in targets:
             _validate_target(target, allow_enabled=True)
     return dict(payload, roles=roles, quota_fallback=dict(quota),
                 fallbacks={key: [dict(target) for target in targets] for key, targets in fallbacks.items()})
 
-def unique_json_object(pairs):
-    out = {}
-    for key, value in pairs:
-        if key in out:
-            raise ValueError("duplicate JSON key")
-        out[key] = value
-    return out
-
 def policy_file_path(policy_path=None, *, state_path=None):
-    if policy_path is not None:
-        return Path(policy_path)
-    override = os.environ.get("SA_DISPATCH_POLICY_PATH")
-    return Path(override) if override else Path(state_path or STATE_PATH).with_name("dispatch-policy.json")
+    return resolve_policy_path(policy_path, state_path=state_path or STATE_PATH)
 
 def load_policy(policy_path=None):
     """Return policy and disk health without writing anything."""
-    path = policy_file_path(policy_path)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_json_object)
+        path = policy_file_path(policy_path)
+        payload = strict_json_loads(path.read_text(encoding="utf-8"))
         return dict(policy=validate_policy(payload), exists=True, degraded=False, read_only_warning=None)
     except FileNotFoundError:
         return dict(policy=default_policy(), exists=False, degraded=False, read_only_warning=None)
-    except (OSError, ValueError, RecursionError):
+    except (OSError, ValueError, RuntimeError):
         return dict(policy=default_policy(), exists=True, degraded=True,
                     read_only_warning="Policy is unreadable, invalid, or uses an unsupported schema; it was not changed.")
 
@@ -322,9 +306,10 @@ def _resolve_target(primary, name, policy, caps, state_path, *, read_only, blind
         resolved_model = dispatch_models.resolve_model_id(engine, raw_model, effort, agy_state_path=state_path, allow_codex_rpc="codex" in caps.get("available_engines", ()))
     keys = dispatch_models.fallback_lookup_keys(engine, raw_model, resolved_model, effort)
     chain = next((policy["fallbacks"][k] for k in keys if k in policy["fallbacks"]), [])
+    inherited_effort = resolve_effective_effort(raw_model, effort, engine=engine if primary["channel"] == "cli" else "")
     available, skipped = [], []
     for i, target in enumerate([primary, *chain]):
-        candidate = dict(target, effort=effort) if target["effort"] == "same" else target
+        candidate = dict(target, effort=inherited_effort) if target["effort"] == "same" else target
         result, why = ((None, swarm_skip) if swarm_skip and target["channel"] == "swarm" else
                        _selection(candidate, policy, caps, state_path, read_only=read_only))
         if result is None:
@@ -356,7 +341,7 @@ def _resolve_panel(config, policy, caps, count, state_path, *, read_only, blind)
             skipped.append(dict(order=i, channel=seat["channel"], engine=seat["engine"], model=seat["model"], reason=why))
             if blind:
                 skipped[-1]["skipped"] = res["skipped"]
-    next_order = seats[-1]["order"] + 1 if seats else 1
+    next_order = max((row["order"] for row in (*seats, *skipped)), default=0) + 1
     for i in range(next_order, next_order + (count or 0) - len(seats)):
         tail = next(_builtin_tails("panel", policy, read_only))
         seats.append(_panel_seat_meta(dict(tail, reason="builtin_fallback", fallbacks=[], skipped=[]), i))

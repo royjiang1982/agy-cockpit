@@ -107,6 +107,28 @@ class DispatchPolicyTests(unittest.TestCase):
                 self.assertIsNone(reader.read_codex_fast())
                 self.assertFalse(reader.read_agy_policy(MODEL).has_fallback_override)
 
+    def test_writer_and_reader_share_efforts_and_expanded_override(self):
+        p = cockpit.default_policy()
+        with patch.dict(os.environ, SA_DISPATCH_POLICY_PATH="~/policy.json", HOME=str(self.path.parent)):
+            for effort in ("", "off", "minimal", "high", "same"):
+                p["fallbacks"][f"agy:{MODEL}"] = [candidate(effort=effort)]
+                p = cockpit.save_policy(p, expected_revision=p["revision"])
+                self.assertEqual(cockpit.load_policy()["policy"], p)
+                self.assertEqual(reader.read_agy_policy(MODEL).fallback, ("custom-droid", effort))
+            p["fallbacks"][f"agy:{MODEL}"] = [candidate(effort="extra")]
+            with self.assertRaises(ValueError):
+                cockpit.save_policy(p, expected_revision=p["revision"])
+            self.write_raw(json.dumps(p).encode())
+            self.assertTrue(reader.read_agy_policy(MODEL).has_fallback_override)
+            self.assertIsNone(reader.read_agy_policy(MODEL).fallback)
+
+    def test_agy_fallback_default_effort_matches_model_resolution(self):
+        for family, model in (("flash", "gemini-3.8-flash"), ("sonnet", "claude-sonnet-5-5")):
+            with self.subTest(family=family):
+                self.assertEqual(reader.default_agy_fallback(model), ("", "high"))
+                resolved = cockpit.dispatch_models.resolve_model_id("agy", family, agy_state_path=self.path)
+                self.assertEqual(resolved, model + "-high")
+
     def test_disabled_policy_reverts_codex_fast_and_agy_fallback(self):
         for flag in (False, 0, "true", None):
             with self.subTest(enabled=flag):
@@ -186,16 +208,16 @@ class DispatchPolicyTests(unittest.TestCase):
             self.assertEqual((request["agent"], request["mode"]), ("droid", "spec"))
             return request["model"], request["effort"]
 
-        self.assertEqual(target(), ("custom-droid", "medium"))
-        self.assertEqual(target("gemini-4-neon-xhigh"), ("gemini-4-neon", "xhigh"))
+        self.assertEqual(target(), ("custom-droid", "low"))
+        self.assertEqual(target("gemini-4-neon-xhigh"), ("gemini-4-neon", "low"))
         with patch.dict(os.environ, SA_AGY_FALLBACK_MODEL="env-droid"):
-            self.assertEqual(target(), ("env-droid", "medium"))
+            self.assertEqual(target(), ("env-droid", "low"))
         self.write(fallbacks={f"agy:{MODEL}": [candidate(effort="xhigh")]})
         self.assertEqual(target(), ("custom-droid", "xhigh"))
         with patch.dict(os.environ, SA_AGY_FALLBACK_EFFORT="low"):
             self.assertEqual(target(), ("custom-droid", "low"))
         with patch.dict(os.environ, SA_AGY_FALLBACK_MODEL=""):
-            self.assertEqual(target(), ("gemini-4-neon", "medium"))
+            self.assertEqual(target(), ("gemini-4-neon", "low"))
         for model in ("provider/mo.del:v-2", "Model Name (Preview)"):
             with self.subTest(model=model):
                 self.write(fallbacks={f"agy:{MODEL}": [candidate(model, "")]})
@@ -203,17 +225,30 @@ class DispatchPolicyTests(unittest.TestCase):
 
     @patch.object(quota, "find_cli_binary", return_value="/mock/droid")
     @patch.object(quota, "_quota_for_model", return_value=dict(rem_frac=0, reset_ts=0))
-    def test_same_uses_agy_model_suffix_or_historical_default(self, _snapshot, _find):
-        models = [("gemini-4-neon-low", "low"), ("gemini-4-neon-high", "high"),
-                  ("gemini-4-neon-xhigh", "xhigh"), ("gemini-4-neon", "medium"),
-                  ("claude-opus-5-5", "high")]
-        self.write(fallbacks={f"agy:{model}": [candidate(effort="same")] for model, _ in models})
-        for model, effort in models:
-            with self.subTest(model=model):
-                result = quota.preflight_agy_request(model=model, prompt="task")
+    def test_same_effort_is_identical_in_policy_routing_and_quota_preflight(self, _snapshot, _find):
+        for model, effort, expected in (
+            ("gemini-4-neon-low", "", "low"),
+            ("gemini-4-neon-xhigh", "same", "xhigh"),
+            ("gemini-4-neon-xhigh", "low", "low"),
+            ("gemini-4-neon", "", "medium"),
+            ("neon", "", "medium"),
+            ("flash", "", "high"),
+            ("claude-sonnet-5-5", "", "high"),
+            ("claude-opus-5-5", "off", "off"),
+            ("custom-agy", "", ""),
+        ):
+            with self.subTest(model=model, effort=effort):
+                policy = cockpit.default_policy()
+                policy["roles"]["scout"]["primary"] = cockpit._target("agy", model, effort)
+                policy["fallbacks"] = {f"agy:{model}": [candidate(effort="same")]}
+                self.write_raw(json.dumps(policy).encode())
+                selected = cockpit.resolve_role("scout", capabilities={"available_engines": ["droid"]})
+                result = quota.preflight_agy_request(model=model, effort=effort, prompt="task")
+                self.assertEqual((selected["engine"], selected["model"], selected["effort"]),
+                                 ("droid", "custom-droid", expected))
                 self.assertEqual((result["agent"], result["model"], result["effort"]),
-                                 ("droid", "custom-droid", effort))
-                self.assertEqual(result["event"]["to_effort"], effort)
+                                 ("droid", "custom-droid", expected))
+                self.assertEqual(result["event"]["to_effort"], expected)
 
     @patch.object(quota, "find_cli_binary", return_value="/mock/droid")
     @patch.object(quota, "_quota_for_model", return_value=dict(rem_frac=0, reset_ts=0))

@@ -68,6 +68,77 @@ class GuardTests(unittest.TestCase):
                 with self.subTest(platform=platform, command=command):
                     self.assertTrue(blocked(platform, command))
 
+    def test_shell_boundaries_and_inline_interpreter_options(self):
+        # These are strings sent to the guard for classification, never run.
+        for expected, examples in (
+            (True, (
+                "{ agy --help; }",
+                "if agy --help; then true; fi",
+                "while agy --help; do true; done",
+                "until agy --help; do true; done",
+                "if true; then agy --help; fi",
+                "if false; then true; elif agy --help; then true; fi",
+                "if false; then true; else agy --help; fi",
+                "for x in y; do agy --help; done",
+                'sh -c"agy --help"',
+                'bash -lc"agy --help"',
+                *(f'{exe} -cx "agy --help"' for exe in ('sh', 'bash', 'zsh', 'dash', 'ksh')),
+                'bash > /dev/null -lo pipefail -cx "agy --help"',
+                """python3 -W ignore -c 'import os; os.popen("agy --help")'""",
+                """python3 -c'import os; os.popen("agy --help")'""",
+                """python3 -c 'import os, os.path; os.popen("agy --help")'""",
+            )),
+            (False, (
+                'echo "do rm -rf /"',
+                'echo "then agy --help; { agy --help; }"',
+                'todo agy --help',
+                'sudo-do agy --help',
+                'ifelse agy --help',
+                'while_loop agy --help',
+                'until-done agy --help',
+                'echo "if agy --help; then true; fi"',
+                'bash tool.sh -c',
+                'dash -- tool.sh -c',
+                'python3 tool.py -c',
+                'python3 -m tool -c',
+                'python3 -- tool.py -c',
+                'node tool.js -p',
+                'node -- tool.js -e',
+                'node -r preload.js tool.js -p',
+                '{ git status; }',
+                'sh -c"printf ok"',
+                """python3 -c'print("ok")'""",
+            )),
+        ):
+            for command in examples:
+                with self.subTest(command=command):
+                    self.assertEqual(blocked('agy', command), expected)
+
+    def test_node_inline_options_and_template_paths(self):
+        js = 'require("child_process").execFileSync("agy", ["--help"])'
+        for option in ('-e ', '-e', '--eval ', '--eval=', '-p ', '--print=', '-pe ', '-ep ', '-iep ',
+                       '-pie ', '-r preload.js -e '):
+            with self.subTest(option=option):
+                self.assertTrue(blocked('agy', f"node {option}'{js}'"))
+                self.assertFalse(blocked('agy', f"node {option}'1 + 2'"))
+        for path, expected in (
+            ("${fixture}/.ssh/${name}", True),
+            ("${fixture}/id_rsa", True),
+            ("${fixture}/.env", True),
+            ("${fixture}/hooks.json", True),
+            ("${fixture}/sa-guard-test.py", True),
+            ("${fixture}/.env.example", False),
+            ("${fixture}/notes.txt", False),
+            ('${".ssh/id_rsa"}', True),
+            ('${flag ? "docs.txt" : "fixtures/hooks.json"}', True),
+            (r'${"fixtures/.e\x6ev"}', True),
+            ('${flag ? "docs.txt" : "notes.txt"}', False),
+            ('${"fixtures/.env.example"}', False),
+        ):
+            with self.subTest(path=path):
+                body = f'require("fs").readFileSync(`{path}`)'
+                self.assertEqual(blocked('agy', f"node <<'JS'\n{body}\nJS\n"), expected)
+
     def test_high_risk_commands(self):
         commands = (
             'git commit -m test', 'git -C ~/Dev/_governance push',
@@ -448,6 +519,69 @@ class GuardTests(unittest.TestCase):
                                              'deny' if deny else 'allow' if is_child else 'ask')
                         else:
                             self.assertEqual(result.stdout, '')
+
+    def test_adapter_failure_denies_potential_subagents(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            fake = root / 'python3'
+            fake.touch()
+            fake.chmod(0o700)
+            brain = root / 'brain'
+            roster = brain / 'coordinator' / '.system_generated/swarm/members.json'
+            roster.parent.mkdir(parents=True)
+            marker = root / 'markers' / 'worker'
+            marker.parent.mkdir()
+            env = {'PATH': f'{root}{os.pathsep}{os.defpath}', 'ZOMI_SWARM_BRAIN_DIR': str(brain),
+                   'ZOMI_SUBAGENT_SESSIONS_DIR': str(marker.parent)}
+            for code in (2, 7):
+                fake.write_text(f'#!/bin/sh\nexit {code}\n')
+                for source in ('none', 'env', 'marker', 'roster'):
+                    if source == 'marker':
+                        marker.touch()
+                    if source == 'roster':
+                        marker.unlink()
+                        roster.touch()
+                    with self.subTest(code=code, source=source):
+                        result = run_hook('agy', {}, source == 'env', env, real=True)
+                        self.assertEqual(result.returncode, 0)
+                        self.assertEqual(json.loads(result.stdout)['decision'], 'ask' if source == 'none' else 'deny')
+                roster.unlink()
+                marker.touch()
+                for platform in ('codex', 'grok'):
+                    with self.subTest(code=code, platform=platform):
+                        result = run_hook(platform, {}, False, env, real=True)
+                        self.assertEqual(result.returncode, 2)
+                        if platform == 'grok':
+                            self.assertEqual(json.loads(result.stdout)['decision'], 'deny')
+                        else:
+                            self.assertEqual(result.stdout, '')
+                marker.unlink()
+
+    def test_unreadable_payload_denied_with_marker_or_swarm_hint(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            marker = root / 'markers' / 'worker'
+            marker.parent.mkdir()
+            marker.touch()
+            roster = root / 'brain' / 'coordinator' / '.system_generated/swarm/members.json'
+            roster.parent.mkdir(parents=True)
+            roster.write_text('{"members":{"worker":{"conversation_id":"worker"}}}')
+            env = {'ZOMI_SUBAGENT_SESSIONS_DIR': str(marker.parent), 'ZOMI_SWARM_BRAIN_DIR': str(root / 'brain')}
+            for source, platforms in (('marker', ('agy', 'codex', 'grok')), ('roster', ('agy',))):
+                if source == 'roster':
+                    marker.unlink()
+                for platform in platforms:
+                    for raw in ('', '{', 'null'):
+                        with self.subTest(source=source, platform=platform, raw=raw):
+                            result = run_hook(platform, raw, False, env, real=True)
+                            self.assertEqual(result.returncode, 0 if platform == 'agy' else 2)
+                            if platform == 'codex':
+                                self.assertEqual((result.stdout, result.stderr), ('', GUARD.REASON + '\n'))
+                            else:
+                                self.assertEqual(json.loads(result.stdout)['decision'], 'deny')
+            # A valid request from a different session must not inherit the hint.
+            parent = run_hook('agy', {'conversationId': 'parent'}, False, env, real=True)
+            self.assertEqual(json.loads(parent.stdout), {'decision': 'ask'})
 
     def test_heredoc_ast_lookup_and_redirect_cases(self):
         run_heredoc_and_perm_cases(self, blocked, run_hook_fn=run_hook, guard_mod=GUARD)

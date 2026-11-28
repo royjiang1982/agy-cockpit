@@ -8,7 +8,11 @@ import subprocess
 import threading
 
 from .native_questions import NativeQuestions
+from .proc_utils import split_model_effort
 from .resident import ResidentTurn, SteeringRejected, SteeringUnknown
+
+
+PI_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
 
 
 def pi_server_command(cmd):
@@ -280,12 +284,9 @@ class PiRpcStream(ResidentTurn):
             self._events.put(None)
 
     def _resolve_and_set_model(self, bot):
-        raw_model = str(bot.get("model") or "").strip()
-        effort = str(bot.get("reasoning_effort") or "high").strip().lower()
-        if ":" in raw_model:
-            raw_model, effort_part = raw_model.rsplit(":", 1)
-            if effort_part in ("off", "minimal", "low", "medium", "high", "xhigh", "max"):
-                effort = effort_part
+        raw_model, effort = split_model_effort(
+            bot.get("model"), bot.get("reasoning_effort"), default_effort="high", valid_efforts=PI_THINKING_LEVELS,
+        )
         if raw_model:
             if "/" in raw_model:
                 provider, model_id = raw_model.split("/", 1)
@@ -307,7 +308,7 @@ class PiRpcStream(ResidentTurn):
                     "set_model",
                     {"provider": match["provider"], "modelId": match["id"]},
                 )
-        if effort in ("off", "minimal", "low", "medium", "high", "xhigh", "max"):
+        if effort in PI_THINKING_LEVELS:
             self._rpc("set_thinking_level", {"level": effort})
         return f"{raw_model or 'default'}:{effort}"
 

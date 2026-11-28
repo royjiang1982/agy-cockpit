@@ -9,7 +9,6 @@ from .session_files import cached_jsonl_inspection, ledger_lock
 DEFAULT_TTL_SECONDS, CODEX_TTL_SECONDS, DEFAULT_TOKEN_THRESHOLD = 600.0, 7200.0, 200_000
 _SUBAGENT_PREFIX = "你是被派出的子代理（SA_SUBAGENT=1）。只遵守任务书，不派生子代理、不提交代码。"
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-_LEDGER_LOCK = threading.RLock()
 
 def get_sessions_ledger_dir(daemon_dir: Optional[Path] = None) -> Path:
     custom, sub_dir = os.environ.get("SA_SESSIONS_LEDGER_DIR"), os.environ.get("SA_SUBAGENTD_DIR")
@@ -393,4 +392,7 @@ def record_turn_completion(agent: str, final_sid: str, raw_prompt: str, response
         save_session_ledger(record, daemon_dir)
         return record
 
-from .history_merge import build_forced_handoff_prompt
+def build_forced_handoff_prompt(agent, session_id, cwd, prompt, state_dir=None) -> Optional[str]:
+    """Compatibility entry point; the merge itself depends on the ledger API."""
+    from .history_merge import build_forced_handoff_prompt as merge
+    return merge(agent, session_id, cwd, prompt, state_dir)

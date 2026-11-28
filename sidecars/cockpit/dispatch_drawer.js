@@ -36,15 +36,10 @@
 
   const avail = () => saved?.capabilities?.available_engines || [];
   const hasDroid = () => avail().includes('droid');
-  const enabledSeats = p => (p.roles.panel.seats || []).filter(s => s && s.enabled !== false);
-
-  function syncSwitches(p) {
-    const seats = enabledSeats(p);
-    p.external_enabled = ROLES.some(([r]) => p.roles[r].primary.channel === 'cli') || seats.some(s => s.channel === 'cli');
-    if (ROLES.some(([r]) => p.roles[r].primary.channel === 'swarm') || seats.some(s => s.channel === 'swarm')) {
-      p.allow_swarm = true;
-    }
-  }
+  const seatEntries = p => (p.roles.panel.seats || [])
+    .map((seat, rawIndex) => ({ seat, rawIndex }))
+    .filter(({ seat }) => seat && seat.enabled !== false);
+  const enabledSeats = p => seatEntries(p).map(x => x.seat);
 
   function setMsg(text, tone = '', autoClear = false) {
     clearTimeout(msgTimer);
@@ -116,10 +111,10 @@
     const cur = p.roles[role].primary, activeFb = activeDroidFallback(p, cur);
     const kids = [renderTargetEditor(p, cur, {
       availableEngines: avail(),
-      onChange: next => { p.roles[role].primary = next; syncSwitches(p); commit(); },
+      onChange: next => { p.roles[role].primary = next; commit(); },
       onOptCommit: () => commit(false),
     })];
-    if (hasDroid()) {
+    if (hasDroid() && cur.engine !== 'droid') {
       kids.push(renderDroidCard(p, cur, {
         enabled: Boolean(activeFb), activeEntry: activeFb,
         onToggle: on => { syncFallback(p, cur, on); commit(); },
@@ -130,18 +125,21 @@
   }
 
   function renderPanelList(p) {
-    const seats = enabledSeats(p), kids = [el('div', { className: 'ds-caption' }, '按顺序选用：单方取 #1、两方取前 2 个，不可用自动顺延下一席位。')];
+    const entries = seatEntries(p), seats = entries.map(x => x.seat);
+    const kids = [el('div', { className: 'ds-caption' }, '按顺序选用：单方取 #1、两方取前 2 个，不可用自动顺延下一席位。')];
     if (seats.length) {
       const listCard = el('div', { className: 'ds-card' });
-      seats.forEach((seat, idx) => {
+      entries.forEach(({ seat, rawIndex }, idx) => {
         const f = fmtTarget(seat);
         const main = el('button', { type: 'button', className: 'ds-seat-main' },
           el('span', { className: 'ds-eng-col' }, dot(f.brand), el('span', { className: 'ds-val-eng' }, f.eng)),
           el('span', { className: 'ds-val-txt' }, f.text));
         main.addEventListener('click', () => go({ type: 'seat', index: idx }));
         const move = dir => {
-          const copy = seats.map(s => ({ ...s, enabled: true }));
-          [copy[idx], copy[idx + dir]] = [copy[idx + dir], copy[idx]];
+          const target = entries[idx + dir];
+          if (!target) return;
+          const copy = (p.roles.panel.seats || []).map(s => ({ ...s }));
+          [copy[rawIndex], copy[target.rawIndex]] = [copy[target.rawIndex], copy[rawIndex]];
           p.roles.panel.seats = copy; commit();
         };
         const up = el('button', { type: 'button', className: 'ds-icon-btn', disabled: idx === 0, 'aria-label': '上移' }, '↑');
@@ -149,7 +147,10 @@
         const del = el('button', { type: 'button', className: 'ds-icon-btn is-del', disabled: seats.length <= 1, 'aria-label': '删除席位' }, '×');
         up.addEventListener('click', () => move(-1));
         down.addEventListener('click', () => move(1));
-        del.addEventListener('click', () => { p.roles.panel.seats = seats.filter((_, i) => i !== idx).map(s => ({ ...s, enabled: true })); syncSwitches(p); commit(); });
+        del.addEventListener('click', () => {
+          p.roles.panel.seats = (p.roles.panel.seats || []).filter((_, i) => i !== rawIndex).map(s => ({ ...s }));
+          commit();
+        });
         listCard.append(el('div', { className: 'ds-seat-row' }, el('span', { className: 'ds-rank' }, String(idx + 1)), main, el('div', { className: 'ds-seat-acts' }, up, down, del)));
       });
       kids.push(listCard);
@@ -167,22 +168,23 @@
   }
 
   function renderSeatDetail(p, index, draftSeat = null) {
-    const seats = enabledSeats(p), isNew = Boolean(draftSeat);
-    if (!isNew && !seats[index]) { view = { type: 'panel' }; return renderPanelList(p); }
-    const target = isNew ? draftSeat : seats[index];
+    const entries = seatEntries(p), seats = entries.map(x => x.seat), isNew = Boolean(draftSeat);
+    if (!isNew && !entries[index]) { view = { type: 'panel' }; return renderPanelList(p); }
+    const rawIndex = isNew ? -1 : entries[index].rawIndex;
+    const target = isNew ? draftSeat : entries[index].seat;
     const activeFb = activeDroidFallback(p, target);
     const fbOn = isNew ? Boolean(view.fbEnabled) : Boolean(activeFb);
     const kids = [renderTargetEditor(p, target, {
       availableEngines: avail(),
       onChange: next => {
         if (isNew) { view = { type: 'new-seat', seat: { ...next, enabled: true }, fbEnabled: Boolean(activeDroidFallback(p, next)) }; render(); return; }
-        const copy = seats.map(s => ({ ...s, enabled: true }));
-        copy[index] = { ...next, enabled: true };
-        p.roles.panel.seats = copy; syncSwitches(p); commit();
+        const copy = (p.roles.panel.seats || []).map(s => ({ ...s }));
+        copy[rawIndex] = { ...next, enabled: true };
+        p.roles.panel.seats = copy; commit();
       },
       onOptCommit: () => commit(false),
     })];
-    if (hasDroid()) {
+    if (hasDroid() && target.engine !== 'droid') {
       kids.push(renderDroidCard(p, target, {
         enabled: fbOn, activeEntry: activeFb,
         onToggle: on => { if (isNew) { view = { ...view, fbEnabled: on }; render(); } else { syncFallback(p, target, on); commit(); } },
@@ -192,16 +194,16 @@
     if (isNew) {
       const saveBtn = el('button', { type: 'button', className: 'ds-primary-btn' }, '保存');
       saveBtn.addEventListener('click', () => {
-        p.roles.panel.seats = [...seats.map(s => ({ ...s, enabled: true })), { ...draftSeat, enabled: true }];
-        if (hasDroid()) syncFallback(p, draftSeat, fbOn);
-        syncSwitches(p); go({ type: 'panel' }); commit(false);
+        p.roles.panel.seats = [...(p.roles.panel.seats || []).map(s => ({ ...s })), { ...draftSeat, enabled: true }];
+        if (hasDroid() && draftSeat.engine !== 'droid') syncFallback(p, draftSeat, fbOn);
+        go({ type: 'panel' }); commit(false);
       });
       kids.push(saveBtn);
     } else if (seats.length > 1) {
       const delBtn = el('button', { type: 'button', className: 'ds-danger-btn' }, '移除此席位');
       delBtn.addEventListener('click', () => {
-        p.roles.panel.seats = seats.filter((_, i) => i !== index).map(s => ({ ...s, enabled: true }));
-        syncSwitches(p); go({ type: 'panel' }); commit(false);
+        p.roles.panel.seats = (p.roles.panel.seats || []).filter((_, i) => i !== rawIndex).map(s => ({ ...s }));
+        go({ type: 'panel' }); commit(false);
       });
       kids.push(delBtn);
     }
@@ -270,6 +272,7 @@
   async function flushSave() {
     if (saving || !saved || !draft) return;
     saving = true; setMsg('保存中…');
+    let shouldRender = false;
     try {
       while (pendingSave && !conflicted) {
         pendingSave = false;
@@ -290,17 +293,18 @@
         const fresh = await api(endpoint + '?resolve=1', { cache: 'no-store' }).catch(() => null);
         if (fresh && !pendingSave && fresh.policy.revision === saved.policy.revision) {
           saved = fresh;
-          if (view.type === 'home') render();
+          if (view.type === 'home') shouldRender = true;
         }
       }
     } catch (e) {
       pendingSave = false;
       reloadBtn.textContent = '重载'; reloadBtn.hidden = false;
       if (e.status === 409) { conflicted = true; setMsg('配置已在别处变更，请重载', 'err'); sync(); }
-      else { draft = structuredClone(saved.policy); render(); setMsg(e.message, 'err'); }
+      else { draft = structuredClone(saved.policy); shouldRender = true; setMsg(e.message, 'err'); }
     } finally {
       saving = false;
       if (pendingSave && !conflicted) flushSave();
+      else if (shouldRender) render();
     }
   }
 

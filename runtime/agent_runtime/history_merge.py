@@ -2,17 +2,18 @@
 import contextlib
 from typing import Optional
 
+from . import session_handoff
+from .session_files import ledger_lock
+
 
 def build_forced_handoff_prompt(agent, session_id, cwd, prompt, state_dir=None) -> Optional[str]:
-    # Deferred import keeps session_handoff's compatibility export cycle-free.
-    from .session_handoff import (_LEDGER_LOCK, load_session_ledger, inspect_local_session,
-                                  _unwrap_handoff_prompt, format_handoff_prompt)
+    sid = (session_id or "").strip()
     ledger, local = {}, {}
     with contextlib.suppress(Exception):
-        with _LEDGER_LOCK:
-            ledger = load_session_ledger(session_id, state_dir) or {}
+        with ledger_lock(sid, state_dir):
+            ledger = session_handoff.load_session_ledger(sid, state_dir) or {}
     with contextlib.suppress(Exception):
-        local = inspect_local_session(agent, session_id) or {}
+        local = session_handoff.inspect_local_session(agent, session_id) or {}
 
     def key(turn):
         return str(turn.get("prompt") or "").strip(), str(turn.get("response") or "").strip()
@@ -22,7 +23,7 @@ def build_forced_handoff_prompt(agent, session_id, cwd, prompt, state_dir=None) 
         for turn in source:
             if not isinstance(turn, dict):
                 continue
-            carried, clean = _unwrap_handoff_prompt(str(turn.get("prompt") or ""), turn.get("ts", 0))
+            carried, clean = session_handoff._unwrap_handoff_prompt(str(turn.get("prompt") or ""), turn.get("ts", 0))
             for item in carried + [dict(turn, prompt=clean)]:
                 pair = key(item)
                 if any(pair):
@@ -54,5 +55,5 @@ def build_forced_handoff_prompt(agent, session_id, cwd, prompt, state_dir=None) 
             cursor = index + 1
     emit(left[cursor:])
     emit(pending)
-    _, clean_prompt = _unwrap_handoff_prompt(prompt)
-    return format_handoff_prompt(session_id, turns, clean_prompt) if turns else None
+    _, clean_prompt = session_handoff._unwrap_handoff_prompt(prompt)
+    return session_handoff.format_handoff_prompt(session_id, turns, clean_prompt) if turns else None

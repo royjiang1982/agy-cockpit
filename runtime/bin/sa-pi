@@ -6,6 +6,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_runtime.daemon import run_subagent_client
+from agent_runtime.pi_stream import PI_THINKING_LEVELS
+from agent_runtime.proc_utils import split_model_effort
 
 
 def main() -> int:
@@ -24,11 +26,7 @@ def main() -> int:
     prompt = args.prompt if args.prompt is not None else " ".join(args.arguments)
     if not prompt or not prompt.strip():
         parser.error("任务书不能为空")
-    model = args.model
-    effort = args.effort
-    if ":" in model and not effort:
-        model, effort = model.rsplit(":", 1)
-    effort = effort or "high"
+    model, effort = split_model_effort(args.model, args.effort, default_effort="high", valid_efforts=PI_THINKING_LEVELS)
     return run_subagent_client(
         log_file=args.log_file,
         agent="pi",

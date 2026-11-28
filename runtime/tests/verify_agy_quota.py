@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic official CLI quota and daemon tests; no real engine access."""
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import io
 import json
@@ -15,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from _runtime_fixture import TIMEOUT, running_daemon, signal_socket, write_rpc_server
-from agent_runtime import agy_quota as q, daemon as d, session_handoff as sh, quota_guard as guard
+from agent_runtime import agy_quota as q, daemon as d, session_handoff as sh, session_files as sf, quota_guard as guard
 
 OPUS, CARBON, HYDROGEN, NEON = "claude-opus-5-5-high", "gemini-4-carbon-medium", "gemini-4-hydrogen-high", "gemini-4-neon-xhigh"
 
@@ -392,16 +393,36 @@ def history_merge_test():
             return [dict(prompt=CountedText(f"question-{i}"), response=CountedText(f"answer-{i}"), ts=i)
                     for i in range(start, end)]
 
+        def can_enter():
+            if lock.acquire(blocking=False):
+                lock.release()
+                return True
+            return False
+
+        def load(*_):
+            observations.append(("load", peer.submit(can_enter).result(timeout=TIMEOUT)))
+            return dict(turns=rows(size // 3, size))
+
         def inspect(*_):
-            assert not sh._LEDGER_LOCK._is_owned()
+            observations.append(("inspect", peer.submit(can_enter).result(timeout=TIMEOUT)))
             return dict(turns=rows(0, 2 * size // 3))
 
+        def format_prompt(*args):
+            observations.append(("format", peer.submit(can_enter).result(timeout=TIMEOUT)))
+            return original_format(*args)
+
+        observations = []
         with (
-            patch.object(sh, "load_session_ledger", return_value=dict(turns=rows(size // 3, size))),
+            tempfile.TemporaryDirectory() as directory,
+            ThreadPoolExecutor(max_workers=1) as peer,
+            patch.object(sh, "load_session_ledger", side_effect=load),
             patch.object(sh, "inspect_local_session", side_effect=inspect),
             patch.object(sh, "format_handoff_prompt", side_effect=format_prompt),
         ):
-            prompt = sh.build_forced_handoff_prompt("agy", "mock", "", "next")
+            state_dir = Path(directory)
+            lock = sf.ledger_lock("mock", state_dir)
+            prompt = sh.build_forced_handoff_prompt("agy", "mock", "", "next", state_dir)
+        assert observations == [("load", False), ("inspect", True), ("format", True)], observations
         carried, clean = sh._unwrap_handoff_prompt(prompt)
         assert [(t["prompt"], t["response"]) for t in carried] == [
             (f"question-{i}", f"answer-{i}") for i in range(size)
@@ -410,10 +431,6 @@ def history_merge_test():
         return work
 
     original_format = sh.format_handoff_prompt
-
-    def format_prompt(*args):
-        assert not sh._LEDGER_LOCK._is_owned()
-        return original_format(*args)
 
     small, large = measure(150), measure(300)
     assert 0 < small and large <= 2.2 * small and large <= 24 * 300, (small, large)
