@@ -15,12 +15,15 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import analyzer
+import cockpit_io
+import proto_wire
 import cost_runtime
 import server
 from _cost_test_fixture import patch_cost_state
 from agy_cost_events import AgyCostDedup
 from annotation_index import AnnotationIndex
-from cost_windows import WindowCosts, valid_event_time
+from cost_schema import valid_event_time
+from cost_windows import WindowCosts
 
 
 NOW = 1_800_000_000.0
@@ -201,6 +204,17 @@ class CostRuntimeTests(unittest.TestCase):
         self.assertEqual(server._get_live_quota_snapshot(), before)
         save.assert_not_called()
 
+    def test_failed_cost_snapshot_replace_preserves_prior_file_without_temporary_file(self):
+        self.update("main")
+        server._save_cost_events_cache()
+        baseline = self.path.read_bytes()
+        self.update("child")
+        with (patch.object(cockpit_io.os, "replace", side_effect=OSError("replace failed")),
+              self.assertLogs(server._LOG, level="ERROR")):
+            server._save_cost_events_cache()
+        self.assertEqual(self.path.read_bytes(), baseline)
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+
     def test_serialization_and_replace_release_reader_lock_and_keep_newer_generation_dirty(self):
         self.events['pi:long'] = (NOW, [(NOW - i, 0.0123456789, 'other') for i in range(257)])
         self.update('main')
@@ -225,7 +239,7 @@ class CostRuntimeTests(unittest.TestCase):
             note_lock()
             return replace(*args)
 
-        with patch.object(cost_runtime.json, 'dumps', side_effect=encode), patch.object(cost_runtime.os, 'replace', side_effect=rename):
+        with patch.object(cost_runtime.json, 'dumps', side_effect=encode), patch.object(cockpit_io.os, 'replace', side_effect=rename):
             worker = threading.Thread(target=server._save_cost_events_cache, daemon=True)
             worker.start()
             try:
@@ -297,7 +311,7 @@ class AnnotationIndexTests(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(self.base / 'conversation_summaries.db')) as con, con:
             con.execute('CREATE TABLE conversation_summaries (conversation_id, title)')
             con.executemany('INSERT INTO conversation_summaries VALUES (?, ?)', [('a', 'Fallback A'), ('b', 'Fallback B')])
-        with patch.object(analyzer, 'parse_annotation_text', wraps=analyzer.parse_annotation_text) as parse:
+        with patch.object(analyzer, 'parse_annotation_text', wraps=proto_wire.parse_annotation_text) as parse:
             titles, views, _ = analyzer.read_annotations()
             self.assertEqual(dict(titles), {'a': 'Old', 'b': 'Fallback B'})
             self.assertEqual(views['a'], 40.125)

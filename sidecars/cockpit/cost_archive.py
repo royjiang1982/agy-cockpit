@@ -7,14 +7,77 @@ import math
 import os
 import time
 import zlib
+from collections import defaultdict
 from datetime import date, datetime
 
-COMPACTED_UID = "~d"
+from cost_schema import COMPACTED_UID, CostEvent, event_digest, event_digest_index
+
+AGY_SOURCE_PREFIXES = ("db:", "agy_tr:")
 ARCHIVE_MAPS = {"compacted_rows", "compacted_dates", "compacted_db_digests", "compacted_links", "compacted_zone"}
 _BAD = object()
 _SCALE = 100_000_000
 _PACK_VERSION = 1  # ":" is outside the Base85 alphabet; unprefixed archives are legacy.
 
+
+def _prefixes(rows):
+    if isinstance(rows, CompactedRows):
+        return (rows.digests[i:i+16] for i in range(0, len(rows.digests), 16))
+    return (event_digest(row) for row in rows)
+
+
+def agy_groups(files):
+    """Form connected components so no digest or DB/transcript edge is cut."""
+    parents = {key: key for key in files if key.startswith(AGY_SOURCE_PREFIXES)}
+    owners = {}
+
+    def root(key):
+        while parents[key] != key:
+            parents[key] = key = parents[parents[key]]
+        return key
+
+    for key in parents:
+        if isinstance(files[key], CompactedRows):
+            for peer in files[key].links:
+                if peer in parents:
+                    parents[root(peer)] = root(key)
+        if not key.startswith("db:"):
+            continue
+        peer = "agy_tr:" + key[3:]
+        if peer in parents:
+            parents[root(peer)] = root(key)
+        for digest in _prefixes(files[key]):
+            if digest:
+                parents[root(owners.setdefault(digest, key))] = root(key)
+    groups = defaultdict(set)
+    for key in parents:
+        groups[root(key)].add(key)
+    return groups.values()
+
+
+def exact_rows(files, cutoffs=None, zone=None):
+    """Use short digests only as an index. On a match, use original identities.
+
+    Blindly skipping on hash/count would lose separate measured clock groups,
+    or keep the wrong billed representative if a new source has a better clock.
+    Restore the entire linked component and let the original deduplicator decide.
+    """
+    if not any(isinstance(rows, CompactedRows) for _, rows in files):
+        return files
+    mapped = dict(files)
+    zone = timezone_key() if zone is None else zone
+    unfold = {key for key, rows in files if isinstance(rows, CompactedRows)
+              and (rows.zone != zone or (cutoffs and any(
+                  row[0] >= cutoffs.get(key.partition(":")[0], math.inf) for row in rows)))}
+    if any(isinstance(rows, CompactedRows) and key.startswith(AGY_SOURCE_PREFIXES) for key, rows in files):
+        for group in agy_groups(mapped):
+            folded = {key for key in group if isinstance(mapped[key], CompactedRows)}
+            if folded and (folded != group or unfold & group or lost_peer(folded, mapped)):
+                unfold.update(folded)
+    return [(key, rows.original() if key in unfold else rows) for key, rows in files]
+
+
+def lost_peer(folded, files):
+    return any(peer not in files for key in folded for peer in files[key].links)
 
 def timezone_key():
     # The historical timezone rules can change without changing today's offset.
@@ -110,7 +173,7 @@ def unpack_rows(packed):
                     or row[3] == COMPACTED_UID or any(type(v) is not int for v in row[4:9])
                     or not isinstance(row[9], str)):
                 raise ValueError("invalid archived row value")
-            original.append(tuple(row))
+            original.append(CostEvent(*row))
         if next(hashes, None) is not None:
             raise ValueError("unused archived digest")
         return original
@@ -151,8 +214,6 @@ def _valid_zone(zone):
 
 def load_compacted_rows(key, rows, snapshot, *, zone=None):
     """Return validated summaries or the exact originals if metadata is suspect."""
-    from cost_compaction import _index
-
     packed = _slot(snapshot, "compacted_rows", key)
     if (packed is _BAD and not any(row[3] == COMPACTED_UID for row in rows)
             and not any(_slot(snapshot, name, key) is not _BAD for name in ARCHIVE_MAPS)):
@@ -162,7 +223,7 @@ def load_compacted_rows(key, rows, snapshot, *, zone=None):
     digests = _slot(snapshot, "compacted_db_digests", key, "")
     links = _slot(snapshot, "compacted_links", key, ())
     archived_zone = _slot(snapshot, "compacted_zone", key)
-    expected = _index(original) if key.startswith("db:") else ""
+    expected = event_digest_index(original) if key.startswith("db:") else ""
     valid_days = (isinstance(days, (list, tuple)) and len(days) == len(rows)
                   and all(type(d) is int and 1 <= d <= date.max.toordinal() for d in days))
     zone = timezone_key() if zone is None else zone

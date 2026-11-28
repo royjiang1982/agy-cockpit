@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import analyzer
+import models_board
 import pricing
 import subagents
 
@@ -328,7 +329,7 @@ class OrchestratorRecognitionTests(unittest.TestCase):
             self.assertIsNotNone(fb)
             self.assertEqual([m["model"] for m in fb["per_model"]], ["Orchestrator (Neon)", "Flash High"])
 
-            board = pricing.build_models_board([], [fb])
+            board = models_board.build_models_board([], [fb])
             self.assertEqual([it["model"] for it in board["items"]], ["Neon", "Flash"])
 
     def test_index_html_renders_model_bars_and_refreshes_on_quota_open(self):

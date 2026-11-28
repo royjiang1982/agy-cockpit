@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import closing
 import json
 import math
 from os import fstat
@@ -11,7 +12,8 @@ import sqlite3
 import threading
 import time
 
-from metric_logs import parse_iso_ts
+from cockpit_io import connect_readonly, parse_iso_ts
+from cost_schema import ACTIVE_STEP_STATUSES, ASK_QUESTION_STEP_STATUSES, ask_question_step, clock_groups
 
 _RELATIVE_DIR = Path(".system_generated/swarm")
 _MEMBER_ID = re.compile(r"[a-zA-Z0-9_-]{1,128}")
@@ -156,8 +158,6 @@ def native_stub_status(st, db_path, resolve_status):
     swarm = is_swarm_worker(st)
     if db_path is not None and (swarm or st["agent"] == "builtin"):
         # The analyzer returns an empty result before the first metered call.
-        from contextlib import closing
-        from analyzer import ACTIVE_STEP_STATUSES, ASK_QUESTION_STEP_STATUSES, _ask_question_step, connect_readonly
 
         try:
             with closing(connect_readonly(str(db_path), timeout=0.5)) as conn:
@@ -168,7 +168,7 @@ def native_stub_status(st, db_path, resolve_status):
         if row is not None:
             kind, status, metadata, payload = row
             waiting = (kind == 132 and status in ASK_QUESTION_STEP_STATUSES
-                       and (_ask_question_step(metadata or b"") or _ask_question_step(payload or b"")))
+                       and (ask_question_step(metadata or b"") or ask_question_step(payload or b"")))
             return native_worker_status(st, dict(last_step_status=status, waiting_ask_question=waiting,
                                                   is_idle=status not in ACTIVE_STEP_STATUSES), resolve_status)
     if swarm:
@@ -210,7 +210,6 @@ def swarm_dir_signature(conv_id, app_dirs):
 
 def fork_parent_overlap(parent_events, worker_events):
     """Match forked calls by payload/clock evidence, never by model or tokens alone."""
-    from agy_cost_events import _clock_groups
 
     def identified(events):
         for event in events:
@@ -227,7 +226,7 @@ def fork_parent_overlap(parent_events, worker_events):
     worker_rows = [(d, c, e) for d, c, e in identified(worker_events) if d in variants]
     for digest, clock, _ in (*parent_rows, *worker_rows):
         variants[digest].add(clock)
-    groups = _clock_groups(variants)
+    groups = clock_groups(variants)
     remaining = Counter(groups[d, c] for d, c, _ in parent_rows)
     by_model = {}
     for digest, clock, event in worker_rows:
@@ -281,17 +280,3 @@ def finish_swarm_item(item, st, parent_cache, parent_id, worker_data, canonical_
             _subtract_usage(net, subtract.pop(model))
         adjusted.append(net)
     item["per_model"] = adjusted
-
-
-def models_board_subagents(items, _canonical_model):
-    """Count each conversation once; items already exclude proven fork history."""
-    seen = set()
-    for item in items:
-        cid = item.get("conversation_id") or item.get("id")
-        if item.get("metrics_unavailable") or not any(item.get(k, 0) for k in ("calls", "prompt", "out")):
-            continue
-        if cid and cid in seen:
-            continue
-        if cid:
-            seen.add(cid)
-        yield item

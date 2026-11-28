@@ -1,19 +1,9 @@
 """Timing and token metrics. Only observations sharing a denominator are pooled."""
-import math
-
-
-def number(value):
-    if isinstance(value, bool):
-        return None
-    try:
-        n = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return n if math.isfinite(n) and n >= 0 else None
+from cockpit_io import finite_number
 
 
 def speed(kind, out, dur, calls=0):
-    dur = number(dur)
+    dur = finite_number(dur, non_negative=True)
     return dict(tps_kind=kind, tps_out=out if dur else 0, tps_dur=dur or 0,
                 tps=out / dur if dur else None, tps_calls=calls if dur else 0)
 
@@ -32,15 +22,15 @@ def _decode_sample(call):
     """
     if not call.get("is_streamed"):
         return None
-    dur = number(call.get("stream"))
-    out = number(call.get("out"))
+    dur = finite_number(call.get("stream"), non_negative=True)
+    out = finite_number(call.get("out"), non_negative=True)
     if not dur or dur < _MIN_STREAM_SAMPLE_SEC or out is None or out <= 0:
         return None
     if out / dur <= _MAX_PLAUSIBLE_DECODE_TPS:
         return out, dur
-    think = number(call.get("think"))
-    resp = number(call.get("resp"))
-    ttft = number(call.get("ttft"))
+    think = finite_number(call.get("think"), non_negative=True)
+    resp = finite_number(call.get("resp"), non_negative=True)
+    ttft = finite_number(call.get("ttft"), non_negative=True)
     if think and resp and ttft is not None and ttft > dur and (resp / dur) <= _MAX_PLAUSIBLE_DECODE_TPS:
         return resp, dur
     return None
@@ -87,5 +77,5 @@ def proto_split(usage, out):
 
 
 def grok_remaining(raw):
-    used = number(raw)
+    used = finite_number(raw, non_negative=True)
     return (100 - used) / 100 if used is not None and used <= 100 else None

@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 import analyzer
 from cost_runtime import CostRows, CostRuntime
-from pricing import build_models_board
+from models_board import build_models_board
+from cockpit_io import BoundedCache, get_db_mtime
 import server
 import subagents
 import swarm_subagents as swarm
@@ -45,10 +46,10 @@ class SwarmSubagentsTests(unittest.TestCase):
                       "_CURRENT_ACTIVE_ID": "", "_PREV_VTIMES": {}, "_PREV_PBTXT_MTIMES_NS": {},
                       "_PREV_MAX_VTIME": 0.0}),
             (subagents, {"APP_DIRS": self.app_dirs, "SUBAGENT_APP_DIRS": self.app_dirs,
-                         "_SUBAGENT_STUBS_CACHE": analyzer.BoundedCache(16),
-                         "_COMPLETED_STEP_STUBS": analyzer.BoundedCache(16),
-                         "_STEP_DEPENDENCIES": analyzer.BoundedCache(16)}),
-            (analyzer, {"_ANALYSIS_CACHE": analyzer.BoundedCache(16),
+                         "_SUBAGENT_STUBS_CACHE": BoundedCache(16),
+                         "_COMPLETED_STEP_STUBS": BoundedCache(16),
+                         "_STEP_DEPENDENCIES": BoundedCache(16)}),
+            (analyzer, {"_ANALYSIS_CACHE": BoundedCache(16),
                         "_BUILTIN_SUBAGENT_MODEL_ENUM": {}}),
             (swarm, {"_SCAN_CACHE": None}),
         ):
@@ -206,15 +207,15 @@ class SwarmSubagentsTests(unittest.TestCase):
             for name, value in {"_COST_FILE_EVENTS": {}, "_COST_GENERATION": 0, "_COST_RUNTIME": CostRuntime(),
                                 "_PENDING_REBUILD": set(), "_DB_APPLIED_BUILTIN_ENUM": {}}.items():
                 stack.enter_context(patch.object(server, name, value))
-            server._analyze_with_hooks(str(parent), PARENT, "main", "App", analyzer.get_db_mtime(parent))
-            server._analyze_with_hooks(str(child), WORKER, "standalone", "App", analyzer.get_db_mtime(child))
+            server._analyze_with_hooks(str(parent), PARENT, "main", "App", get_db_mtime(parent))
+            server._analyze_with_hooks(str(child), WORKER, "standalone", "App", get_db_mtime(child))
             baseline = self.calendar()
             self.write_members(alice={"conversation_id": WORKER, "killed": True})
             for agent in ("swarm", "builtin"):
                 with self.subTest(agent=agent):
                     if agent == "builtin":
                         self.write_invoke_output(2)
-                    result = server._analyze_with_hooks(str(parent), PARENT, "main", "App", analyzer.get_db_mtime(parent))
+                    result = server._analyze_with_hooks(str(parent), PARENT, "main", "App", get_db_mtime(parent))
                     self.assertEqual(set(server._COST_FILE_EVENTS), {f"db:{PARENT}", f"db:{WORKER}"})
                     self.assertEqual(self.calendar(), baseline)
                     child_item, = result["subagents"]

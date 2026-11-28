@@ -1,4 +1,5 @@
 """Keep the Sidecar's published files, cache keys and shared policy aligned."""
+import ast
 from fnmatch import fnmatchcase
 from html.parser import HTMLParser
 import os
@@ -27,6 +28,93 @@ def _test_python(path):
     return fnmatchcase(path.name, "test_*.py") or fnmatchcase(path.name, "*_test_fixture.py")
 
 
+def _production_python():
+    return {
+        path for path in COCKPIT.rglob("*.py")
+        if path.is_file() and not _test_python(path)
+        and not {"tests", "__pycache__"}.intersection(path.relative_to(COCKPIT).parts)
+    }
+
+
+def _local_targets(node, package, modules):
+    def local(name):
+        for prefix in ("sidecars.cockpit", "cockpit"):
+            if name == prefix:
+                return ""
+            if name.startswith(prefix + "."):
+                return name[len(prefix) + 1:]
+        return name
+
+    if isinstance(node, ast.Import):
+        candidates = [local(alias.name) for alias in node.names]
+    else:
+        if node.level:
+            parents = package.split(".") if package else []
+            if node.level > len(parents) + 1:
+                return set()
+            base = ".".join(filter(None, [*parents[:len(parents) + 1 - node.level], node.module]))
+        else:
+            base = local(node.module or "")
+        candidates = [f"{base}.{alias.name}" if base else alias.name for alias in node.names]
+        if node.module:
+            candidates.append(base)
+    return {name for name in candidates if name in modules}
+
+
+def _sidecar_imports(sources):
+    modules = {}
+    for path, source in sources.items():
+        parts = path.relative_to(COCKPIT).with_suffix("").parts
+        package = ".".join(parts[:-1])
+        module = package if parts[-1] == "__init__" else ".".join(parts)
+        modules[module] = package, ast.parse(source, filename=str(path))
+    graph = {name: set() for name in modules}
+    delayed = []
+    for name, (package, tree) in modules.items():
+        top_level = set(tree.body)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            targets = _local_targets(node, package, modules)
+            graph[name].update(targets)
+            if targets and node not in top_level:
+                delayed.append((name, node.lineno, sorted(targets)))
+    return graph, sorted(delayed)
+
+
+def _cyclic_components(graph):
+    """Tarjan's SCCs, including a module that imports itself."""
+    index, low = {}, {}
+    stack, on_stack = [], set()
+    cycles = []
+
+    def visit(name):
+        index[name] = low[name] = len(index)
+        stack.append(name)
+        on_stack.add(name)
+        for target in sorted(graph[name]):
+            if target not in index:
+                visit(target)
+                low[name] = min(low[name], low[target])
+            elif target in on_stack:
+                low[name] = min(low[name], index[target])
+        if low[name] == index[name]:
+            component = []
+            while True:
+                member = stack.pop()
+                on_stack.remove(member)
+                component.append(member)
+                if member == name:
+                    break
+            if len(component) > 1 or name in graph[name]:
+                cycles.append(sorted(component))
+
+    for name in sorted(graph):
+        if name not in index:
+            visit(name)
+    return sorted(cycles)
+
+
 class _VersionedAssets(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -42,13 +130,21 @@ class _VersionedAssets(HTMLParser):
 
 
 class ArchitectureContracts(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sources = {path: path.read_text(encoding="utf-8") for path in _production_python()}
+        cls.import_graph, cls.delayed_imports = _sidecar_imports(sources)
+
+    def test_production_import_graph_is_a_dag(self):
+        cycles = _cyclic_components(self.import_graph)
+        self.assertEqual(len(cycles), 0, f"Cyclic Sidecar modules: {cycles}")
+
+    def test_local_production_imports_are_top_level(self):
+        self.assertEqual(self.delayed_imports, [], "Local imports must be at module top level")
+
     def test_hot_reload_watches_only_existing_production_files(self):
         watched = set(server.WATCHED_PY_FILES)
-        production = {
-            path for path in COCKPIT.rglob("*.py")
-            if path.is_file() and not _test_python(path)
-            and not {"tests", "__pycache__"}.intersection(path.relative_to(COCKPIT).parts)
-        }
+        production = _production_python()
         self.assertEqual(sorted((production | SHARED_WATCHED) - watched), [], "Missing hot-reload files")
         self.assertEqual(sorted(path for path in watched if not path.is_file()), [], "Invalid hot-reload paths")
         self.assertEqual(sorted(path for path in watched if _test_python(path)), [], "Tests in hot reload")

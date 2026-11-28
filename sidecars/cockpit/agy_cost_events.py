@@ -3,23 +3,10 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 import math
-import hashlib
 
-from cost_compaction import COMPACTED_UID, exact_rows
-from cost_windows import valid_event_time
-
-
-def payload_id(blob):
-    return hashlib.sha256(blob).hexdigest()
-
-
-def call_uid(call, ts):
-    legacy = f"{call['step_idx']}:{call['in']}:{call['cache']}:{call['out']}:{int(ts)}"
-    if not call.get("payload_id"):
-        return legacy
-    # ts may be filesystem mtime. Only the raw step clock is identity evidence.
-    clock = call.get("measured_clock")
-    return legacy + "#" + call["payload_id"] + ("@" + clock if clock else "")
+from cockpit_io import parse_iso_ts
+from cost_archive import exact_rows
+from cost_schema import COMPACTED_UID, clock_groups, decode_event_clock, valid_event_time
 
 
 def _uid_time(uid, fallback):
@@ -34,45 +21,6 @@ def _uid_time(uid, fallback):
     return "", fallback
 
 
-def _clock(raw):
-    # v16 stores the original protobuf clocks in UIDs. Compare their values
-    # (not wire encoding), without losing nanoseconds to epoch-float rounding.
-    from analyzer import decode_proto
-    values = []
-    for field in (raw.split(":") + ["", "", ""])[:3]:
-        try:
-            parts = {k: v for k, t, v in decode_proto(bytes.fromhex(field)) if t == "varint"}
-            values.append(parts.get(1, 0) * 10**9 + parts.get(2, 0) or None)
-        except ValueError:
-            values.append(field or None)
-    return tuple(values)
-
-
-def _clock_groups(variants):
-    # Process the strongest evidence first, independently of DB discovery order.
-    # A completely undated copy cannot choose between mutually conflicting calls.
-    result = {}
-    for payload, raws in variants.items():
-        if len(raws) == 1:
-            result[payload, next(iter(raws))] = (payload, 0)
-            continue
-        slots = []
-        for clock, raw in sorted(((_clock(r), r) for r in raws),
-                                 key=lambda pair: (-sum(v is not None for v in pair[0]), pair[1])):
-            matches = [i for i, slot in enumerate(slots) if len(slot) == len(clock) and
-                       all(a is None or b is None or a == b for a, b in zip(slot, clock))]
-            if clock in slots:
-                index = slots.index(clock)
-            elif len(matches) == 1:
-                index = matches[0]
-                slots[index] = tuple(a if a is not None else b for a, b in zip(slots[index], clock))
-            else:
-                index = len(slots)
-                slots.append(clock)
-            result[payload, raw] = (payload, index)
-    return result
-
-
 def _fork_skips(copies):
     """Choose representatives before the calendar visits either source."""
     skips = Counter()
@@ -80,10 +28,10 @@ def _fork_skips(copies):
         if len(records) == 1 or all(r[0] == records[0][0] for r in records):
             continue
         raws = {r[2] for r in records}
-        groups = _clock_groups({payload: raws})
+        groups = clock_groups({payload: raws})
         ranks = {}
         for raw in raws:
-            start, first, end = _clock(raw)
+            start, first, end = decode_event_clock(raw)
             # SQLite dates the billed event from the measured start/end pair,
             # or from start alone; first-token alone cannot anchor that date.
             ranks[raw] = (not bool(start), not bool(end), not bool(first))
@@ -163,7 +111,7 @@ class AgyCostDedup:
         return not uid and bounds[0] - 1 <= start <= bounds[1]
 
 
-def step_update_time(record, update, parse_iso_ts):
+def step_update_time(record, update):
     """Prefer the step's own timestamp, then the enclosing event's timestamp."""
     for obj in (update, record):
         for key in ("timestamp", "created_at", "createdAt", "timestamp_ms", "timestampMs"):

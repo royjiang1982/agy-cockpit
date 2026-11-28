@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from cost_archive import cost_ticks
+from cost_schema import CostEvent
 from grok_costs import BILLED_UID, UNPLACED_UID
 from metric_pi import PI_MTIME_UID
 
@@ -135,6 +136,6 @@ def _enrich_droid_models(previous, visible):
         if len(row) > 9 and not row[9]:
             names = exact.get((_stamped_usage(row), row[7:9])) or at_time.get((row[0], row[2]), ())
             if len(names) == 1:
-                row = (*row[:9], next(iter(names)))
+                row = CostEvent(*row[:9], next(iter(names)))
         result.append(row)
     return result

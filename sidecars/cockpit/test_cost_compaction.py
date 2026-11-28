@@ -12,11 +12,10 @@ from unittest.mock import patch
 import server
 from _cost_test_fixture import patch_cost_state
 from agy_cost_events import AgyCostDedup
-from cost_compaction import (
-    COMPACTED_UID, CompactedRows, load_compacted_rows, persisted_compaction,
-    plan_compaction,
-)
-from cost_runtime import CostRows, CostRuntime, NormalizedCostRows
+from cost_archive import CompactedRows, NormalizedCostRows, load_compacted_rows, persisted_compaction
+from cost_compaction import plan_compaction
+from cost_schema import COMPACTED_UID
+from cost_runtime import CostRows, CostRuntime
 from droid_ledger import DroidLedger
 
 NOW = 1_800_000_000.0

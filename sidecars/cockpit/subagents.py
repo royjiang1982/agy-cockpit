@@ -17,22 +17,19 @@ from typing import Callable
 
 from analyzer import (
     _ANALYSIS_CACHE,
-    BoundedCache, CostEvent, cached_paths, connect_readonly, log_lines, serialized,
     resolve_builtin_enum_from_parent,
     _BUILTIN_ENUM_LOCK,
     _BUILTIN_SUBAGENT_MODEL_ENUM,
-    APP_DIRS,
-    HOME,
     RE_INVOKE_ID,
     RE_PROTO_SUB_UUID,
     UUID_PAT,
     analyze_conversation,
-    decode_proto,
-    get_db_mtime,
-    parse_proto_duration,
 )
 from droid_acp_fallback import discovery_hints
-from metric_logs import parse_iso_ts
+from cockpit_io import (APP_DIRS, HOME, CODEX_SESSIONS_DIR, FACTORY_SESSIONS_DIR, GROK_SESSIONS_DIR, PI_SESSIONS_DIR,
+                        SUBAGENT_APP_DIRS, BoundedCache, cached_paths, connect_readonly, get_db_mtime, log_lines, parse_iso_ts, serialized)
+from cost_schema import CostEvent
+from proto_wire import decode_proto, parse_proto_duration
 from swarm_subagents import discover_swarm_stubs, finish_swarm_item, is_swarm_worker, merge_swarm_stub, native_stub_status, native_worker_status, swarm_dir_signature
 from metric_rates import speed
 from metric_codex import read_codex
@@ -40,15 +37,9 @@ from metric_pi import read_pi
 from metric_droid import read_droid
 from metric_grok import read_grok
 from agy_cost_events import step_update_time, transcript_model
-from metric_items import make_sub_item as _make_sub_item, summarize
+from metric_items import add_model_usage, make_sub_item as _make_sub_item, summarize
 from pricing import MODEL_MAP, canonical_model_label, estimate_source, calc_call_cost, model_quota_family, short_model_hint
 from subagent_labels import dispatch_paths, dispatch_patterns, extract_cli_task_label, format_native_label
-
-CODEX_SESSIONS_DIR = HOME / ".codex" / "sessions"
-PI_SESSIONS_DIR = HOME / ".pi" / "agent" / "sessions"
-FACTORY_SESSIONS_DIR = HOME / ".factory" / "sessions"
-GROK_SESSIONS_DIR = HOME / ".grok" / "sessions"
-SUBAGENT_APP_DIRS = [*APP_DIRS, ("CLI", HOME / ".gemini" / "antigravity-subagent")]
 
 RE_SA_VIEW = re.compile(rf"▶\s*(agy|codex|claude|pi|droid|grok)\s+会话\s+({UUID_PAT})(?:（([^）]+)）)?")
 RE_CONV_ID = re.compile(rf'"conversation_id"\s*:\s*"({UUID_PAT})"')
@@ -413,7 +404,7 @@ def analyze_agy_transcript_fallback(sub_or_path: str | Path, model_hint: str = "
                 out = int(usage.get("output_tokens") or 0)
                 s_idx = int(su.get("step_index") or 0)
                 dur_sec = float(su.get("duration_seconds") or 0.0)
-                t_start = step_update_time(obj, su, parse_iso_ts) or mtime
+                t_start = step_update_time(obj, su) or mtime
 
             if inp > 0 or cache > 0 or out > 0:
                 calls += 1
@@ -424,20 +415,12 @@ def analyze_agy_transcript_fallback(sub_or_path: str | Path, model_hint: str = "
                 c_cost = calc_call_cost(model, inp, cache, out, event_ts=s_ts)
                 tot_cost += c_cost
                 m_label = short_model_hint(model) or "Unknown"
-                pm = per_model_map.setdefault(
-                    m_label,
-                    {"model": m_label, "calls": 0, "prompt": 0, "in": 0, "cache": 0, "cache_write": 0, "out": 0, "cost": 0.0},
-                )
-                pm["calls"] += 1
-                pm["prompt"] += inp + cache
-                pm["in"] += inp
-                pm["cache"] += cache
-                pm["out"] += out
-                pm["cost"] += c_cost
+                add_model_usage(per_model_map, m_label, calls=1, prompt=inp + cache,
+                                input_tokens=inp, cache=cache, out=out, cost=c_cost)
                 if c_cost > 0:
                     uid = f"{s_idx}:{inp}:{cache}:{out}:{int(s_ts)}"
                     fam = model_quota_family(model)
-                    cost_events.append((round(s_ts, 3), round(c_cost, 8), fam, uid, inp, cache, out, int(new_turn),
+                    cost_events.append(CostEvent(round(s_ts, 3), round(c_cost, 8), fam, uid, inp, cache, out, int(new_turn),
                                         0, canonical_model_label(m_label)))
                     new_turn = False
                 if dur_sec > 0 and out > 0:

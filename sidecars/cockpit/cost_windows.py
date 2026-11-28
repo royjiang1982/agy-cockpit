@@ -4,6 +4,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from cockpit_io import finite_number
+from cost_schema import valid_event_time
 from droid_ledger import (
     droid_baseline, droid_remaining_frac, droid_reset_bounds, droid_reset_is_coarse,
     droid_start_uncertain, droid_window_start, quota_stale,
@@ -15,7 +17,6 @@ HOURS_5 = 18000
 WEEK = 604800
 _MIN_SAMPLE_AGE = 300
 _MIN_DELTA_USED = 0.05
-_FUTURE_GRACE = 2
 EVENT_TIMING_REV = 2
 _DEFAULT_WINDOWS = {
     "gemini-5h": HOURS_5, "gemini-weekly": WEEK, "3p-5h": HOURS_5, "3p-weekly": WEEK,
@@ -24,16 +25,10 @@ _DEFAULT_WINDOWS = {
 }
 
 
-def _finite(value):
-    try:
-        number = float(value or 0)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    return number if math.isfinite(number) else 0.0
-
-
-def valid_event_time(ts, now):
-    return 0 < ts <= now + _FUTURE_GRACE
+def _quota_number(value):
+    # Legacy quota snapshots coerce booleans and use zero for missing/invalid fields.
+    number = finite_number(int(value) if isinstance(value, bool) else value)
+    return number if number is not None else 0.0
 
 
 def _legacy_codex(bid, info):
@@ -78,9 +73,9 @@ class Window:
 
 def quota_window(bid, info, now):
     info = info if isinstance(info, dict) else {}
-    reset = _finite(info.get("reset_ts"))
+    reset = _quota_number(info.get("reset_ts"))
     raw_observed = info.get("observed_at")
-    observed = _finite(raw_observed)
+    observed = _quota_number(raw_observed)
     if not bid.startswith("droid-") and (type(raw_observed) not in (int, float) or not valid_event_time(observed, now)):
         observed = 0.0
     length = _DEFAULT_WINDOWS.get(bid, 0)
@@ -97,7 +92,7 @@ def quota_window(bid, info, now):
         if not known_start and 0 < observed <= now < floor and observed < reset:
             delta = _droid_delta(info, bid, observed, now)
     elif bid == "grok-weekly":
-        official_start = _finite(info.get("period_start_ts"))
+        official_start = _quota_number(info.get("period_start_ts"))
         known_start = 0 < official_start < reset and official_start <= now
         start = official_start if known_start else (reset - WEEK if reset > 0 else now - WEEK)
         if reset > 0:
@@ -107,7 +102,7 @@ def quota_window(bid, info, now):
     else:
         legacy = _legacy_codex(bid, info)
         if bid.startswith("codex-"):
-            minutes = _finite(info.get("window_minutes"))
+            minutes = _quota_number(info.get("window_minutes"))
             scoped = legacy or (minutes > 0 and info.get("limit_id") == DEFAULT_CODEX_LIMIT
                                 and info.get("cost_scope", False))
             if minutes > 0:
@@ -180,7 +175,7 @@ def quota_status_fields(bid, info, now, estimate):
     aligned = estimate is not None and window == estimate[0]
     estimate_ok = aligned and window.trusted
     return {
-        "pct": max(0.0, min(1.0, _finite(info.get("rem_frac")))) * 100,
+        "pct": max(0.0, min(1.0, _quota_number(info.get("rem_frac")))) * 100,
         "observed_at": window.observed, "stale": stale,
         "reset_sec": max(0, math.ceil(window.reset - now)),
         "estimate_ok": estimate_ok, "estimate_usd": estimate[1] if estimate_ok else None,

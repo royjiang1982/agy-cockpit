@@ -28,15 +28,11 @@ if str(SIDECAR_DIR) not in sys.path:
 
 from analyzer import (  # noqa: E402
     _BUILTIN_ENUM_LOCK,
-    CostEvent, cached_paths, last_successful_analysis,
+    last_successful_analysis,
     _BUILTIN_SUBAGENT_MODEL_ENUM,
-    APP_DIRS,
-    HOME,
     analyze_conversation,
     extract_db_cost_events,
     get_cached_analysis_events,
-    get_db_mtime,
-    connect_readonly,
     read_annotations,
     snapshot_builtin_model_enum,
 )
@@ -53,15 +49,9 @@ from rpc_quota import (  # noqa: E402
     _find_cli_bin,
     fetch_codex_quota,
     fetch_quota_buckets_with_meta,
-    get_live_theme,
     active_probe_count, pause_probes, resume_probes, terminate_active_probes,
 )
 from subagents import (  # noqa: E402
-    SUBAGENT_APP_DIRS,
-    CODEX_SESSIONS_DIR,
-    FACTORY_SESSIONS_DIR,
-    GROK_SESSIONS_DIR,
-    PI_SESSIONS_DIR,
     analyze_agy_transcript_fallback,
     analyze_codex_thread,
     analyze_droid_session,
@@ -70,19 +60,24 @@ from subagents import (  # noqa: E402
     collect_subagents,
 )
 import dispatch_api
+from cockpit_io import (APP_DIRS, HOME, CODEX_SESSIONS_DIR, FACTORY_SESSIONS_DIR, GROK_SESSIONS_DIR, PI_SESSIONS_DIR,
+                        SUBAGENT_APP_DIRS, atomic_write_text, cached_paths, connect_readonly, get_db_mtime)
+from cost_schema import CostEvent
+from theme_config import get_live_theme
 from swarm_subagents import list_swarm_worker_ids
 from calendar_models import calendar_item, calendar_summary as _calendar_summary
-from cost_archive import CompactedRows
+from cost_archive import CompactedRows, NormalizedCostRows
 from cost_compaction import should_rescan_transcript
 from cost_updates import commit_scan_updates, prepare_scan_updates, scan_droid_file, update_db
 from droid_ledger import DroidLedger
-from cost_runtime import CostRuntime, NormalizedCostRows
+from cost_runtime import CostRuntime
 from cost_windows import attach_quota_costs, quota_status_fields
 
 BASE_UI_VERSION = 29
 INDEX_HTML_FILE = SIDECAR_DIR / "index.html"
 WATCHED_PY_FILES = [
     SIDECAR_DIR / "server.py",
+    *(SIDECAR_DIR / f"{name}.py" for name in ("cockpit_io", "proto_wire", "cost_schema", "models_board", "theme_config")),
     SIDECAR_DIR / "pricing.py",
     SIDECAR_DIR / "analyzer.py",
     SIDECAR_DIR / "subagents.py",
@@ -313,9 +308,7 @@ def _save_persisted_state() -> bool:
                 "model_ctx_limits": export_model_ctx_limits(),
             }
         )
-        tmp_file = STATE_FILE.with_name(f".{STATE_FILE.name}.tmp.{os.getpid()}.{threading.get_ident()}")
-        tmp_file.write_text(payload, encoding="utf-8")
-        os.replace(tmp_file, STATE_FILE)
+        atomic_write_text(STATE_FILE, payload)
         return True
     except Exception:
         _LOG.exception("cannot persist view state")
@@ -454,7 +447,7 @@ def _normalize_cost_event(item) -> CostEvent:
                 int(parts[0])
                 float(parts[4])
                 usage = (*[max(0, int(value)) for value in parts[1:4]], 0)
-    return (round(float(item[0]), 3), round(float(item[1]), 8), str(item[2]), uid, *usage,
+    return CostEvent(round(float(item[0]), 3), round(float(item[1]), 8), str(item[2]), uid, *usage,
             int(item[8]) if len(item) > 8 else 0, str(item[9] or "").strip() if len(item) > 9 else "")
 
 

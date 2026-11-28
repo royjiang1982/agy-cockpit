@@ -1,10 +1,12 @@
 """Read droid usage and performance from offline session records."""
 from __future__ import annotations
 import json
-from analyzer import log_lines
+from cockpit_io import log_lines, parse_iso_ts
+from cost_schema import CostEvent
+from metric_items import add_model_usage
 from pricing import calc_call_cost, canonical_model_label, estimate_source, model_quota_family, short_model_hint
-from metric_rates import number, speed, split
-from metric_logs import _conserve, _reconcile_costs, parse_iso_ts
+from metric_rates import speed, split
+from metric_logs import _conserve, _reconcile_costs
 from droid_acp_fallback import acp_metrics, supplement_acp
 
 _FAILED_OUTCOMES = {"error", "aborted", "failed", "model_request_rejected"}
@@ -181,9 +183,9 @@ def read_droid(src, raw_path, jsonl_path, mtime):
         for i, name in enumerate(names):
             raw_part, cache_part, out_part, write_part = (values[i] for values in allocations)
             amount = calc_call_cost(name, raw_part, cache_part, out_part, write_part, calls=max(1, counts[name]), event_ts=event_ts)
-            per_model_map[name] = {'model': name, 'calls': counts[name], 'prompt': raw_part + write_part + cache_part,
-                                   'in': raw_part, 'cache_write': write_part, 'cache': cache_part,
-                                   'out': out_part, 'cost': amount, 'is_estimated': True}
+            row = add_model_usage(per_model_map, name, calls=counts[name], prompt=raw_part + write_part + cache_part,
+                                  input_tokens=raw_part, cache=cache_part, out=out_part, cost=amount, cache_write=write_part)
+            row["is_estimated"] = True
         tot_cost = sum(item['cost'] for item in per_model_map.values())
         per_call_weights = [per_model_map[name or model]['cost'] / counts[name or model] for _, name in turn_ts_models]
         amounts = _conserve(tot_cost, per_call_weights)
@@ -191,17 +193,18 @@ def read_droid(src, raw_path, jsonl_path, mtime):
             quotient, remainder = divmod(int(total), len(turn_ts_models))
             return [quotient + int(i < remainder) for i in range(len(turn_ts_models))]
         event_tokens = zip(split_tokens(raw_inp), split_tokens(cache), split_tokens(out), split_tokens(cw))
-        cost_events = [(round(ts, 3), amount, model_quota_family(name or model), "",
+        cost_events = [CostEvent(round(ts, 3), amount, model_quota_family(name or model), "",
                         i + w, c, o, 0, w, canonical_model_label(name or model))
                        for (ts, name), amount, (i, c, o, w) in zip(turn_ts_models, amounts, event_tokens)]
     else:
         tot_cost = calc_call_cost(model, raw_inp, cache, out, cw, calls=max(1, calls), event_ts=event_ts)
-        cost_events = [(round(event_ts, 3), tot_cost, model_quota_family(model), "",
+        cost_events = [CostEvent(round(event_ts, 3), tot_cost, model_quota_family(model), "",
                         inp, cache, out, 0, cw, canonical_model_label(model))] if tot_cost > 0 else []
-        per_model_map[model] = {'model': model, 'calls': calls, 'prompt': prompt, 'in': raw_inp,
-                               'cache_write': cw, 'cache': cache, 'out': out, 'cost': tot_cost, 'is_estimated': True}
+        row = add_model_usage(per_model_map, model, calls=calls, prompt=prompt, input_tokens=raw_inp,
+                              cache=cache, out=out, cost=tot_cost, cache_write=cw)
+        row["is_estimated"] = True
     cost_events = _reconcile_costs(tot_cost, cost_events, per_model_map)
-    cost_events.extend((round(ts, 3), 0., model_quota_family(name), "", 0, 0, 0, 1, 0,
+    cost_events.extend(CostEvent(round(ts, 3), 0., model_quota_family(name), "", 0, 0, 0, 1, 0,
                         canonical_model_label(name)) for ts, name in turns)
     res = {
         "model": m_disp,

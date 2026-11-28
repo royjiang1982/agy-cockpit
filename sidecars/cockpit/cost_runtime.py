@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import time
 from collections import OrderedDict
@@ -10,11 +9,13 @@ from datetime import date, datetime
 
 from agy_cost_events import AgyCostDedup
 from calendar_models import add_event_usage
+from cockpit_io import atomic_text_writer
 from cost_archive import (ARCHIVE_MAPS, NormalizedCostRows, cost_ticks, load_cached_files,
                           persisted_compaction, timezone_key as _timezone_key)
 from cost_compaction import plan_compaction, safe_cutoffs, source_exists
 from cost_migration import legacy_droid_keys, pending_keys
-from cost_windows import EVENT_TIMING_REV, WindowCosts, cached_event_mtime, merge_quota_cache, valid_event_time
+from cost_schema import valid_event_time
+from cost_windows import EVENT_TIMING_REV, WindowCosts, cached_event_mtime, merge_quota_cache
 
 
 class CostRows:
@@ -267,12 +268,10 @@ class CostRuntime:
             header['pending_rebuild'] = sorted(pending)
             header.update(persisted_compaction(files))
             path = state._COST_CACHE_FILE
-            tmp = path.with_name(f'.{path.name}.tmp.{os.getpid()}.{threading.get_ident()}')
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                with tmp.open('w', encoding='utf-8') as stream:
+                with atomic_text_writer(path) as stream:
                     _write_snapshot(stream, header, files, state._normalize_cost_event)
-                os.replace(tmp, path)
             except Exception:
                 state._LOG.exception('cannot persist cost event cache')
                 return

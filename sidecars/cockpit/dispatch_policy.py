@@ -4,16 +4,15 @@ from __future__ import annotations
 from contextlib import contextmanager
 import fcntl
 import json
-import math
 import os
-import re
 import shutil
-import tempfile
 import threading
 import time
 from pathlib import Path
 
 import dispatch_models  # Adds the bundled runtime to sys.path.
+from cockpit_io import atomic_write_text, find_cli_bin, finite_number
+from pricing import model_quota_family
 from agent_runtime.policy_contract import (
     EFFORTS, resolve_effective_effort, resolve_policy_path, strict_json_loads, unique_json_object, valid_model,
 )
@@ -41,8 +40,7 @@ def _has_wrapper(engine):
         dirs = (Path(env_bin),) if env_bin else (*_EXTRA_WRAPPER_DIRS, _BUNDLED_BIN)
         if not any((d / exe).is_file() and os.access(d / exe, os.X_OK) for d in dirs):
             return False
-    return bool(shutil.which(engine)) or any(
-        (d / engine).is_file() and os.access(d / engine, os.X_OK) for d in _CLI_BIN_DIRS)
+    return find_cli_bin(engine, extra_dirs=_CLI_BIN_DIRS) is not None
 
 class PolicyConflictError(Exception):
     """The revision has changed or the on-disk policy cannot be safely edited."""
@@ -167,17 +165,7 @@ def _write_policy(payload, expected_revision, policy_path):
         if current["policy"]["revision"] != expected_revision:
             raise PolicyConflictError("policy revision changed; reload before saving")
         updated = dict(payload, revision=expected_revision + 1)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                os.fchmod(stream.fileno(), 0o600)
-                json.dump(updated, stream, ensure_ascii=False, indent=2)
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(tmp, path)
-        finally:
-            Path(tmp).unlink(missing_ok=True)
+        atomic_write_text(path, json.dumps(updated, ensure_ascii=False, indent=2) + "\n")
         return updated
 
 def save_policy(payload, *, expected_revision, policy_path=None):
@@ -206,15 +194,13 @@ def _quota_cache(state_path):
             continue
     return {}
 
-def _number(value):
-    try:
-        return value if type(value) in (int, float) and math.isfinite(value) else None
-    except OverflowError:
-        return None
-
 def _quota_hint(row, now):
-    observed, reset, fraction = _number(row.get("observed_at")), _number(row.get("reset_ts")), _number(row.get("rem_frac"))
-    pct = _number(row.get("pct", None if fraction is None or not 0 <= fraction <= 1 else fraction * 100))
+    def numeric(value):
+        # Do not treat numeric strings as observed dispatch quota.
+        return value if type(value) in (int, float) and finite_number(value) is not None else None
+
+    observed, reset, fraction = numeric(row.get("observed_at")), numeric(row.get("reset_ts")), numeric(row.get("rem_frac"))
+    pct = numeric(row.get("pct", None if fraction is None or not 0 <= fraction <= 1 else fraction * 100))
     if pct is not None and not 0 <= pct <= 100:
         pct = None
     fresh = (pct is not None and observed is not None and observed > 0 and 0 <= now - observed <= MAX_QUOTA_AGE_SEC
@@ -255,12 +241,6 @@ def probe_capabilities(state_path=None, *, now=None):
                 agy_quota={family: _limiting_hint(rows) for family, rows in agy_families.items()
                            if rows or any(agy_families.values())})
 
-def _agy_quota_family(model):
-    names = set(re.findall(r"[a-z0-9]+", model.lower()))
-    if names.intersection(("claude", "opus", "sonnet", "haiku")):
-        return "3p"
-    return "gemini" if names.intersection(("gemini", "neon", "argon", "carbon", "hydrogen", "flash")) else None
-
 def _selection(target, policy, caps, state_path, *, read_only):
     channel, engine, raw_model, effort = (target[key] for key in ("channel", "engine", "model", "effort"))
     if not target.get("enabled", True):
@@ -273,7 +253,11 @@ def _selection(target, policy, caps, state_path, *, read_only):
             return None, "cli_unavailable"
         codex_rpc = policy["external_enabled"] and "codex" in caps.get("available_engines", ())
         model = dispatch_models.resolve_model_id(engine, raw_model, effort, agy_state_path=state_path, allow_codex_rpc=codex_rpc)
-        quota = caps.get("agy_quota", {}).get(_agy_quota_family(model), {}) if engine == "agy" else caps.get("quota", {}).get(engine, {})
+        if engine == "agy":
+            family = model_quota_family(model, agy_dispatch=True)
+            quota = caps.get("agy_quota", {}).get({"claude": "3p", "gemini": "gemini"}.get(family), {})
+        else:
+            quota = caps.get("quota", {}).get(engine, {})
         cutoff = policy["quota_fallback"]
         if cutoff["enabled"] and quota.get("fresh") and quota["pct"] <= cutoff["threshold_pct"]:
             return None, "quota_low"

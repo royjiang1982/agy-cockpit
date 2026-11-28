@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from analyzer import BoundedCache
+from cockpit_io import BoundedCache
 import droid_acp_fallback
 import pricing
 import subagents

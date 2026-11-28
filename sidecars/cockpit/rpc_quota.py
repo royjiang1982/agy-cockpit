@@ -1,4 +1,4 @@
-"""Official CLI quota monitors and live Antigravity theme reader."""
+"""Official CLI quota monitors and probe lifecycle registry."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import os
 import pty
 import re
 import select
-import shutil
 import struct
 import subprocess
 import tempfile
@@ -22,11 +21,10 @@ import signal
 import time
 from pathlib import Path
 
-from analyzer import HOME, cached_paths, log_lines, serialized
+from cockpit_io import CODEX_SESSIONS_DIR, FACTORY_SESSIONS_DIR, HOME, cached_paths, find_cli_bin, log_lines, parse_iso_ts, serialized
 from agy_quota import fetch_agy_quota
 from quota_sources import codex_rpc_windows as _extract_codex_rpc_windows, codex_rollout_windows
 from droid_ledger import parse_droid_reset_sec, droid_reset_precision, anchor_droid_quota
-from subagents import CODEX_SESSIONS_DIR, FACTORY_SESSIONS_DIR, parse_iso_ts
 
 _PROBE_LOCK = threading.RLock()
 _ACTIVE_PROBES: dict[int, tuple[subprocess.Popen, tuple[int, ...]]] = {}
@@ -102,34 +100,12 @@ _CODEX_QUOTA_CACHE: tuple[tuple[str, float], dict[str, dict]] | None = None
 _LAST_CODEX_SCAN_TS: float = 0.0
 _DROID_QUOTA_CACHE: dict[str, dict] = {}
 _GROK_QUOTA_CACHE: dict[str, dict] = {}
-_AGY_CONFIG_FILE = HOME / ".gemini" / "config" / "config.json"
-_THEME_CFG_MTIME_NS: int = -1
-_THEME_CFG_CACHE: dict = {
-    "mode": "dark",
-    "dark": {"background": "#101010", "foreground": "#cccccc", "primary": "#007acc"},
-    "light": {"background": "#F9F9F9", "foreground": "#101010", "primary": "#007acc"},
-}
+_CLI_BIN_DIRS = (HOME / ".local/bin", HOME / ".grok/bin", HOME / "bin",
+                 Path("/opt/homebrew/bin"), Path("/usr/local/bin"))
 
 
 def _find_cli_bin(name: str) -> str | None:
-    """Return executable path if CLI `name` is installed on the host, else None."""
-    found = shutil.which(name)
-    if found:
-        return found
-    for d in (
-        HOME / ".local" / "bin",
-        HOME / ".grok" / "bin",
-        HOME / "bin",
-        Path("/opt/homebrew/bin"),
-        Path("/usr/local/bin"),
-    ):
-        cand = d / name
-        try:
-            if cand.is_file() and os.access(cand, os.X_OK):
-                return str(cand)
-        except Exception:
-            continue
-    return None
+    return find_cli_bin(name, extra_dirs=_CLI_BIN_DIRS)
 
 
 def _store_codex_quota(sig: tuple[str, float], payload: dict[str, dict]) -> dict[str, dict]:
@@ -572,57 +548,3 @@ def fetch_grok_quota(seed_cache: dict[str, dict] | None = None, force_refresh: b
             _finish_probe(proc)
 
     return {"grok-installed": {"installed": True}, **_GROK_QUOTA_CACHE}
-
-
-def _norm_hex_color(val: object, default: str) -> str:
-    if not isinstance(val, str):
-        return default
-    s = val.strip()
-    if not s:
-        return default
-    if not s.startswith("#"):
-        s = "#" + s
-    if len(s) == 4:
-        s = "#" + "".join(ch * 2 for ch in s[1:])
-    return s if re.fullmatch(r"#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?", s) else default
-
-
-@serialized(lambda: "live-theme")
-def get_live_theme() -> dict:
-    """Read Antigravity userSettings theme seeds from ~/.gemini/config/config.json with mtime_ns caching."""
-    global _THEME_CFG_MTIME_NS, _THEME_CFG_CACHE
-    try:
-        st = _AGY_CONFIG_FILE.stat()
-        if st.st_mtime_ns == _THEME_CFG_MTIME_NS:
-            return _THEME_CFG_CACHE
-        raw = json.loads(_AGY_CONFIG_FILE.read_text(encoding="utf-8"))
-        us = (raw.get("userSettings") if isinstance(raw, dict) else None) or {}
-        raw_mode = us.get("themeMode")
-        mode = "dark"
-        if raw_mode == 2 or (isinstance(raw_mode, str) and "LIGHT" in raw_mode.upper()):
-            mode = "light"
-        elif raw_mode == 3 or (
-            isinstance(raw_mode, str) and any(k in raw_mode.upper() for k in ("INHERIT", "SYSTEM", "AUTO"))
-        ):
-            mode = "system"
-
-        d_seeds = us.get("customThemeSeedsDark") if isinstance(us.get("customThemeSeedsDark"), dict) else {}
-        l_seeds = us.get("customThemeSeedsLight") if isinstance(us.get("customThemeSeedsLight"), dict) else {}
-
-        _THEME_CFG_CACHE = {
-            "mode": mode,
-            "dark": {
-                "background": _norm_hex_color(d_seeds.get("background"), "#101010"),
-                "foreground": _norm_hex_color(d_seeds.get("foregroundOverride"), "#cccccc"),
-                "primary": _norm_hex_color(d_seeds.get("primary"), "#007acc"),
-            },
-            "light": {
-                "background": _norm_hex_color(l_seeds.get("background"), "#F9F9F9"),
-                "foreground": _norm_hex_color(l_seeds.get("foregroundOverride"), "#101010"),
-                "primary": _norm_hex_color(l_seeds.get("primary"), "#007acc"),
-            },
-        }
-        _THEME_CFG_MTIME_NS = st.st_mtime_ns
-    except Exception:
-        pass
-    return _THEME_CFG_CACHE

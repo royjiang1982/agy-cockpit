@@ -1,19 +1,18 @@
 """Auto-resolve versionless model family names to the latest concrete CLI model IDs."""
 from __future__ import annotations
 
-import contextlib
 import json
-import os
 from pathlib import Path
 import queue
 import re
-import shutil
-import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+
+from cockpit_io import CLI_BIN_DIRS, find_cli_bin
+import rpc_quota
 
 _RUNTIME_DIR = str(Path(__file__).resolve().parents[2] / "runtime")
 if _RUNTIME_DIR not in sys.path:
@@ -65,15 +64,11 @@ def _read_json_cached(path: Path):
             return None
 
 
+_CLI_BIN_DIRS = CLI_BIN_DIRS
+
+
 def _find_codex_bin() -> str | None:
-    found = shutil.which("codex")
-    if found:
-        return found
-    for d in (Path.home() / ".local/bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin")):
-        cand = d / "codex"
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
-    return None
+    return find_cli_bin("codex", extra_dirs=_CLI_BIN_DIRS)
 
 
 def _fetch_codex_models_rpc(timeout: float = 5.0) -> list[str] | None:
@@ -94,7 +89,7 @@ def _fetch_codex_models_rpc(timeout: float = 5.0) -> list[str] | None:
     result: list[str] | None = None
     try:
         with tempfile.TemporaryDirectory(prefix="agy-cockpit-codex-models-") as td:
-            proc = subprocess.Popen(
+            proc = rpc_quota._start_probe(
                 [codex_bin, "app-server", "--stdio"],
                 cwd=td,
                 stdin=subprocess.PIPE,
@@ -104,7 +99,6 @@ def _fetch_codex_models_rpc(timeout: float = 5.0) -> list[str] | None:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
-                start_new_session=True,
             )
             out_q: "queue.Queue[str | None]" = queue.Queue()
 
@@ -113,6 +107,8 @@ def _fetch_codex_models_rpc(timeout: float = 5.0) -> list[str] | None:
                     if proc.stdout is not None:
                         for ln in proc.stdout:
                             out_q.put(ln)
+                except (OSError, ValueError):
+                    pass  # The probe registry may close stdout during shutdown.
                 finally:
                     out_q.put(None)
 
@@ -164,14 +160,7 @@ def _fetch_codex_models_rpc(timeout: float = 5.0) -> list[str] | None:
         result = None
     finally:
         if proc is not None:
-            for p in (proc.stdin, proc.stdout):
-                if p:
-                    with contextlib.suppress(Exception):
-                        p.close()
-            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
-            with contextlib.suppress(Exception):
-                proc.wait(timeout=1.0)
+            rpc_quota._finish_probe(proc)
         with _LOCK:
             _CODEX_RPC_CACHE = (time.monotonic(), list(result) if result is not None else None)
     return result

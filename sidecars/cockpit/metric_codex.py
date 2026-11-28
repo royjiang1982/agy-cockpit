@@ -1,10 +1,12 @@
 """Read codex usage and performance from offline session records."""
 from __future__ import annotations
 import json
-from analyzer import CostEvent, log_lines
+from cockpit_io import finite_number, log_lines, parse_iso_ts
+from cost_schema import CostEvent
+from metric_items import add_model_usage
 from pricing import calc_call_cost, canonical_model_label, estimate_source, model_quota_family, short_model_hint
-from metric_rates import number, speed, split
-from metric_logs import _log_record, parse_iso_ts
+from metric_rates import speed, split
+from metric_logs import _log_record
 
 
 def read_codex(rollout, mtime):
@@ -34,17 +36,8 @@ def read_codex(rollout, mtime):
 
     def _add_pm(m_raw: str, eff: str, c_p: int, c_i: int, c_c: int, c_o: int, c_cost: float) -> str:
         m_key = f"{m_raw} ({eff})" if eff else m_raw
-        pm = per_model_map.setdefault(
-            m_key,
-            {"model": m_key, "calls": 0, "prompt": 0, "in": 0, "cache": 0, "out": 0, "cost": 0.0},
-        )
-        pm["calls"] += 1
-        pm["prompt"] += c_p
-        pm["in"] += c_i
-        pm["cache_write"] = pm.get("cache_write", 0) + max(0, c_p - c_i - c_c)
-        pm["cache"] += c_c
-        pm["out"] += c_o
-        pm["cost"] += c_cost
+        add_model_usage(per_model_map, m_key, calls=1, prompt=c_p, input_tokens=c_i,
+                        cache=c_c, out=c_o, cost=c_cost, cache_write=max(0, c_p - c_i - c_c))
         return canonical_model_label(m_key)
 
     try:
@@ -71,7 +64,7 @@ def read_codex(rollout, mtime):
                     last_task_event = "task_started"
                 elif ev_type in ("task_complete", "turn_aborted", "error"):
                     last_task_event = ev_type
-                    ms = number(pl.get("time_to_first_token_ms"))
+                    ms = finite_number(pl.get("time_to_first_token_ms"), non_negative=True)
                     if ms is not None:
                         first_tokens.append(ms / 1000)
                 elif ev_type == "token_count":
@@ -112,7 +105,7 @@ def read_codex(rollout, mtime):
                     tot_cost += c_cost
                     label = _add_pm(model, effort, c_prompt, c_in, c_cache, c_out, c_cost)
                     if c_cost > 0:
-                        cost_events.append((round(ts or mtime, 3), round(c_cost, 8), model_quota_family(model), "",
+                        cost_events.append(CostEvent(round(ts or mtime, 3), round(c_cost, 8), model_quota_family(model), "",
                                             c_in + c_cw, c_cache, c_out, 0, c_cw, label))
                         event_positions.append((record_index, task_serial))
                 if ts and last_req_ts and ts > last_req_ts and c_out > 0:
@@ -143,7 +136,7 @@ def read_codex(rollout, mtime):
                 tot_cost += c_cost
                 label = _add_pm(l_mod, l_eff, c_prompt, c_in, c_cache, c_out, c_cost)
                 if c_cost > 0:
-                    cost_events.append((round(l_ts, 3), round(c_cost, 8), model_quota_family(l_mod), "",
+                    cost_events.append(CostEvent(round(l_ts, 3), round(c_cost, 8), model_quota_family(l_mod), "",
                                         c_in + c_cw, c_cache, c_out, 0, c_cw, label))
                     event_positions.append((l_index, l_task))
 
@@ -152,14 +145,14 @@ def read_codex(rollout, mtime):
     first_by_task = {}
     for index, task in sorted(event_positions):
         first_by_task.setdefault(task, index)
-    cost_events = [(*event[:7], int(index == first_by_task[task]), *event[8:])
+    cost_events = [event._replace(turns=int(index == first_by_task[task]))
                    for event, (index, task) in zip(cost_events, event_positions)]
     uncached = max(0, tot_in - tot_cache - tot_cw)
     if tot_cost <= 0.0 and (uncached > 0 or tot_cache > 0 or tot_out > 0):
         tot_cost = calc_call_cost(model, uncached, tot_cache, tot_out, tot_cw, calls=max(1, calls), event_ts=mtime)
         if tot_cost > 0:
             label = _add_pm(model, effort, tot_in, uncached, tot_cache, tot_out, tot_cost)
-            cost_events = [(round(mtime, 3), round(tot_cost, 8), model_quota_family(model), "",
+            cost_events = [CostEvent(round(mtime, 3), round(tot_cost, 8), model_quota_family(model), "",
                             uncached + tot_cw, tot_cache, tot_out, max(1, calls), tot_cw, label)]
     hit_pct = (tot_cache * 100.0 / tot_in) if tot_in > 0 else None
     think, resp = split(tot_out, tot_think if split_ok else None)

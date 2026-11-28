@@ -9,14 +9,14 @@ from tempfile import TemporaryDirectory
 
 import analyzer
 from calendar_models import USAGE_FIELDS
-from cost_archive import COMPACTED_UID, cost_ticks, pack_rows, unpack_rows
-from cost_compaction import exact_rows
+from cost_archive import cost_ticks, exact_rows, pack_rows, unpack_rows
+from cost_schema import COMPACTED_UID, CostEvent
 from grok_costs import BILLED_UID, UNPLACED_UID
 from metric_codex import read_codex
 from metric_droid import read_droid
 from metric_grok import read_grok
 from metric_pi import read_pi
-from pricing import build_models_board
+from models_board import build_models_board
 import server
 import subagents
 from test_cost_compaction import NOW, OLD, aggregate, entry, event, folded, uid
@@ -47,6 +47,19 @@ def legacy_pack(rows):
 
 
 class CalendarModelTests(unittest.TestCase):
+    def test_named_cost_event_keeps_legacy_tuple_and_json_shape(self):
+        legacy = (NOW, .125, "gemini", "uid", 12, 3, 2, 1, 4, "Neon")
+        row = server._normalize_cost_event(list(legacy))
+        self.assertIsInstance(row, CostEvent)
+        self.assertIsInstance(row, tuple)
+        ts, cost, family, uid, inp, cache, out, turns, writes, model = row
+        self.assertEqual((ts, cost, family, uid, inp, cache, out, turns, writes, model), legacy)
+        self.assertEqual((row.ts, row.cost, row.input_tokens, row.cache_read_tokens, row.cache_write_tokens, row.model),
+                         (legacy[0], legacy[1], legacy[4], legacy[5], legacy[8], legacy[9]))
+        self.assertEqual(row[3:9], legacy[3:9])
+        self.assertEqual(json.dumps(row), json.dumps(legacy))
+        self.assertEqual(unpack_rows(pack_rows([row])), [row])
+
     def test_normalizes_4_8_9_and_10_fields(self):
         row = (NOW, .125, "gemini", uid(NOW).split("#")[0], 12, 3, 2, 1, 4, "Neon")
         self.assertEqual(server._normalize_cost_event(row[:4]), (*row[:7], 0, 0, ""))

@@ -4,18 +4,10 @@ from __future__ import annotations
 import math
 from urllib.parse import quote
 
+from cockpit_io import finite_number
+
 DEFAULT_CODEX_LIMIT = "codex"
 _SOURCE_PRIORITY = {"rollout": 1, "rpc": 2}
-
-
-def _number(value, default=0.0):
-    if isinstance(value, bool):
-        return default
-    try:
-        result = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return result if math.isfinite(result) else default
 
 
 def _label(minutes):
@@ -40,16 +32,17 @@ def _add_windows(out, entry, limit_id, observed, *, camel, anonymous_label=False
         win = entry.get(slot)
         if not isinstance(win, dict):
             continue
-        used = _number(win.get(fields[0]), None)
+        used = finite_number(win.get(fields[0]))
         if used is None:
             continue
-        duration = _number(win.get(fields[1]))
+        duration = finite_number(win.get(fields[1])) or 0.0
         minutes = int(duration) if 0 < duration <= 2**31 - 1 and duration.is_integer() else None
         standard = {300: "codex-5h", 10080: "codex-weekly"}.get(minutes) if cost_scope or anonymous_label else None
         bid = standard if standard and standard not in out else f"codex-window-{quote(limit_id, safe='')}-{slot}"
+        reset = finite_number(win.get(fields[2]))
         out.setdefault(bid, {
             "rem_frac": max(0.0, min(1.0, (100.0 - used) / 100.0)),
-            "reset_ts": _number(win.get(fields[2])), "observed_at": observed,
+            "reset_ts": reset if reset is not None else 0.0, "observed_at": observed,
             "window_minutes": minutes, "window_label": _label(minutes),
             "limit_id": limit_id or None, "cost_scope": cost_scope,
             "quota_source": "rpc" if camel else "rollout", "quota_slot": slot,
@@ -96,11 +89,11 @@ def _codex_rows(data):
 
 
 def _observed(row):
-    return _number(row.get("observed_at"))
+    return value if (value := finite_number(row.get("observed_at"))) is not None else 0.0
 
 
 def _known_window(row):
-    return _number(row.get("window_minutes")) > 0 and _number(row.get("reset_ts")) > 0
+    return (finite_number(row.get("window_minutes")) or 0.0) > 0 and (finite_number(row.get("reset_ts")) or 0.0) > 0
 
 
 def full_unstarted(row):
@@ -113,7 +106,7 @@ def _replaces_expired_window(previous, row):
     limit_id, slot = row.get("limit_id"), row.get("quota_slot")
     return (row.get("quota_source") == "rpc" and bool(limit_id) and previous.get("limit_id") == limit_id
             and previous.get("quota_slot") in (None, slot) and full_unstarted(row)
-            and 0 < _number(previous.get("reset_ts")) <= _observed(row))
+            and 0 < (finite_number(previous.get("reset_ts")) or 0.0) <= _observed(row))
 
 
 def merge_codex_quota(out, parsed):

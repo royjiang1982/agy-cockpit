@@ -4,6 +4,23 @@ from __future__ import annotations
 from metric_rates import grouped_speeds, speed, sum_known
 from pricing import estimate_source
 
+
+def add_model_usage(models, model, *, calls, prompt, input_tokens, cache, out, cost, cache_write=0):
+    """Accumulate usage by the caller's model key, including uncached input and writes."""
+    row = models.setdefault(model, {
+        "model": model, "calls": 0, "prompt": 0, "in": 0,
+        "cache": 0, "cache_write": 0, "out": 0, "cost": 0.0,
+    })
+    row["calls"] += calls
+    row["prompt"] += prompt
+    row["in"] += input_tokens
+    row["cache"] += cache
+    row["cache_write"] += cache_write
+    row["out"] += out
+    row["cost"] += cost
+    return row
+
+
 def make_sub_item(
     sub_id: str,
     agent: str,

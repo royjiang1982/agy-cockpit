@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import math
 
+from cost_schema import CostEvent
+from metric_items import add_model_usage
+from metric_logs import _conserve
 from pricing import calc_call_cost, canonical_model_label, model_quota_family
 
 UNPLACED_UID = "grok-summary-unplaced"
@@ -47,17 +50,14 @@ def _billed_usd(record):
 
 def _append_unplaced(events, models, model, ts, amount, inp, cache, out, calls, turns, writes=0):
     label = canonical_model_label(model) if model else ""
-    events.append((round(ts, 3), amount, model_quota_family(model) if model else "grok", UNPLACED_UID,
+    events.append(CostEvent(round(ts, 3), amount, model_quota_family(model) if model else "grok", UNPLACED_UID,
                    inp, cache, out, turns, writes, label))
     _add_model_usage(models, model, amount, inp, cache, out, calls, writes)
 
 
 def _add_model_usage(models, model, amount, inp, cache, out, calls, writes):
-    board_model = model or "Unknown"
-    pm = models.setdefault(board_model, {"model": board_model, "calls": 0, "prompt": 0, "in": 0, "cache": 0, "out": 0, "cost": 0.0})
-    for key, value in (("calls", calls), ("prompt", inp + cache), ("in", inp - writes), ("cache", cache), ("out", out), ("cost", amount)):
-        pm[key] += value
-    pm["cache_write"] = pm.get("cache_write", 0) + writes
+    add_model_usage(models, model or "Unknown", calls=calls, prompt=inp + cache, input_tokens=inp - writes,
+                    cache=cache, out=out, cost=amount, cache_write=writes)
 
 
 def _measured_cost(events):
@@ -71,11 +71,10 @@ def reconcile_grok_events(total, events):
     if not adjustable:
         return list(events)
     remaining = max(0.0, total - measured)
-    weight = sum(e[1] for e in adjustable)
-    amounts = [remaining * (e[1] / weight if weight else 1 / len(adjustable)) for e in adjustable[:-1]]
-    amounts.append(max(0.0, remaining - sum(amounts)))
+    amounts = _conserve(remaining, [e[1] for e in adjustable])
+    amounts[-1] = max(0.0, amounts[-1])
     assigned = iter(amounts)
-    return [e if e[3] == BILLED_UID else (e[0], next(assigned), *e[2:]) for e in events]
+    return [e if e[3] == BILLED_UID else CostEvent(e[0], next(assigned), *e[2:]) for e in events]
 
 
 def _event_usage(row):
@@ -103,7 +102,7 @@ def lock_grok_turn(events, start, cost, ticks, fallback, detailed=False, models=
         residual = max(0.0, cost - sum(r[1] for r in rows))
         if raw or cache or cw or out or residual > 1e-12:
             turns = max(0, fallback[7] - sum(row[7] for row in rows))
-            rows.append((fallback[0], residual, "grok", "", raw + cw, cache, out, turns, cw, ""))
+            rows.append(CostEvent(fallback[0], residual, "grok", "", raw + cw, cache, out, turns, cw, ""))
             events[start:] = rows
             if models is not None:
                 _add_model_usage(models, "", residual, raw + cw, cache, out, 0, cw)
@@ -114,9 +113,9 @@ def lock_grok_turn(events, start, cost, ticks, fallback, detailed=False, models=
     if not rows:
         rows = [fallback]
     elif all(e[3] == BILLED_UID for e in rows) and target > measured:
-        rows.append((*fallback[:3], "", 0, 0, 0, 0, 0, fallback[9]))
+        rows.append(CostEvent(*fallback[:3], "", 0, 0, 0, 0, 0, fallback[9]))
     rows = reconcile_grok_events(target, rows)
-    events[start:] = [(*e[:3], BILLED_UID, *e[4:]) for e in rows]
+    events[start:] = [CostEvent(*e[:3], BILLED_UID, *e[4:]) for e in rows]
     return target
 
 
@@ -174,7 +173,7 @@ def _allocate_summary_cost(events, named, official, default_model, unassigned, c
     ratio = min(1.0, budget / estimate) if estimate > 0 else 1.0
     for i, amount in adjustable:
         row = events[i]
-        events[i] = (row[0], amount * ratio, *row[2:])
+        events[i] = CostEvent(row[0], amount * ratio, *row[2:])
     for i, (_, _, _, amount, billed) in enumerate(named):
         if not billed:
             amounts[i] = amount * ratio

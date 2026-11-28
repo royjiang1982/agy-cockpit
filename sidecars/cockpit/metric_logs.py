@@ -1,7 +1,8 @@
 """Shared session-log readers and conservative allocation helpers."""
 from __future__ import annotations
 import json
-from datetime import datetime
+
+from cost_schema import CostEvent
 
 def _conserve(total, weights):
     if not weights:
@@ -14,7 +15,7 @@ def _conserve(total, weights):
 
 def _reconcile_costs(total, events, models):
     event_amounts = _conserve(total, [max(0.0, event[1]) for event in events])
-    events = [(event[0], amount, *event[2:]) for event, amount in zip(events, event_amounts)]
+    events = [CostEvent(event[0], amount, *event[2:]) for event, amount in zip(events, event_amounts)]
     amounts = _conserve(total, [max(0.0, item['cost']) for item in models.values()])
     for item, amount in zip(models.values(), amounts):
         item['cost'] = amount
@@ -45,14 +46,3 @@ def _log_record(line):
                     validate(item, depth + 1)
     validate(obj)
     return obj
-
-
-def parse_iso_ts(ts_str: str | None) -> float | None:
-    if not ts_str:
-        return None
-    try:
-        return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
-    except Exception:
-        return None
-
-

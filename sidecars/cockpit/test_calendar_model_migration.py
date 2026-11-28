@@ -3,8 +3,9 @@ from datetime import datetime
 import json
 import os
 
-import analyzer
-from cost_archive import COMPACTED_UID, CompactedRows, cost_ticks, timezone_key
+from cockpit_io import cached_paths
+from cost_archive import CompactedRows, cost_ticks, timezone_key
+from cost_schema import COMPACTED_UID
 from cost_migration import merge_history
 from cost_windows import EVENT_TIMING_REV
 from grok_costs import BILLED_UID, UNPLACED_UID
@@ -177,7 +178,7 @@ class CalendarModelMigrationTests(ScanFixture):
         self.patch("PI_SESSIONS_DIR", pi_dir)
         # Consecutive forced scans in this test stand in for separated worker ticks.
         self.patch("cached_paths", lambda base, pattern, recursive=False:
-                   analyzer.cached_paths(base, pattern, recursive, ttl=0))
+                   cached_paths(base, pattern, recursive, ttl=0))
         path = pi_dir / "later.jsonl"
         key, expired = f"pi:{path}", f"codex:{self.root / 'expired.jsonl'}"
         row = (OLD, .1, "claude", "", 100, 0, 0, 1, 0, "")

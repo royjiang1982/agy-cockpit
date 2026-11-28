@@ -1,10 +1,12 @@
 """Read grok usage and performance from offline session records."""
 from __future__ import annotations
 import json
-from analyzer import CostEvent, log_lines
+from cockpit_io import finite_number, log_lines, parse_iso_ts
+from cost_schema import CostEvent
+from metric_items import add_model_usage
 from pricing import calc_call_cost, canonical_model_label, estimate_source, model_quota_family, short_model_hint
-from metric_rates import number, speed, split
-from metric_logs import _log_record, _reconcile_costs, parse_iso_ts
+from metric_rates import speed, split
+from metric_logs import _log_record, _reconcile_costs
 from grok_timing import grok_perf, timed_turns
 from grok_costs import summary_body, _billed_usd, BILLED_UID, lock_grok_turn, merge_grok_usage, reconcile_grok_events
 
@@ -66,7 +68,7 @@ def read_grok(summary_path, updates_path, events_path, usage_path, raw_path, mti
                 out = int(u.get("outputTokens") or 0)
                 think = int(u.get("reasoningTokens") or 0)
                 t_calls = int(u.get("modelCalls") or u.get("numTurns") or 1)
-                api_ms = number(u.get("apiDurationMs"))
+                api_ms = finite_number(u.get("apiDurationMs"), non_negative=True)
                 billed = _billed_usd(u)
                 c_cost = billed if billed is not None else calc_call_cost(model, raw_inp, cr, out, cw, calls=max(1, t_calls), event_ts=ts)
                 if inp > 0 or cr > 0 or out > 0 or c_cost > 0:
@@ -77,7 +79,7 @@ def read_grok(summary_path, updates_path, events_path, usage_path, raw_path, mti
                     tot_out += out
                     tot_think += think
                     first_event = len(cost_events)
-                    timed_usage.append((ts, out, t_calls, api_ms, number(upd.get("elapsed_ms"))))
+                    timed_usage.append((ts, out, t_calls, api_ms, finite_number(upd.get("elapsed_ms"), non_negative=True)))
                     tot_cw += cw
                     split_ok &= (not out or u.get("reasoningTokens") is not None) and think <= out
                     turn_inc = 1
@@ -99,39 +101,21 @@ def read_grok(summary_path, updates_path, events_path, usage_path, raw_path, mti
                                 if m_billed is not None
                                 else calc_call_cost(m_key, m_raw_in, m_cr, m_out, m_cw, calls=max(1, m_calls), event_ts=ts)
                             )
-                            pm = per_model_map.setdefault(
-                                m_key,
-                                {"model": m_key, "calls": 0, "prompt": 0, "in": 0, "cache": 0, "out": 0, "cost": 0.0},
-                            )
-                            pm["calls"] += m_calls
-                            pm["prompt"] += m_in + m_cr
-                            pm["in"] += m_raw_in
-                            pm["cache_write"] = pm.get("cache_write", 0) + m_cw
-                            pm["cache"] += m_cr
-                            pm["out"] += m_out
-                            pm["cost"] += m_cost
+                            add_model_usage(per_model_map, m_key, calls=m_calls, prompt=m_in + m_cr,
+                                            input_tokens=m_raw_in, cache=m_cr, out=m_out, cost=m_cost, cache_write=m_cw)
                             if m_in or m_cr or m_out or m_cost > 0:
-                                cost_events.append((round(ts, 3), m_cost, model_quota_family(m_key),
+                                cost_events.append(CostEvent(round(ts, 3), m_cost, model_quota_family(m_key),
                                                     BILLED_UID if m_billed is not None else "",
                                                     m_in, m_cr, m_out, turn_inc, m_cw, canonical_model_label(m_key)))
                                 turn_inc = 0
                     else:
-                        pm = per_model_map.setdefault(
-                            model,
-                            {"model": model, "calls": 0, "prompt": 0, "in": 0, "cache": 0, "out": 0, "cost": 0.0},
-                        )
-                        pm["calls"] += max(1, t_calls)
-                        pm["prompt"] += inp + cr
-                        pm["in"] += raw_inp
-                        pm["cache_write"] = pm.get("cache_write", 0) + cw
-                        pm["cache"] += cr
-                        pm["out"] += out
-                        pm["cost"] += c_cost
+                        add_model_usage(per_model_map, model, calls=max(1, t_calls), prompt=inp + cr,
+                                        input_tokens=raw_inp, cache=cr, out=out, cost=c_cost, cache_write=cw)
                         if inp or cr or out or c_cost > 0:
-                            cost_events.append((round(ts, 3), round(c_cost, 8), model_quota_family(model), "",
+                            cost_events.append(CostEvent(round(ts, 3), round(c_cost, 8), model_quota_family(model), "",
                                                 inp, cr, out, 1, cw, canonical_model_label(model)))
                     tot_cost += lock_grok_turn(cost_events, first_event, c_cost, billed is not None,
-                                                (round(ts, 3), c_cost, model_quota_family(model), "",
+                                                CostEvent(round(ts, 3), c_cost, model_quota_family(model), "",
                                                  inp, cr, out, 1, cw, canonical_model_label(model)),
                                                 detailed=isinstance(mu, dict) and bool(mu), models=per_model_map)
         except Exception:
@@ -180,19 +164,10 @@ def read_grok(summary_path, updates_path, events_path, usage_path, raw_path, mti
                         tot_think += think
                         c_cost = calc_call_cost(model, raw_inp, cr, out, cw, event_ts=mtime)
                         tot_cost += c_cost
-                        pm = per_model_map.setdefault(
-                            model,
-                            {"model": model, "calls": 0, "prompt": 0, "in": 0, "cache": 0, "out": 0, "cost": 0.0},
-                        )
-                        pm["calls"] += 1
-                        pm["prompt"] += inp + cr
-                        pm["in"] += raw_inp
-                        pm["cache_write"] = pm.get("cache_write", 0) + cw
-                        pm["cache"] += cr
-                        pm["out"] += out
-                        pm["cost"] += c_cost
+                        add_model_usage(per_model_map, model, calls=1, prompt=inp + cr,
+                                        input_tokens=raw_inp, cache=cr, out=out, cost=c_cost, cache_write=cw)
                         if c_cost > 0:
-                            cost_events.append((round(mtime, 3), round(c_cost, 8), model_quota_family(model), "",
+                            cost_events.append(CostEvent(round(mtime, 3), round(c_cost, 8), model_quota_family(model), "",
                                                 inp, cr, out, 1, cw, canonical_model_label(model)))
                 elif ro.get("type") == "end":
                     saw_terminal = True

@@ -1,12 +1,9 @@
-"""Protobuf decoding, annotations reader, and SQLite conversation trajectory analyzer."""
+"""Annotations reader and SQLite conversation trajectory analyzer."""
 
 from __future__ import annotations
 
 import contextlib
-import functools
 import logging
-from collections import OrderedDict
-from collections.abc import MutableMapping
 import json
 import re
 import sqlite3
@@ -15,14 +12,17 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from agy_cost_events import call_uid, payload_id
 from annotation_index import AnnotationIndex
+from cockpit_io import APP_DIRS, BoundedCache, cached_paths, connect_readonly, get_db_mtime, serialized
+from cost_schema import ACTIVE_STEP_STATUSES, ASK_QUESTION_STEP_STATUSES, CostEvent, ask_question_step, call_uid, payload_id
+from metric_items import add_model_usage
+from models_board import build_models_board
+from proto_wire import decode_proto, parse_annotation_text, parse_proto_duration
 from metric_rates import db_perf, proto_split, sum_known
 from pricing import (
     estimate_source,
     CTX_WINDOW_MAX,
     MODEL_MAP,
-    build_models_board,
     calc_call_cost,
     calc_call_cost_breakdown,
     canonical_model_label,
@@ -33,212 +33,7 @@ from pricing import (
     register_dynamic_models,
 )
 
-# All readers share bounded, synchronized caches. Values are immutable after publication.
-CostEvent = tuple[float, float, str, str, int, int, int, int, int, str]
 _LOG = logging.getLogger(__name__)
-_CACHE_STRIPES = [threading.RLock() for _ in range(64)]
-
-
-class BoundedCache(MutableMapping):
-    def __init__(self, capacity=128):
-        self.capacity = capacity
-        self.lock = threading.RLock()
-        self.data = OrderedDict()
-
-    def __getitem__(self, key):
-        with self.lock:
-            value = self.data[key]
-            self.data.move_to_end(key)
-            return value
-
-    def __setitem__(self, key, value):
-        with self.lock:
-            self.data[key] = value
-            self.data.move_to_end(key)
-            while len(self.data) > self.capacity:
-                self.data.popitem(last=False)
-
-    def __delitem__(self, key):
-        with self.lock:
-            del self.data[key]
-
-    def __iter__(self):
-        with self.lock:
-            return iter(tuple(self.data))
-
-    def __len__(self):
-        with self.lock:
-            return len(self.data)
-
-    def get(self, key, default=None):
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def setdefault(self, key, default=None):
-        with self.lock:
-            if key not in self.data:
-                self[key] = default
-            return self[key]
-
-    def clear(self):
-        with self.lock:
-            self.data.clear()
-
-    def publish(self, key, value, version):
-        """Reject an older computation that finished after a newer one."""
-        with self.lock:
-            previous = self.data.get(key)
-            if previous is not None and version(previous) > version(value):
-                return False
-            self[key] = value
-            return True
-
-
-def serialized(key_fn):
-    def decorate(fn):
-        locks = [threading.RLock() for _ in range(64)]
-        @functools.wraps(fn)
-        def wrapped(*args, **kwargs):
-            with locks[hash(key_fn(*args, **kwargs)) % len(locks)]:
-                return fn(*args, **kwargs)
-        return wrapped
-    return decorate
-
-
-_DIRECTORY_CACHE = BoundedCache(128)
-_LOG_LINES_CACHE = BoundedCache(32)
-
-
-def cached_paths(base: Path, pattern: str, recursive=False, ttl=1.0) -> tuple[Path, ...]:
-    key = (str(base), pattern, recursive)
-    now = time.monotonic()
-    cached = _DIRECTORY_CACHE.get(key)
-    if cached and now - cached[0] < ttl:
-        return cached[1]
-    paths = tuple(base.rglob(pattern) if recursive else base.glob(pattern))
-    _DIRECTORY_CACHE[key] = (now, paths)
-    return paths
-
-
-def log_lines(path: Path):
-    """Read append-only logs incrementally; retain at most 4 MiB per cached file.
-
-    An incomplete final line is retried after the next append. Large files are
-    streamed without retaining a second complete text copy.
-    """
-    st = path.stat()
-    key = str(path)
-    signature = (st.st_dev, st.st_ino)
-    with _CACHE_STRIPES[hash(('log', key)) % len(_CACHE_STRIPES)]:
-        cached = _LOG_LINES_CACHE.get(key)
-        lines, offset = [], 0
-        if cached and cached[0] == signature and st.st_size >= cached[1] and st.st_mtime_ns >= cached[2]:
-            if st.st_size == cached[1] and st.st_mtime_ns == cached[2]:
-                return iter(cached[3] + ((cached[5],) if cached[5] is not None else ()))
-            if st.st_size > cached[1]:
-                lines, offset = list(cached[3]), cached[4]
-        retained = sum(len(line) for line in lines)
-        final_line = None
-        with path.open('rb') as stream:
-            stream.seek(offset)
-            for raw in stream:
-                if not raw.endswith(b'\n'):
-                    # A valid final JSON record is usable even without a newline,
-                    # but keep its start offset so appends cannot lose a record.
-                    text = raw.decode('utf-8', errors='replace')
-                    try:
-                        json.loads(text)
-                    except (ValueError, TypeError):
-                        break
-                    final_line = text
-                    break
-                lines.append(raw.decode('utf-8', errors='replace').rstrip('\r\n'))
-                offset = stream.tell()
-                retained += len(raw)
-                if retained > 4 * 1024 * 1024:
-                    _LOG_LINES_CACHE.pop(key, None)
-                    return _stream_log_lines(path)
-        _LOG_LINES_CACHE[key] = (signature, st.st_size, st.st_mtime_ns, tuple(lines), offset, final_line)
-        return iter(lines + ([final_line] if final_line is not None else []))
-
-
-def _stream_log_lines(path):
-    with path.open(encoding='utf-8', errors='replace') as stream:
-        yield from stream
-
-
-class _ReadonlyCursor(sqlite3.Cursor):
-    def execute(self, sql, parameters=()):
-        if sql.strip().upper() == "BEGIN" and self.connection.in_transaction:
-            return self
-        return super().execute(sql, parameters)
-
-
-class _ReadonlyConnection(sqlite3.Connection):
-    def cursor(self, factory=_ReadonlyCursor):
-        return super().cursor(factory)
-
-    def execute(self, sql, parameters=()):
-        if sql.strip().upper() == "BEGIN" and self.in_transaction:
-            return self.cursor()
-        return super().execute(sql, parameters)
-
-    def close(self):
-        with contextlib.suppress(sqlite3.Error):
-            if self.in_transaction:
-                self.rollback()
-        super().close()
-
-
-def connect_readonly(path: str | Path, timeout=0.5):
-    p = Path(path).resolve()
-    if not p.is_file():
-        raise sqlite3.OperationalError(f"unable to open database file: {p}")
-    uri = p.as_uri()
-    wal = Path(f"{p}-wal")
-    shm = Path(f"{p}-shm")
-    if shm.exists():
-        conn = None
-        try:
-            conn = sqlite3.connect(uri + "?mode=ro", uri=True, timeout=timeout, factory=_ReadonlyConnection)
-            conn.execute("PRAGMA query_only=ON")
-            conn.execute("BEGIN")
-            conn.execute("PRAGMA schema_version").fetchone()
-            return conn
-        except sqlite3.OperationalError:
-            if conn is not None:
-                with contextlib.suppress(Exception):
-                    conn.close()
-    try:
-        wal_nonempty = wal.exists() and wal.stat().st_size > 0
-    except OSError:
-        wal_nonempty = False
-    if not wal_nonempty:
-        conn = None
-        try:
-            conn = sqlite3.connect(uri + "?mode=ro&immutable=1", uri=True, timeout=timeout, factory=_ReadonlyConnection)
-            conn.execute("PRAGMA query_only=ON")
-            conn.execute("BEGIN")
-            conn.execute("PRAGMA schema_version").fetchone()
-            return conn
-        except sqlite3.OperationalError:
-            if conn is not None:
-                with contextlib.suppress(Exception):
-                    conn.close()
-            if not p.is_file():
-                raise
-    conn = sqlite3.connect(str(p), timeout=timeout, factory=_ReadonlyConnection)
-    try:
-        conn.execute("PRAGMA query_only=ON")
-        conn.execute("BEGIN")
-        conn.execute("PRAGMA schema_version").fetchone()
-        return conn
-    except Exception:
-        with contextlib.suppress(Exception):
-            conn.close()
-        raise
 
 
 def last_successful_analysis(conv_id: str, error='') -> dict | None:
@@ -249,12 +44,6 @@ def last_successful_analysis(conv_id: str, error='') -> dict | None:
     out.update(stale=True, live_status={}, error=str(error))
     return out
 
-
-HOME = Path.home()
-APP_DIRS = [
-    ("App", HOME / ".gemini" / "antigravity"),
-    ("CLI", HOME / ".gemini" / "antigravity-cli"),
-]
 
 UUID_PAT = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 RE_INVOKE_ID = re.compile(rf'"conversationId"\s*:\s*"({UUID_PAT})"')
@@ -276,67 +65,6 @@ def snapshot_builtin_model_enum() -> dict[str, int]:
         return dict(_BUILTIN_SUBAGENT_MODEL_ENUM)
 
 
-def decode_varint(buf: bytes, pos: int) -> tuple[int, int]:
-    if pos < 0:
-        raise ValueError('negative protobuf offset')
-    result = 0
-    for shift in range(0, 70, 7):
-        if pos >= len(buf):
-            raise ValueError('truncated protobuf varint')
-        byte = buf[pos]
-        pos += 1
-        if shift == 63 and byte > 1:
-            raise ValueError('protobuf varint overflow')
-        result |= (byte & 0x7f) << shift
-        if not byte & 0x80:
-            return result, pos
-    raise ValueError('protobuf varint overflow')
-
-
-def decode_proto(buf: bytes) -> list[tuple[int, str, int | bytes]]:
-    if len(buf) > 64 * 1024 * 1024:
-        raise ValueError('protobuf payload too large')
-    pos, fields = 0, []
-    while pos < len(buf):
-        tag, pos = decode_varint(buf, pos)
-        fnum, wire = tag >> 3, tag & 7
-        if not 0 < fnum <= 0x1fffffff:
-            raise ValueError('invalid protobuf field')
-        if wire == 0:
-            value, pos = decode_varint(buf, pos)
-            fields.append((fnum, 'varint', value))
-        elif wire == 2:
-            length, pos = decode_varint(buf, pos)
-            if length > len(buf) - pos:
-                raise ValueError('truncated protobuf bytes')
-            fields.append((fnum, 'bytes', buf[pos:pos + length]))
-            pos += length
-        elif wire in (1, 5):
-            size = 8 if wire == 1 else 4
-            if size > len(buf) - pos:
-                raise ValueError('truncated protobuf fixed field')
-            pos += size
-        else:
-            raise ValueError('unsupported protobuf wire type')
-    return fields
-
-
-def parse_proto_duration(sub: bytes) -> float:
-    if not sub:
-        return 0.0
-    f = {k: v for k, t, v in decode_proto(sub) if t == "varint" and isinstance(v, int)}
-    return float(f.get(1, 0)) + float(f.get(2, 0)) / 1e9
-
-
-def get_db_mtime(db_path: Path) -> float:
-    m = db_path.stat().st_mtime
-    with contextlib.suppress(OSError):
-        st = Path(f"{db_path}-wal").stat()
-        if st.st_size > 0:
-            m = max(m, st.st_mtime)
-    return m
-
-
 class AnnotationTitles(dict):
     """Legacy title mapping plus source-specific flags, without breaking unpacking."""
 
@@ -345,162 +73,10 @@ class AnnotationTitles(dict):
         self.by_source: dict[tuple[str, str], dict] = {}
 
 
-def parse_annotation_text(text: str) -> dict:
-    """Read Protobuf text with nested messages, lists, comments and C escapes.
-
-    A stdlib parser keeps the sidecar dependency-free. Unknown fields are parsed,
-    so quoted field names cannot masquerade as archive flags. Malformed data is
-    rejected rather than used to authorize mutations.
-    """
-    if len(text) > 1024 * 1024:
-        raise ValueError('annotations too large')
-    lexer = re.compile(r"""\s+|\#[^\n]*|//[^\n]*|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|[{}<>:\[\],;]|[^\s{}<>:\[\],;"'\#]+""")
-    tokens, pos = [], 0
-    for match in lexer.finditer(text):
-        if match.start() != pos:
-            raise ValueError('invalid annotations token')
-        pos = match.end()
-        token = match.group()
-        if not token.isspace() and not token.startswith(('#', '//')):
-            tokens.append(token)
-    if pos != len(text):
-        raise ValueError('unterminated annotations string')
-
-    def unescape(token):
-        out, i, body = bytearray(), 0, token[1:-1]
-        escapes = {'a': 7, 'b': 8, 'f': 12, 'n': 10, 'r': 13,
-                   't': 9, 'v': 11, '\\': 92, '"': 34, "'": 39, '?': 63}
-        while i < len(body):
-            ch = body[i]
-            i += 1
-            if ch != '\\':
-                out.extend(ch.encode('utf-8'))
-                continue
-            if i == len(body):
-                raise ValueError('incomplete annotations escape')
-            ch = body[i]
-            i += 1
-            if ch in escapes:
-                out.append(escapes[ch])
-            elif ch in '01234567':
-                digits = ch
-                while i < len(body) and len(digits) < 3 and body[i] in '01234567':
-                    digits += body[i]
-                    i += 1
-                out.append(int(digits, 8))
-            elif ch in 'xuU':
-                limit = {'x': 2, 'u': 4, 'U': 8}[ch]
-                digits = ''
-                while i < len(body) and len(digits) < limit and body[i] in '0123456789abcdefABCDEF':
-                    digits += body[i]
-                    i += 1
-                if not digits or (ch != 'x' and len(digits) != limit):
-                    raise ValueError('invalid annotations hex escape')
-                number = int(digits, 16)
-                out.extend(bytes([number]) if ch == 'x' else chr(number).encode('utf-8'))
-            else:
-                raise ValueError('unknown annotations escape')
-        return out
-
-    index = 0
-
-    def value(depth):
-        nonlocal index
-        if index >= len(tokens) or depth > 32:
-            raise ValueError('invalid annotations value')
-        token = tokens[index]
-        index += 1
-        if token in ('{', '<'):
-            return message('}' if token == '{' else '>', depth + 1)
-        if token == '[':
-            result = []
-            while index < len(tokens) and tokens[index] != ']':
-                result.append(value(depth + 1))
-                if index < len(tokens) and tokens[index] == ',':
-                    index += 1
-                elif index < len(tokens) and tokens[index] != ']':
-                    raise ValueError('invalid annotations list')
-            if index == len(tokens):
-                raise ValueError('unterminated annotations list')
-            index += 1
-            return result
-        if token.startswith(('"', "'")):
-            result = unescape(token)
-            while index < len(tokens) and tokens[index].startswith(('"', "'")):
-                result.extend(unescape(tokens[index]))
-                index += 1
-            return result.decode('utf-8')
-        if token in ('true', 'false', 'True', 'False'):
-            return token.lower() == 'true'
-        try:
-            return int(token, 10) if re.fullmatch(r'[+-]?\d+', token) else int(token, 0)
-        except ValueError:
-            if re.fullmatch(r'[A-Za-z_][\w.]*', token):
-                return token
-            raise ValueError('invalid annotations scalar') from None
-
-    def message(end='', depth=0):
-        nonlocal index
-        result = {}
-        while index < len(tokens) and tokens[index] != end:
-            key = tokens[index]
-            index += 1
-            if not re.fullmatch(r'[A-Za-z_][\w.]*', key):
-                raise ValueError('invalid annotations field')
-            if index < len(tokens) and tokens[index] == ':':
-                index += 1
-            elif index == len(tokens) or tokens[index] not in ('{', '<'):
-                raise ValueError('missing annotations colon')
-            item = value(depth)
-            if key in result and key in ('title', 'archived', 'last_user_view_time'):
-                raise ValueError('duplicate annotation field')
-            result[key] = item
-            if index < len(tokens) and tokens[index] in (',', ';'):
-                index += 1
-        if end:
-            if index == len(tokens):
-                raise ValueError('unterminated annotations message')
-            index += 1
-        return result
-
-    result = message()
-    if 'title' in result and not isinstance(result['title'], str):
-        raise ValueError('invalid annotation title')
-    if 'archived' in result and (type(result['archived']) not in (bool, int) or result['archived'] not in (0, 1)):
-        raise ValueError('invalid archived flag')
-    result['archived'] = bool(result.get('archived', False))
-    return result
-
-
 @serialized(lambda: "annotations")
 def read_annotations() -> tuple[dict[str, str], dict[str, float], dict[str, int]]:
     """Read conversation titles, exact `last_user_view_time`, and `.pbtxt` nanosecond mtimes."""
     return _ANNOTATIONS_INDEX.read(APP_DIRS, cached_paths, parse_annotation_text, AnnotationTitles, get_db_mtime, connect_readonly)
-
-
-ACTIVE_STEP_STATUSES = (1, 2, 8, 9)
-ASK_QUESTION_STEP_STATUSES = (1, 2, 6, 7, 8, 9)
-
-
-def _ask_question_step(payload_or_meta: bytes) -> bool:
-    """Return True if a step_payload or step metadata belongs to an `ask_question` tool call."""
-    if not payload_or_meta or b"ask_question" not in payload_or_meta:
-        return False
-    try:
-        top = {k: v for k, t, v in decode_proto(payload_or_meta) if t == "bytes" and isinstance(v, bytes)}
-        for meta_bytes in (top.get(5, b""), payload_or_meta):
-            if not meta_bytes:
-                continue
-            m_map = {k: v for k, t, v in decode_proto(meta_bytes) if t == "bytes" and isinstance(v, bytes)}
-            call_bytes = m_map.get(4, b"")
-            if not call_bytes:
-                continue
-            c_map = {k: v for k, t, v in decode_proto(call_bytes) if t == "bytes" and isinstance(v, bytes)}
-            if c_map.get(2) == b"ask_question":
-                return True
-    except Exception:
-        return False
-    return False
 
 
 RE_SCHEDULE_DURATION = re.compile(rb'"DurationSeconds"\s*:\s*(\d+)')
@@ -1081,7 +657,7 @@ def extract_db_cost_events(db_path: Path, mtime: float) -> list[CostEvent]:
             if c_cost > 0:
                 s_ts = float(c.get("start_ts") or c_ts)
                 uid = call_uid(c, s_ts)
-                events.append((round(c_ts, 3), round(c_cost, 8), model_quota_family(c_mname), uid,
+                events.append(CostEvent(round(c_ts, 3), round(c_cost, 8), model_quota_family(c_mname), uid,
                                int(c["in"]), int(c["cache"]), int(c["out"]), int(c["step_idx"] in first_steps),
                                0, canonical_model_label(c_mshort or c_mname)))
     except Exception:
@@ -1278,18 +854,10 @@ def _analyze_conversation_base(
         if c_cost > 0:
             s_ts = float(c.get("start_ts") or c_ts)
             uid = call_uid(c, s_ts)
-            cost_events.append((round(c_ts, 3), round(c_cost, 8), model_quota_family(c_mname), uid,
+            cost_events.append(CostEvent(round(c_ts, 3), round(c_cost, 8), model_quota_family(c_mname), uid,
                                 int(c["in"]), int(c["cache"]), int(c["out"]), int(c["step_idx"] in first_steps), 0, m_key))
-        mb = main_model_map.setdefault(
-            m_key,
-            {"model": m_key, "calls": 0, "prompt": 0, "in": 0, "cache": 0, "out": 0, "cost": 0.0},
-        )
-        mb["calls"] += 1
-        mb["prompt"] += c["prompt"]
-        mb["in"] += c["in"]
-        mb["cache"] += c["cache"]
-        mb["out"] += c["out"]
-        mb["cost"] += c_cost
+        add_model_usage(main_model_map, m_key, calls=1, prompt=c["prompt"], input_tokens=c["in"],
+                        cache=c["cache"], out=c["out"], cost=c_cost)
     for turn_obj, t_metered in zip(turns, turn_metered_refs):
         turn_obj["cost"] = round(sum(call_costs.get(id(c), 0.0) for c in t_metered), 6)
     main_models = list(main_model_map.values())
@@ -1338,7 +906,7 @@ def _analyze_conversation_base(
         and last_step_type == 132
         and last_step_status in ASK_QUESTION_STEP_STATUSES
         and last_step_idx > latest_call["step_idx"]
-        and (_ask_question_step(last_step_row[3] or b"") or _ask_question_step(last_step_row[4] or b""))
+        and (ask_question_step(last_step_row[3] or b"") or ask_question_step(last_step_row[4] or b""))
     )
     last_ckpt_idx = max((c["step_idx"] for c in calls if c.get("is_checkpoint")), default=0)
     min_valid_bg_idx = max(last_u_idx, last_ckpt_idx)

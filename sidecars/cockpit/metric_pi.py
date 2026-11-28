@@ -1,9 +1,11 @@
 """Read pi usage and performance from offline session records."""
 from __future__ import annotations
-from analyzer import CostEvent, log_lines
+from cockpit_io import finite_number, log_lines, parse_iso_ts
+from cost_schema import CostEvent
+from metric_items import add_model_usage
 from pricing import calc_call_cost, canonical_model_label, estimate_source, model_quota_family, short_model_hint
-from metric_rates import number, speed, split
-from metric_logs import _log_record, parse_iso_ts
+from metric_rates import speed, split
+from metric_logs import _log_record
 
 PI_MTIME_UID = "pi-file-mtime"
 
@@ -70,28 +72,19 @@ def read_pi(sess_path, mtime):
                         tot_out += out
                         tot_think += think
                         reported = u.get("cost")
-                        c_cost = number(reported.get("total") if isinstance(reported, dict) else reported)
+                        c_cost = finite_number(reported.get("total") if isinstance(reported, dict) else reported, non_negative=True)
                         source = "reported" if c_cost is not None else estimate_source(model)
                         sources.add(source)
                         if c_cost is None:
                             c_cost = calc_call_cost(model, raw_inp, cache, out, cw, event_ts=ts or mtime)
                         tot_cost += c_cost
-                        pm = per_model_map.setdefault(
-                            model,
-                            {"model": model, "calls": 0, "prompt": 0, "in": 0, "cache": 0, "out": 0, "cost": 0.0},
-                        )
-                        pm["calls"] += 1
-                        pm["prompt"] += inp + cache
-                        pm["in"] += raw_inp
-                        pm["cache_write"] = pm.get("cache_write", 0) + cw
+                        pm = add_model_usage(per_model_map, model, calls=1, prompt=inp + cache,
+                                             input_tokens=raw_inp, cache=cache, out=out, cost=c_cost, cache_write=cw)
                         pm["cost_source"] = source if pm.get("cost_source", source) == source else "mixed"
-                        pm["cache"] += cache
-                        pm["out"] += out
-                        pm["cost"] += c_cost
-                        cost_events.append((round(ts or mtime, 3), c_cost, model_quota_family(model), "" if ts else PI_MTIME_UID,
+                        cost_events.append(CostEvent(round(ts or mtime, 3), c_cost, model_quota_family(model), "" if ts else PI_MTIME_UID,
                                             inp, cache, out, int(new_turn), cw, canonical_model_label(model)))
                         new_turn = False
-                        seconds = (number(msg.get("durationMs")) or 0) / 1000
+                        seconds = (finite_number(msg.get("durationMs"), non_negative=True) or 0) / 1000
                         if not seconds and last_req_ts and ts and ts > last_req_ts:
                             seconds = ts - last_req_ts
                         if not failed and seconds > 0 and out > 0:

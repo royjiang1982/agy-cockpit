@@ -1,4 +1,5 @@
 """Model discovery, fallback keys, and the standalone dispatch resolver."""
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr
 from io import StringIO
 import json
@@ -7,10 +8,12 @@ from pathlib import Path
 import runpy
 import subprocess
 import sys
-from unittest.mock import patch
+from threading import Event
+from unittest.mock import Mock, patch
 
 import dispatch_models as dm
 import dispatch_policy as dp
+import rpc_quota
 from test_dispatch_policy import DispatchFixture
 
 
@@ -160,3 +163,40 @@ class DispatchModelsTests(DispatchFixture):
             for _ in range(2):
                 self.assertEqual(dm.resolve_model_id("codex", "sol"), "gpt-6.6-sol")
             popen.assert_called_once()
+
+    def test_shutdown_terminates_active_codex_model_discovery(self):
+        requested = Event()
+        children = []
+        popen = subprocess.Popen
+
+        def spawn(_command, **kwargs):
+            proc = popen([sys.executable, "-IB", "-c", "import sys; sys.stdin.read()"],
+                         **kwargs, env=dict(os.environ, HOME=str(self.root)))
+            children.append(proc)
+            stdin = proc.stdin
+
+            def flush():
+                stdin.flush()
+                requested.set()
+
+            proc.stdin = Mock(wraps=stdin)
+            proc.stdin.flush.side_effect = flush
+            return proc
+
+        with (
+            patch.object(dm, "_find_codex_bin", return_value=str(self.root / "codex")),
+            patch.object(dm.subprocess, "Popen", side_effect=spawn),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            discovery = pool.submit(dm._fetch_codex_models_rpc, 20)
+            try:
+                self.assertTrue(requested.wait(8), "model probe did not send initialize")
+                self.assertEqual(rpc_quota.active_probe_count(), 1)
+                rpc_quota.pause_probes()
+                rpc_quota.terminate_active_probes()
+                self.assertIsNone(discovery.result(timeout=8))
+                self.assertEqual(rpc_quota.active_probe_count(), 0)
+                self.assertIsNotNone(children[0].poll())
+            finally:
+                rpc_quota.terminate_active_probes()
+                rpc_quota.resume_probes()

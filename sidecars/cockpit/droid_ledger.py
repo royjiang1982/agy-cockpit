@@ -12,6 +12,8 @@ import math
 import re
 from datetime import datetime, timezone
 
+from cockpit_io import finite_number
+from cost_schema import CostEvent
 from pricing import calc_call_cost, canonical_model_label, model_quota_family
 
 _TOKENS = ("raw_inp", "cw", "cache", "out")
@@ -167,7 +169,7 @@ class DroidLedger:
         # A missing/short transcript is not a token reset. Retain its old index.
         start = mark["seen_turns"]
         fresh = turns[start:]
-        added = [(round(t, 3), 0., model_quota_family(m), "", 0, 0, 0, 1, 0,
+        added = [CostEvent(round(t, 3), 0., model_quota_family(m), "", 0, 0, 0, 1, 0,
                   canonical_model_label(m)) for t, m in fresh]
         # Counting a turn doesn't consume its billing anchor. Keep the dated
         # model until a settings delta arrives, including across cache reloads.
@@ -185,7 +187,7 @@ class DroidLedger:
             for i, (_, stamp, model) in enumerate(pending):
                 raw, cw, cache, out = (q + int(i < r) for q, r in (parts[k] for k in _TOKENS))
                 cost = calc_call_cost(model, raw, cache, out, cw, event_ts=stamp)
-                added.append((round(stamp, 3), cost, model_quota_family(model), "",
+                added.append(CostEvent(round(stamp, 3), cost, model_quota_family(model), "",
                               raw + cw, cache, out, 0, cw, canonical_model_label(model)))
             pending = []
         mark.update(totals, last_ts=max([mark["last_ts"]] + [t for t, _ in turns]), pending_cost=pending)
@@ -298,21 +300,18 @@ def droid_reset_is_coarse(info, bid):
     return upper > 0 and _reset_width(floor, upper) > _reset_tolerance(bid)
 
 
-def _finite_number(value):
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return number if math.isfinite(number) else None
+def _legacy_quota_number(value):
+    # Keep accepting booleans from old persisted Droid quota samples.
+    return finite_number(int(value) if isinstance(value, bool) else value)
 
 
 def droid_remaining_frac(value):
-    rem = _finite_number(value)
+    rem = _legacy_quota_number(value)
     return rem if rem is not None and 0 <= rem <= 1 else None
 
 
 def droid_baseline(info, observed):
-    ts = _finite_number(info.get("base_ts"))
+    ts = _legacy_quota_number(info.get("base_ts"))
     rem = droid_remaining_frac(info.get("base_rem_frac"))
     if ts is not None and 0 < ts <= observed and rem is not None:
         return ts, rem
@@ -355,7 +354,7 @@ def anchor_droid_quota(current, previous, now):
         tolerance = _reset_tolerance(bid)
         uncertain = _reset_width(floor, upper) > tolerance or start >= now
         if old:
-            old = dict(old, observed_at=_finite_number(old.get("observed_at")) or 0.0)
+            old = dict(old, observed_at=_legacy_quota_number(old.get("observed_at")) or 0.0)
             old_floor, old_end = droid_reset_bounds(old, bid)
             old_precision = _precision(old, bid)
             old_rem = droid_remaining_frac(old.get("rem_frac"))

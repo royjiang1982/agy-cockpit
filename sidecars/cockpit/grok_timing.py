@@ -1,6 +1,6 @@
 """Pair Grok request boundaries within loops; join complete turns to measured usage."""
 import json
-from metric_logs import parse_iso_ts
+from cockpit_io import parse_iso_ts
 from metric_rates import speed
 
 
