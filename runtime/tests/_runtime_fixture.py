@@ -1,9 +1,11 @@
 """Shared stdlib fixtures for black-box runtime protocol and daemon tests."""
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import socket
 import sys
+import tempfile
 from textwrap import dedent
 import threading
 from unittest.mock import patch
@@ -13,6 +15,31 @@ if str(RUNTIME) not in sys.path:
     sys.path.insert(0, str(RUNTIME))
 
 TIMEOUT = 10  # A deadlock guard, not a performance assertion.
+
+
+def isolated_env(home_dir, extra=None):
+    """Build a sandbox environment; only explicit test overrides survive."""
+    home = Path(home_dir)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("SA_", "ZOMI_"))}
+    env.update(
+        HOME=str(home), PYTHONDONTWRITEBYTECODE="1",
+        XDG_CONFIG_HOME=str(home / ".config"), XDG_CACHE_HOME=str(home / ".cache"),
+        XDG_DATA_HOME=str(home / ".local/share"), XDG_STATE_HOME=str(home / ".local/state"),
+        CODEX_HOME=str(home / ".codex"),
+        SA_SUBAGENTD_DIR=str(home / "daemon"), SA_SESSIONS_LEDGER_DIR=str(home / "ledger"),
+        SA_DISPATCH_POLICY_PATH=os.devnull,
+        ZOMI_SUBAGENT_SESSIONS_DIR=str(home / "markers"), ZOMI_SWARM_BRAIN_DIR=str(home / "brain"),
+    )
+    env.pop("PYTHONOPTIMIZE", None)  # Several suites use plain assert.
+    env.update(extra or {})
+    return env
+
+
+@contextmanager
+def isolated_runtime(extra=None):
+    """Sandbox in-process lookups as well as inherited subprocess state."""
+    with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, isolated_env(home, extra), clear=True):
+        yield Path(home)
 
 
 @contextmanager

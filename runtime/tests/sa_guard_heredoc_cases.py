@@ -1,12 +1,6 @@
 """Regression and security bypass tests for heredoc, AST, lookup, workdir, and redirection guards."""
-from __future__ import annotations
-
-import os
-from pathlib import Path
-
-
-def run_heredoc_and_perm_cases(test_case, blocked_fn, run_hook_fn=None, guard_mod=None) -> None:
-    """Execute allowed/blocked regression cases across agy, codex, and grok."""
+def run_heredoc_and_perm_cases(test_case, blocked_fn):
+    """Classify shell text once; adapter payload differences are tested separately."""
     allowed_cmds = (
         # Codex 01a1f462 pattern: cat + python3 - <<'PY' referencing bin/zomi-agy-acp and bin/zomi-subagent
         (
@@ -105,6 +99,7 @@ def run_heredoc_and_perm_cases(test_case, blocked_fn, run_hook_fn=None, guard_mo
         "test -f x || bash scripts/run_tests.sh",
         "test -f x ||\n bash scripts/run_tests.sh",
         "printf x>'fixture'.txt",
+        "cat <<'OUTER'\ncat > tmp/sample <<'true'\nOUTER\nprintf after_outer\ntrue\n",
         "cat <<'OUT:ER'\ncat > tmp/sample <<'true'\nOUT:ER\nprintf after_outer\ntrue\n",
         "cat > tmp/note.txt <<'true'\ntext\ntrue\nprintf kept\ntrue\n",
         "cat > tmp/note.txt <<'true'\ntext\ntrue\ncd sample && printf ok > fixture.txt\ntrue\n",
@@ -156,6 +151,7 @@ def run_heredoc_and_perm_cases(test_case, blocked_fn, run_hook_fn=None, guard_mo
         "python3 - <<'PY'; git push\nprint(1)\nPY\n",
         "echo ok && python3 - <<'PY'\nimport subprocess\nsubprocess.run(['git', 'push'])\nPY\n",
         # Direct or indirect Python subprocess/os execution & dynamic exec(compile(...))
+        "python3 - <<'PY'\nimport os\nos.system('git push')\nPY\n",
         "python3 - <<'PY'\nimport subprocess\nsubprocess.run(['git', 'push'])\nPY\n",
         "python3 - <<'PY'\nfrom os import system as s\ns('codex exec hi')\nPY\n",
         "python3 - <<'PY'\nfrom os import *\nsystem('git push')\nPY\n",
@@ -181,7 +177,7 @@ def run_heredoc_and_perm_cases(test_case, blocked_fn, run_hook_fn=None, guard_mo
         "python3 - <<'PY'\nfrom pathlib import Path\n(Path.home() / '.ssh' / 'id_rsa').read_text()\nPY\n",
         "python3 - <<'PY'\nfrom pathlib import Path\nPath.home().joinpath('.codex', 'auth.json').read_text()\nPY\n",
         "python3 - <<'PY'\nimport os\nopen(os.environ['HOME'] + '/.ssh/id_rsa').read()\nPY\n",
-        "python3 - <<'PY'\nopen('/Users/royjiang/Dev/app/.env').read()\nPY\n",
+        "python3 - <<'PY'\nopen('/workspace/app/.env').read()\nPY\n",
         "python3 - <<'PY'\nfrom pathlib import Path\np = Path('~/.codex/hooks.json')\np.write_text('{}')\nPY\n",
         "python3 - <<'PY'\nfrom pathlib import Path\ndef edit(p): Path(p).write_text('x')\nedit('~/.gemini/config/hooks.json')\nPY\n",
         "python3 - <<'PY'\nimport os\nos.remove('/tmp/zomi-subagent-sessions/abc')\nPY\n",
@@ -236,36 +232,9 @@ def run_heredoc_and_perm_cases(test_case, blocked_fn, run_hook_fn=None, guard_mo
         "sed -Ei 's/a/b/' ~/.codex/hooks.json",
     )
 
-    for platform in ("agy", "codex", "grok"):
-        for cmd in allowed_cmds:
-            with test_case.subTest(platform=platform, allowed=cmd[:60]):
-                test_case.assertFalse(blocked_fn(platform, cmd))
-        for cmd in blocked_cmds:
-            with test_case.subTest(platform=platform, blocked=cmd[:60]):
-                test_case.assertTrue(blocked_fn(platform, cmd))
-                test_case.assertFalse(blocked_fn(platform, cmd, subagent=False))
-
-    # P1 #1 verification: mask_literal_cat must NOT mask outer lines after unrecognized heredocs
-    if guard_mod is not None:
-        literals = guard_mod._load_literals()
-        for sample in (
-            "cat <<'OUTER'\ncat > tmp/sample <<'true'\nOUTER\nprintf after_outer\ntrue\n",
-            "cat <<'OUT:ER'\ncat > tmp/sample <<'true'\nOUT:ER\nprintf after_outer\ntrue\n",
-        ):
-            test_case.assertIn("printf after_outer", literals.mask_literal_cat(sample))
-
-    # P1 #3 verification: tool workdir/cwd overrides hook process os.getcwd() across all 3 platforms
-    if run_hook_fn is not None:
-        codex_home = str(Path(os.path.expanduser("~/.codex")))
-        repo_cwd = "/Users/royjiang/Dev/zomi-bot-agy"
-        workdir_cases = (
-            ("agy", {"toolCall": {"name": "run_command", "args": {"CommandLine": "printf ok > hooks.json", "Cwd": codex_home}}}, True),
-            ("codex", {"tool_name": "exec_command", "tool_input": {"command": "printf ok > hooks.json", "workdir": codex_home}}, True),
-            ("grok", {"toolName": "exec_command", "toolInput": {"command": "printf ok > hooks.json", "workdir": codex_home}}, True),
-            ("codex", {"tool_name": "exec_command", "tool_input": {"command": "sed -Ei 's/a/b/' plugin/hooks.json", "workdir": repo_cwd}}, False),
-        )
-        for platform, payload, should_deny in workdir_cases:
-            with test_case.subTest(platform=platform, workdir_payload=payload):
-                res = run_hook_fn(platform, payload, subagent=True)
-                denied = res.returncode == 2 or '"deny"' in res.stdout
-                test_case.assertEqual(denied, should_deny)
+    for expected, commands in ((False, allowed_cmds), (True, blocked_cmds)):
+        for cmd in commands:
+            with test_case.subTest(command=cmd, deny=expected):
+                test_case.assertEqual(blocked_fn("agy", cmd), expected)
+                if expected:
+                    test_case.assertFalse(blocked_fn("agy", cmd, subagent=False))

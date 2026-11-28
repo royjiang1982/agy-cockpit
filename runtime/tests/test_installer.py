@@ -1,199 +1,16 @@
 #!/usr/bin/env python3
-"""Regression checks across the handoff parser, daemon and installer."""
-from contextlib import redirect_stderr, redirect_stdout
-import io
+"""Installer preflight, target isolation and release contents."""
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
-from unittest import mock
 
-RUNTIME = Path(__file__).resolve().parents[1]
+from _runtime_fixture import RUNTIME, isolated_env
+
 REPO = RUNTIME.parent
-sys.path.insert(0, str(RUNTIME))
-
-from agent_runtime import daemon
-from agent_runtime.session_handoff import _unwrap_handoff_prompt, format_handoff_prompt
-
-
-class HandoffTests(unittest.TestCase):
-    def test_out_of_order_and_isolated_markers_stay_in_prompt(self):
-        opening = '<previous_session_history from_session="old">'
-        closing = '</previous_session_history>'
-        instruction = '【本轮新指令】：'
-        for markers in (
-            (opening,), (closing,), (instruction,), (opening, closing),
-            (closing, opening, instruction),
-            (instruction, opening, closing),
-            (opening, instruction, closing),
-        ):
-            with self.subTest(markers=markers):
-                prompt = '\n'.join(('任意正文', *markers, '继续保留'))
-                self.assertEqual(_unwrap_handoff_prompt(prompt), ([], prompt))
-
-    def test_unwraps_valid_handoff_and_preserves_markers_in_new_prompt(self):
-        old_turn = {"prompt": "历史问题", "response": "两行\n历史回复", "ts": 12.5}
-        prompt = "请解释 </previous_session_history> 这个标签"
-        wrapped = format_handoff_prompt("old-sid", [old_turn], prompt)
-        self.assertEqual(_unwrap_handoff_prompt(wrapped, 12.5), ([old_turn], prompt))
-
-    def test_skips_round_with_reversed_prompt_and_response_markers(self):
-        wrapped = format_handoff_prompt("old-sid", [{"prompt": "old", "response": "reply"}], "new")
-        wrapped = wrapped.replace("[主代理输入]:\nold\n[子代理回复]:\nreply",
-                                  "[子代理回复]:\nreply\n[主代理输入]:\nold")
-        self.assertEqual(_unwrap_handoff_prompt(wrapped), ([], "new"))
-
-
-class DaemonTests(unittest.TestCase):
-    def test_query_distinguishes_missing_socket_from_connection_error(self):
-        with mock.patch.object(daemon, "get_socket_path") as get_path:
-            get_path.return_value.exists.return_value = False
-            self.assertEqual(daemon.query_daemon("status"), {"ok": False, "status": "stopped"})
-            get_path.return_value.exists.return_value = True
-            with (
-                mock.patch.object(daemon, "_verify_socket_security"),
-                mock.patch.object(daemon.socket, "socket") as socket_factory,
-            ):
-                conn = socket_factory.return_value.__enter__.return_value
-                conn.connect.side_effect = ConnectionRefusedError("refused")
-                self.assertEqual(daemon.query_daemon("status"), {
-                    "ok": False, "status": "error", "error": "refused", "stale_socket": True,
-                })
-
-    def test_status_and_stop_exit_codes(self):
-        for command, action in (("status", "status"), ("stop", "shutdown")):
-            for status, code in (("error", 1), ("stopped", 0)):
-                response = {"ok": False, "status": status}
-                stdout = io.StringIO()
-                with (
-                    self.subTest(command=command, status=status),
-                    mock.patch.object(daemon, "query_daemon", return_value=response) as query,
-                    redirect_stdout(stdout),
-                ):
-                    self.assertEqual(daemon.main([command]), code)
-                    query.assert_called_once_with(action)
-                    self.assertEqual(json.loads(stdout.getvalue()), response)
-
-    def test_query_rejects_malformed_frames_and_marks_stale_socket(self):
-        import socket
-
-        with tempfile.TemporaryDirectory(prefix="sa-") as tmp, mock.patch.dict(os.environ, SA_SUBAGENTD_DIR=tmp):
-            self.assertEqual(daemon.query_daemon("status"), {"ok": False, "status": "stopped"})
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.bind(str(daemon.get_socket_path()))
-            stale = daemon.query_daemon("status")
-            self.assertEqual((stale["ok"], stale["status"], stale["stale_socket"]), (False, "error", True))
-            with mock.patch.object(daemon.socket, "socket") as client:
-                conn = client.return_value.__enter__.return_value
-                for response in ([], {"ok": 1}, {"ok": "true"},
-                                 {"ok": False, "status": "stopped", "stale_socket": True},
-                                 {"ok": True, "status": "stopped"}):
-                    with self.subTest(response=response):
-                        conn.recv.return_value = (json.dumps(response) + "\n").encode()
-                        checked = daemon.query_daemon("status")
-                        self.assertIs(checked["ok"], False)
-                        self.assertEqual(checked["status"], "error")
-                        self.assertNotIn("stale_socket", checked)
-
-    def test_restart_checks_replacement_daemon(self):
-        running = {"ok": True, "daemon_pid": 101}
-        replacement = {"ok": True, "daemon_pid": 102}
-        bad_pids = (None, True, 0, -1, "123", 1.5)
-        cases = (
-            (running, running, 1),
-            (running, {"ok": 1, "daemon_pid": 102}, 1),
-            *((running, {"ok": True, "daemon_pid": pid}, 1) for pid in bad_pids),
-            (running, replacement, 0),
-            (running, {"ok": False, "status": "error"}, 1),
-            ({"ok": False, "status": "stopped"}, replacement, 0),
-        )
-        for before, after, code in cases:
-            stdout, calls = io.StringIO(), mock.Mock()
-            still_running = after == running
-            was_running = before.get("ok") is True
-            seq = (before, {"ok": True}, after.copy()) if was_running else (before, after.copy())
-            with (
-                self.subTest(before=before, after=after),
-                mock.patch.object(daemon, "get_socket_path") as socket_path,
-                mock.patch.object(daemon, "_ping_daemon", return_value=still_running),
-                mock.patch.object(daemon.time, "monotonic", side_effect=(0.0, 0.1, 3.0)),
-                mock.patch.object(daemon.time, "sleep"),
-                mock.patch.object(daemon, "ensure_daemon_running") as ensure,
-                mock.patch.object(daemon, "query_daemon", side_effect=seq) as query,
-                redirect_stdout(stdout),
-            ):
-                socket_path.return_value.exists.return_value = still_running
-                calls.attach_mock(query, "query")
-                calls.attach_mock(ensure, "ensure")
-                self.assertEqual(daemon.main(["restart"]), code)
-                expected_calls = (
-                    [mock.call.query("status"), mock.call.query("shutdown"), mock.call.ensure(), mock.call.query("status")]
-                    if was_running
-                    else [mock.call.query("status"), mock.call.ensure(), mock.call.query("status")]
-                )
-                self.assertEqual(calls.mock_calls, expected_calls)
-                got = json.loads(stdout.getvalue())
-                if code == 0:
-                    self.assertEqual(got, after)
-                else:
-                    self.assertFalse(got["ok"])
-                    self.assertTrue(got.get("error"))
-        # Invalid status before restart must not request shutdown or start a replacement.
-        for pid in bad_pids:
-            with (
-                self.subTest(pid=pid),
-                mock.patch.object(daemon, "query_daemon", return_value={"ok": True, "daemon_pid": pid}) as query,
-                mock.patch.object(daemon, "ensure_daemon_running") as ensure,
-                redirect_stdout(io.StringIO()),
-            ):
-                self.assertEqual(daemon.main(["restart"]), 1)
-                query.assert_called_once_with("status")
-                ensure.assert_not_called()
-        # Error before restart fails immediately without pretending daemon was stopped.
-        stdout = io.StringIO()
-        with (
-            mock.patch.object(daemon, "query_daemon", return_value={"ok": False, "status": "error", "error": "boom"}),
-            mock.patch.object(daemon, "ensure_daemon_running") as ensure,
-            redirect_stdout(stdout),
-        ):
-            self.assertEqual(daemon.main(["restart"]), 1)
-            ensure.assert_not_called()
-            self.assertEqual(json.loads(stdout.getvalue())["error"], "boom")
-
-    def test_failure_to_write_ledger_keeps_successful_result(self):
-        def stream(*args, **kwargs):
-            return iter((
-                {"event": "init", "conversation_id": "fake-sid"},
-                {"type": "text_delta", "delta": "第一行\n"},
-                {"type": "text_delta", "delta": "second line", "used_tokens": 12},
-            ))
-
-        with tempfile.TemporaryDirectory() as tmp:
-            state = Path(tmp)
-            instance = daemon.SubagentDaemon(state / "daemon.sock")
-            conn, stderr = mock.Mock(), io.StringIO()
-            with (
-                mock.patch.object(daemon.threading.Thread, "start"),
-                mock.patch.object(instance, "_acquire_resident", return_value=(None, None)),
-                mock.patch.object(daemon, "build_server_cmd_and_stream_cls", return_value=([], stream)),
-                mock.patch.object(daemon, "prepare_session_handoff", return_value=None),
-                mock.patch.object(daemon, "terminate_proc_group"),
-                mock.patch.object(daemon, "record_turn_completion", side_effect=OSError("ledger disk full")) as record,
-                redirect_stderr(stderr),
-            ):
-                instance._handle_run(conn, {"agent": "codex", "prompt": "test", "cwd": tmp})
-            response = "第一行\nsecond line"
-            record.assert_called_once_with("codex", "fake-sid", "test", response, 12, None, state)
-            frames = [json.loads(call.args[0]) for call in conn.sendall.call_args_list]
-            self.assertEqual([frame for frame in frames if frame["type"] == "result"], [{
-                "type": "result", "agent": "codex", "conversation_id": "fake-sid",
-                "result": {"status": "SUCCESS", "response": response, "ledger_warning": "ledger disk full"},
-            }])
-            self.assertIn("ledger disk full", stderr.getvalue())
 
 
 class InstallTests(unittest.TestCase):
@@ -219,7 +36,7 @@ class InstallTests(unittest.TestCase):
     def install(source, target, home):
         return subprocess.run(
             ["bash", str(source / "install.sh"), "--allow-custom-target", str(target)],
-            env={**os.environ, "HOME": str(home)},
+            env=isolated_env(home),
             capture_output=True, text=True, timeout=30,
         )
 

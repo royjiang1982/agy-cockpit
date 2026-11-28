@@ -15,7 +15,7 @@ import tempfile
 import threading
 from unittest.mock import Mock, call, patch
 
-from _runtime_fixture import write_rpc_server
+from _runtime_fixture import isolated_env, isolated_runtime, write_rpc_server
 from agent_runtime import AgyAcpStream, CodexStream, DroidAcpStream, daemon, split_model_effort
 from agent_runtime import codex_server_command, droid_server_command, grok_server_command, pi_server_command
 
@@ -84,6 +84,12 @@ def cli_emission_cases():
                 emit_event(event)
         emitted = [json.loads(line) for line in out.getvalue().splitlines()]
         assert emitted == (events if debug == "1" else [e for e in events if e is not delta])
+    with isolated_runtime() as home:
+        _check_jq(home)
+    print("PASS: CLI delta filtering, debug opt-in and complete final/result")
+
+
+def _check_jq(home):
     jq = shutil.which("jq")
     if jq:
         frames = [dict(type="item.completed", item=dict(type="error", **fields)) for fields in (
@@ -91,12 +97,11 @@ def cli_emission_cases():
         )] + [dict(type="turn.completed")]
         view = Path(__file__).resolve().parents[1] / "bin/sa-view.jq"
         output = subprocess.run([jq, "-Rrf", str(view)], text=True, capture_output=True, check=True, timeout=10,
-                                input="".join(json.dumps(frame) + "\n" for frame in frames))
+                                env=isolated_env(home), input="".join(json.dumps(frame) + "\n" for frame in frames))
         assert output.stdout.splitlines() == ["⚠ null", "⚠ null", "⚠ visible warning", "■ 完成"], output
         assert not output.stderr
     else:
         print("SKIP: sa-view.jq stream regression (jq not installed)")
-    print("PASS: CLI delta filtering, debug opt-in and complete final/result")
 
 
 def client_transition_cases():
@@ -105,15 +110,16 @@ def client_transition_cases():
     ignored_args = {key: "ignored" for key in inspect.signature(d.run_subagent_client).parameters if key not in core}
     package = Path(__file__).resolve().parents[1]
     # Every CLI still accepts legacy no-op arguments without passing them through.
-    for engine in ("agy", "codex", "droid", "grok", "pi"):
-        argv = ["sa-" + engine, "--prompt", "exact prompt"]
-        for key, value in ignored_args.items():
-            argv.extend(["--" + key, value])
-        with patch.object(sys, "argv", argv), patch.object(d, "run_subagent_client", return_value=0) as call:
-            entry = runpy.run_path(str(package / "bin" / ("sa-" + engine)))
-            assert entry["main"]() == 0
-            assert not (ignored_args.keys() & call.call_args.kwargs.keys())
-            assert call.call_args.kwargs["prompt"] == "exact prompt"
+    with isolated_runtime():
+        for engine in ("agy", "codex", "droid", "grok", "pi"):
+            argv = ["sa-" + engine, "--prompt", "exact prompt"]
+            for key, value in ignored_args.items():
+                argv.extend(["--" + key, value])
+            with patch.object(sys, "argv", argv), patch.object(d, "run_subagent_client", return_value=0) as call:
+                entry = runpy.run_path(str(package / "bin" / ("sa-" + engine)))
+                assert entry["main"]() == 0
+                assert not (ignored_args.keys() & call.call_args.kwargs.keys())
+                assert call.call_args.kwargs["prompt"] == "exact prompt"
     delta = dict(type="item.completed", delta=True, item=dict(type="agent_message", text="partial"))
     final = dict(type="item.completed", item=dict(type="agent_message", text="complete"))
     legacy = [dict(type="event", event="legacy_handoff", source="worker"),
@@ -165,8 +171,8 @@ def client_transition_cases():
 
 
 def _check_codex_payloads():
-    with tempfile.TemporaryDirectory() as td:
-        script = write_rpc_server(Path(td), "fake-codex", protocol="custom", setup=r'''
+    with isolated_runtime() as root:
+        script = write_rpc_server(root, "fake-codex", protocol="custom", setup=r'''
 def handle(msg):
     if "id" not in msg:
         return
@@ -192,8 +198,8 @@ def handle(msg):
             ({"model": "gpt-6.2-sol"}, "gpt-6.2-sol", "xhigh", None),
             ({}, None, "xhigh", None),
         ):
-            (Path(td) / "requests.jsonl").write_text("")
-            stream = CodexStream([str(script)], cwd=td, env=os.environ.copy(), bot=bot, prompt="hello", rpc_timeout=2)
+            (root / "requests.jsonl").write_text("")
+            stream = CodexStream([str(script)], cwd=str(root), env=os.environ.copy(), bot=bot, prompt="hello", rpc_timeout=2)
             try:
                 assert stream.process.wait(timeout=5) == 0, bot
                 assert any(e["type"] == "turn.completed" for e in stream.iter_events()), bot
@@ -202,7 +208,7 @@ def handle(msg):
                 if stream.process.poll() is None:
                     stream.process.kill()
                     stream.process.wait(timeout=5)
-            requests = [json.loads(line) for line in (Path(td) / "requests.jsonl").read_text(encoding="utf-8").splitlines()]
+            requests = [json.loads(line) for line in (root / "requests.jsonl").read_text(encoding="utf-8").splitlines()]
             assert [r["method"] for r in requests] == ["initialize", "thread/start", "turn/start"], requests
             assert requests[1]["params"]["model"] == model, (bot, requests[1])
             assert requests[2]["params"]["effort"] == effort, (bot, requests[2])
@@ -319,7 +325,8 @@ def model_effort_cases():
     assert AgyAcpStream.model_id({"model": "gemini-4-neon", "reasoning_effort": "xhigh"}) == "gemini-4-neon-xhigh"
     _check_codex_payloads()
     _check_droid_config()
-    _check_cli_dispatch()
+    with isolated_runtime():
+        _check_cli_dispatch()
     print("PASS: model:effort parsing, Codex wire payloads, Droid/Agy ACP configuration and CLI dispatch")
 
 
@@ -349,3 +356,11 @@ def codex_cases():
     for kind in ('error', 'command_execution', 'future_item'):
         assert should_emit(dict(type='item.completed', delta=True, item=dict(type=kind)), False)
     print('PASS: suppressed quadratic Codex accumulation, lossless opt-in, dict transport, final/tool/error retention')
+
+
+if __name__ == "__main__":
+    codex_cases()
+    cli_emission_cases()
+    client_transition_cases()
+    model_effort_cases()
+    test_command_builders()

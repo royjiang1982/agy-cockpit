@@ -4,10 +4,10 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
-import tempfile
+from unittest.mock import patch
 import threading
 
-from _runtime_fixture import TIMEOUT, signal_socket, write_rpc_server
+from _runtime_fixture import TIMEOUT, isolated_runtime, signal_socket, write_rpc_server
 from agent_runtime.acp_stream import AgyAcpStream, agy_server_command
 from agent_runtime.proc_utils import DEFAULT_AGY_APP_DATA_DIR, agy_app_data_dir
 from agent_runtime.resident import ResidentServer
@@ -48,172 +48,157 @@ def handle_open(rid, params):
 
 
 def agy_session_new_cases():
-    orig_delays = AgyAcpStream.SESSION_NEW_RETRY_DELAYS
-    AgyAcpStream.SESSION_NEW_RETRY_DELAYS = (0, 0)
-    prev_markers = os.environ.get("ZOMI_SUBAGENT_SESSIONS_DIR")
-    try:
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            os.environ["ZOMI_SUBAGENT_SESSIONS_DIR"] = str(tmp / "markers")
-            server = write_rpc_server(tmp, "fake_agy_session.py", setup=SESSION_OPEN_SCRIPT)
-            env = os.environ.copy()
+    with isolated_runtime() as tmp, patch.object(AgyAcpStream, "SESSION_NEW_RETRY_DELAYS", (0, 0)):
+        server = write_rpc_server(tmp, "fake_agy_session.py", setup=SESSION_OPEN_SCRIPT)
+        env = os.environ.copy()
 
-            # 1. Transient session/new failure retries up to 2 times and keeps ResidentServer healthy
-            st1 = tmp / "st1.json"
-            cmd1 = [sys.executable, str(server), str(st1), "2", "Failed to start Antigravity conversation"]
-            host1 = ResidentServer(cmd1, cwd=str(tmp), env=env, agent="agy")
+        # 1. Transient session/new failure retries up to 2 times and keeps ResidentServer healthy
+        st1 = tmp / "st1.json"
+        cmd1 = [sys.executable, str(server), str(st1), "2", "Failed to start Antigravity conversation"]
+        host1 = ResidentServer(cmd1, cwd=str(tmp), env=env, agent="agy")
+        try:
+            t1 = AgyAcpStream(
+                cmd1, cwd=str(tmp), env=env,
+                bot={"model": "gemini-4-hydrogen-high"}, prompt="hi",
+                resident=host1, is_subagent=True,
+            )
+            evs1 = [json.loads(line) for line in t1]
+            t1.close()
+            assert any(e.get("delta") == "ok:sid-3" for e in evs1), evs1
+            assert json.loads(st1.read_text())["calls"] == 3
+            assert not host1.closed and not host1.retire_after_turn and host1.process.poll() is None
+
+            # Next turn reuses the same healthy host cleanly
+            t2 = AgyAcpStream(
+                cmd1, cwd=str(tmp), env=env,
+                bot={"model": "gemini-4-hydrogen-high"}, prompt="hi again",
+                resident=host1, is_subagent=True,
+            )
+            evs2 = [json.loads(line) for line in t2]
+            t2.close()
+            assert any(e.get("delta") == "ok:sid-4" for e in evs2), evs2
+        finally:
+            host1.shutdown()
+
+        # 2. Exhausted retries (3 failures) raises the original transient error
+        st2 = tmp / "st2.json"
+        cmd2 = [sys.executable, str(server), str(st2), "5", "Failed to start Antigravity conversation"]
+        host2 = ResidentServer(cmd2, cwd=str(tmp), env=env, agent="agy")
+        try:
+            t_fail = AgyAcpStream(
+                cmd2, cwd=str(tmp), env=env,
+                bot={"model": "gemini-4-hydrogen-high"}, prompt="hi",
+                resident=host2, is_subagent=True,
+            )
+            raised = None
             try:
-                t1 = AgyAcpStream(
-                    cmd1, cwd=str(tmp), env=env,
-                    bot={"model": "gemini-4-hydrogen-high"}, prompt="hi",
-                    resident=host1, is_subagent=True,
-                )
-                evs1 = [json.loads(line) for line in t1]
-                t1.close()
-                assert any(e.get("delta") == "ok:sid-3" for e in evs1), evs1
-                assert json.loads(st1.read_text())["calls"] == 3
-                assert not host1.closed and not host1.retire_after_turn and host1.process.poll() is None
-
-                # Next turn reuses the same healthy host cleanly
-                t2 = AgyAcpStream(
-                    cmd1, cwd=str(tmp), env=env,
-                    bot={"model": "gemini-4-hydrogen-high"}, prompt="hi again",
-                    resident=host1, is_subagent=True,
-                )
-                evs2 = [json.loads(line) for line in t2]
-                t2.close()
-                assert any(e.get("delta") == "ok:sid-4" for e in evs2), evs2
+                list(t_fail)
+            except RuntimeError as exc:
+                raised = str(exc)
             finally:
-                host1.shutdown()
+                t_fail.close()
+            assert raised and "Failed to start Antigravity conversation" in raised, raised
+            assert json.loads(st2.read_text())["calls"] == 3
+        finally:
+            host2.shutdown()
 
-            # 2. Exhausted retries (3 failures) raises the original transient error
-            st2 = tmp / "st2.json"
-            cmd2 = [sys.executable, str(server), str(st2), "5", "Failed to start Antigravity conversation"]
-            host2 = ResidentServer(cmd2, cwd=str(tmp), env=env, agent="agy")
+        # 3. Non-transient error (429) and session/resume MUST NOT retry
+        st3 = tmp / "st3.json"
+        cmd3 = [sys.executable, str(server), str(st3), "5", "429 rate limit exceeded"]
+        host3 = ResidentServer(cmd3, cwd=str(tmp), env=env, agent="agy")
+        try:
+            t_rate = AgyAcpStream(
+                cmd3, cwd=str(tmp), env=env,
+                bot={"model": "gemini-4-hydrogen-high"}, prompt="hi",
+                resident=host3, is_subagent=True,
+            )
+            raised = None
             try:
-                t_fail = AgyAcpStream(
-                    cmd2, cwd=str(tmp), env=env,
-                    bot={"model": "gemini-4-hydrogen-high"}, prompt="hi",
-                    resident=host2, is_subagent=True,
-                )
-                raised = None
-                try:
-                    list(t_fail)
-                except RuntimeError as exc:
-                    raised = str(exc)
-                finally:
-                    t_fail.close()
-                assert raised and "Failed to start Antigravity conversation" in raised, raised
-                assert json.loads(st2.read_text())["calls"] == 3
+                list(t_rate)
+            except RuntimeError as exc:
+                raised = str(exc)
             finally:
-                host2.shutdown()
+                t_rate.close()
+            assert raised and "429" in raised, raised
+            assert json.loads(st3.read_text())["calls"] == 1
+        finally:
+            host3.shutdown()
 
-            # 3. Non-transient error (429) and session/resume MUST NOT retry
-            st3 = tmp / "st3.json"
-            cmd3 = [sys.executable, str(server), str(st3), "5", "429 rate limit exceeded"]
-            host3 = ResidentServer(cmd3, cwd=str(tmp), env=env, agent="agy")
+        st4 = tmp / "st4.json"
+        cmd4 = [sys.executable, str(server), str(st4), "5", "Failed to start Antigravity conversation"]
+        host4 = ResidentServer(cmd4, cwd=str(tmp), env=env, agent="agy")
+        try:
+            t_resume = AgyAcpStream(
+                cmd4, cwd=str(tmp), env=env,
+                bot={"model": "gemini-4-hydrogen-high", "session_id": "existing-sid"}, prompt="hi",
+                resident=host4, is_subagent=True,
+            )
+            raised = None
             try:
-                t_rate = AgyAcpStream(
-                    cmd3, cwd=str(tmp), env=env,
-                    bot={"model": "gemini-4-hydrogen-high"}, prompt="hi",
-                    resident=host3, is_subagent=True,
-                )
-                raised = None
-                try:
-                    list(t_rate)
-                except RuntimeError as exc:
-                    raised = str(exc)
-                finally:
-                    t_rate.close()
-                assert raised and "429" in raised, raised
-                assert json.loads(st3.read_text())["calls"] == 1
+                list(t_resume)
+            except RuntimeError as exc:
+                raised = str(exc)
             finally:
-                host3.shutdown()
+                t_resume.close()
+            assert raised and "session/resume" in raised, raised
+            assert json.loads(st4.read_text())["calls"] == 1
+        finally:
+            host4.shutdown()
 
-            st4 = tmp / "st4.json"
-            cmd4 = [sys.executable, str(server), str(st4), "5", "Failed to start Antigravity conversation"]
-            host4 = ResidentServer(cmd4, cwd=str(tmp), env=env, agent="agy")
+        # 4. Concurrent session/new on the same ResidentServer is strictly serialized
+        st5, gate = tmp / "st5.json", tmp / "open.sock"
+        cmd5 = [sys.executable, str(server), str(st5), "0", "unused", str(gate)]
+        with signal_socket(gate) as listener:
+            host5 = ResidentServer(cmd5, cwd=str(tmp), env=env, agent="agy")
             try:
-                t_resume = AgyAcpStream(
-                    cmd4, cwd=str(tmp), env=env,
-                    bot={"model": "gemini-4-hydrogen-high", "session_id": "existing-sid"}, prompt="hi",
-                    resident=host4, is_subagent=True,
-                )
-                raised = None
-                try:
-                    list(t_resume)
-                except RuntimeError as exc:
-                    raised = str(exc)
-                finally:
-                    t_resume.close()
-                assert raised and "session/resume" in raised, raised
-                assert json.loads(st4.read_text())["calls"] == 1
-            finally:
-                host4.shutdown()
+                results, errors = [], []
+                attempted = threading.Barrier(4)
+                lock = host5.session_create_lock
 
-            # 4. Concurrent session/new on the same ResidentServer is strictly serialized
-            st5, gate = tmp / "st5.json", tmp / "open.sock"
-            cmd5 = [sys.executable, str(server), str(st5), "0", "unused", str(gate)]
-            with signal_socket(gate) as listener:
-                host5 = ResidentServer(cmd5, cwd=str(tmp), env=env, agent="agy")
-                try:
-                    results, errors = [], []
-                    attempted = threading.Barrier(4)
-                    lock = host5.session_create_lock
-
-                    class ObservedLock:
-                        def acquire(self, **kwargs):
-                            attempted.wait(TIMEOUT)
-                            return lock.acquire(**kwargs)
-
-                        def release(self):
-                            lock.release()
-
-                    host5.session_create_lock = ObservedLock()
-
-                    def run_one(idx):
-                        try:
-                            turn = AgyAcpStream(
-                                cmd5, cwd=str(tmp), env=env,
-                                bot={"model": "gemini-4-hydrogen-high"}, prompt=f"p{idx}",
-                                resident=host5, is_subagent=True, rpc_timeout=TIMEOUT,
-                            )
-                            try:
-                                results.append([json.loads(line) for line in turn])
-                            finally:
-                                turn.close()
-                        except Exception as exc:
-                            errors.append(exc)
-
-                    threads = [threading.Thread(target=run_one, args=(i,), daemon=True) for i in range(3)]
-                    for th in threads:
-                        th.start()
-                    try:
-                        # All three callers reach session/new before the first wire response can finish.
+                class ObservedLock:
+                    def acquire(self, **kwargs):
                         attempted.wait(TIMEOUT)
-                        with listener.accept()[0]:
-                            assert lock.locked() and json.loads(st5.read_text())["calls"] == 1
-                    finally:
-                        for th in threads:
-                            th.join(TIMEOUT)
-                    assert not any(th.is_alive() for th in threads) and not errors, errors
-                    assert len(results) == 3, len(results)
-                    state = json.loads(st5.read_text())
-                    assert state["calls"] == 3 and state["max_in_flight"] == 1, state
+                        return lock.acquire(**kwargs)
+
+                    def release(self):
+                        lock.release()
+
+                host5.session_create_lock = ObservedLock()
+
+                def run_one(idx):
+                    try:
+                        turn = AgyAcpStream(
+                            cmd5, cwd=str(tmp), env=env,
+                            bot={"model": "gemini-4-hydrogen-high"}, prompt=f"p{idx}",
+                            resident=host5, is_subagent=True, rpc_timeout=TIMEOUT,
+                        )
+                        try:
+                            results.append([json.loads(line) for line in turn])
+                        finally:
+                            turn.close()
+                    except Exception as exc:
+                        errors.append(exc)
+
+                threads = [threading.Thread(target=run_one, args=(i,), daemon=True) for i in range(3)]
+                for th in threads:
+                    th.start()
+                try:
+                    # All three callers reach session/new before the first wire response can finish.
+                    attempted.wait(TIMEOUT)
+                    with listener.accept()[0]:
+                        assert lock.locked() and json.loads(st5.read_text())["calls"] == 1
                 finally:
-                    host5.shutdown()
-    finally:
-        AgyAcpStream.SESSION_NEW_RETRY_DELAYS = orig_delays
-        if prev_markers is None:
-            os.environ.pop("ZOMI_SUBAGENT_SESSIONS_DIR", None)
-        else:
-            os.environ["ZOMI_SUBAGENT_SESSIONS_DIR"] = prev_markers
+                    for th in threads:
+                        th.join(TIMEOUT)
+                assert not any(th.is_alive() for th in threads) and not errors, errors
+                assert len(results) == 3, len(results)
+                state = json.loads(st5.read_text())
+                assert state["calls"] == 3 and state["max_in_flight"] == 1, state
+            finally:
+                host5.shutdown()
 
     # 5. Isolated --app-data-dir command builder and SQLite handoff lookup priority
-    prev_app_dir = os.environ.get("SA_AGY_APP_DATA_DIR")
-    prev_home = os.environ.get("HOME")
-    try:
-        os.environ.pop("SA_AGY_APP_DATA_DIR", None)
+    with isolated_runtime() as fake_home:
         assert agy_app_data_dir() == DEFAULT_AGY_APP_DATA_DIR
         assert agy_server_command(["agy"]) == [
             "agy", "acp", "--app-data-dir", DEFAULT_AGY_APP_DATA_DIR,
@@ -230,41 +215,29 @@ def agy_session_new_cases():
         assert agy_app_data_dir() == DEFAULT_AGY_APP_DATA_DIR
 
         os.environ.pop("SA_AGY_APP_DATA_DIR", None)
-        with tempfile.TemporaryDirectory() as td:
-            fake_home = Path(td)
-            os.environ["HOME"] = str(fake_home)
-            iso_dir = fake_home / ".gemini" / DEFAULT_AGY_APP_DATA_DIR / "conversations"
-            cli_dir = fake_home / ".gemini" / "antigravity-cli" / "conversations"
-            iso_dir.mkdir(parents=True)
-            cli_dir.mkdir(parents=True)
+        iso_dir = fake_home / ".gemini" / DEFAULT_AGY_APP_DATA_DIR / "conversations"
+        cli_dir = fake_home / ".gemini" / "antigravity-cli" / "conversations"
+        iso_dir.mkdir(parents=True)
+        cli_dir.mkdir(parents=True)
 
-            def _make_min_db(db_path: Path, user_text: str):
-                con = sqlite3.connect(str(db_path))
-                con.execute("CREATE TABLE steps (idx INTEGER, step_type INTEGER, metadata BLOB, step_payload TEXT)")
-                con.executemany(
-                    "INSERT INTO steps VALUES (?, ?, NULL, ?)",
-                    [(1, 14, user_text), (2, 15, f"reply:{user_text}")],
-                )
-                con.commit()
-                con.close()
+        def _make_min_db(db_path: Path, user_text: str):
+            con = sqlite3.connect(str(db_path))
+            con.execute("CREATE TABLE steps (idx INTEGER, step_type INTEGER, metadata BLOB, step_payload TEXT)")
+            con.executemany(
+                "INSERT INTO steps VALUES (?, ?, NULL, ?)",
+                [(1, 14, user_text), (2, 15, f"reply:{user_text}")],
+            )
+            con.commit()
+            con.close()
 
-            _make_min_db(iso_dir / "sid-iso.db", "hello-iso")
-            _make_min_db(cli_dir / "sid-iso.db", "hello-cli-shadowed")
-            _make_min_db(cli_dir / "sid-legacy.db", "hello-legacy")
+        _make_min_db(iso_dir / "sid-iso.db", "hello-iso")
+        _make_min_db(cli_dir / "sid-iso.db", "hello-cli-shadowed")
+        _make_min_db(cli_dir / "sid-legacy.db", "hello-legacy")
 
-            iso_info = _inspect_agy_db("sid-iso")
-            assert iso_info and iso_info["turns"] and iso_info["turns"][0]["prompt"] == "hello-iso", iso_info
-            legacy_info = _inspect_agy_db("sid-legacy")
-            assert legacy_info and legacy_info["turns"] and legacy_info["turns"][0]["prompt"] == "hello-legacy", legacy_info
-    finally:
-        if prev_app_dir is None:
-            os.environ.pop("SA_AGY_APP_DATA_DIR", None)
-        else:
-            os.environ["SA_AGY_APP_DATA_DIR"] = prev_app_dir
-        if prev_home is None:
-            os.environ.pop("HOME", None)
-        else:
-            os.environ["HOME"] = prev_home
+        iso_info = _inspect_agy_db("sid-iso")
+        assert iso_info and iso_info["turns"] and iso_info["turns"][0]["prompt"] == "hello-iso", iso_info
+        legacy_info = _inspect_agy_db("sid-legacy")
+        assert legacy_info and legacy_info["turns"] and legacy_info["turns"][0]["prompt"] == "hello-legacy", legacy_info
     print("PASS: agy_session_new_cases")
 
 

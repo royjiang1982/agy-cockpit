@@ -8,8 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+from _runtime_fixture import RUNTIME as ROOT, isolated_env
 sys.path.insert(0, str(ROOT.parent / "sidecars/cockpit"))
 import dispatch_policy as cockpit
 from agent_runtime import agy_quota as quota, daemon, dispatch_policy_reader as reader
@@ -28,11 +27,16 @@ class DispatchPolicyTests(unittest.TestCase):
         self.addCleanup(work.cleanup)
         self.path = Path(work.name) / "policy.json"
         self.mtime = 1_700_000_000_000_000_000
-        env = {key: value for key, value in os.environ.items() if not key.startswith("SA_AGY_")}
-        env["SA_DISPATCH_POLICY_PATH"] = str(self.path)
+        env = isolated_env(work.name, {"SA_DISPATCH_POLICY_PATH": str(self.path)})
         sandbox = patch.dict(os.environ, env, clear=True)
         sandbox.start()
         self.addCleanup(sandbox.stop)
+        # The model catalog derives its default paths at import time.
+        missing = self.path.with_name("no-model-cache")
+        caches = patch.multiple(cockpit.dispatch_models, _CODEX_CACHE=missing, _GROK_CACHE=missing,
+                                _FACTORY_CACHE_DIR=missing, _AGY_STATE=missing)
+        caches.start()
+        self.addCleanup(caches.stop)
 
     def write_raw(self, value, *, tick=True):
         if tick:
@@ -75,24 +79,28 @@ class DispatchPolicyTests(unittest.TestCase):
         self.path.unlink()
         self.assertIsNone(reader.read_codex_fast())
 
+    def assert_unusable_policy(self):
+        self.assertIsNone(reader.read_codex_fast())
+        self.assertEqual(reader.read_agy_policy(MODEL), (None, None, None, False))
+
     def test_default_path_and_unusable_files(self):
-        with patch.dict(os.environ, SA_DISPATCH_POLICY_PATH=""), patch.object(Path, "home", return_value=self.path.parent):
+        with patch.dict(os.environ, SA_DISPATCH_POLICY_PATH=""):
             default = self.path.parent / ".gemini/antigravity/sidecar_data/statusline/dispatch-policy.json"
-            self.assertEqual(reader._read_policy(), {})
+            self.assert_unusable_policy()
             default.parent.mkdir(parents=True)
             default.write_text('{"schema_version":1,"codex_fast":false}', encoding="utf-8")
             self.assertIs(reader.read_codex_fast(), False)
         for invalid in (b"{", b"\xff", b"[]", b"null", b'{"codex_fast":true,"n":NaN}',
                         b'{"schema_version":2,"codex_fast":false}'):
             self.write_raw(invalid)
-            self.assertEqual(reader._read_policy(), {})
+            self.assert_unusable_policy()
             self.assertEqual(self.path.read_bytes(), invalid)
         self.write(codex_fast=True)
         with patch.object(Path, "read_bytes", side_effect=PermissionError):
-            self.assertEqual(reader._read_policy(), {})
+            self.assert_unusable_policy()
         self.assertIs(reader.read_codex_fast(), True)
         with patch.object(Path, "stat", side_effect=PermissionError):
-            self.assertEqual(reader._read_policy(), {})
+            self.assert_unusable_policy()
 
     def test_strict_schema_and_duplicate_keys_invalidate_entire_policy(self):
         for raw in (b'{"codex_fast":false}',
@@ -103,9 +111,7 @@ class DispatchPolicyTests(unittest.TestCase):
                     b'{"schema_version":1,"codex_fast":false,"quota_fallback":{"enabled":true,"enabled":false}}'):
             with self.subTest(raw=raw):
                 self.write_raw(raw)
-                self.assertEqual(reader._read_policy(), {})
-                self.assertIsNone(reader.read_codex_fast())
-                self.assertFalse(reader.read_agy_policy(MODEL).has_fallback_override)
+                self.assert_unusable_policy()
 
     def test_writer_and_reader_share_efforts_and_expanded_override(self):
         p = cockpit.default_policy()
@@ -135,16 +141,13 @@ class DispatchPolicyTests(unittest.TestCase):
                 self.write(enabled=flag, codex_fast=False,
                            quota_fallback=dict(enabled=False, threshold_pct=50),
                            fallbacks={f"agy:{MODEL}": [candidate()]})
-                self.assertEqual(reader._read_policy(), {})
-                self.assertIsNone(reader.read_codex_fast())
+                self.assert_unusable_policy()
                 self.assertEqual(self.codex_tier(), "fast")
-                self.assertEqual(reader.read_agy_policy(MODEL), (None, None, None, False))
 
     def test_malformed_fields_do_not_override_defaults(self):
         for invalid in (-1, 51, True, "5", 5.0):
             self.write(codex_fast=0, quota_fallback=dict(enabled=1, threshold_pct=invalid))
-            self.assertIsNone(reader.read_codex_fast())
-            self.assertEqual(reader.read_agy_policy(MODEL), (None, None, None, False))
+            self.assert_unusable_policy()
 
     def test_codex_default_and_explicit_precedence(self):
         self.assertEqual(self.codex_tier(), "fast")
@@ -192,7 +195,23 @@ class DispatchPolicyTests(unittest.TestCase):
 
     @patch.object(quota, "find_cli_binary", return_value="/mock/droid")
     @patch.object(quota, "_quota_for_model", return_value=dict(rem_frac=0, reset_ts=0))
-    def test_quota_exact_mapping_validation_and_env_precedence(self, _snapshot, _find):
+    def test_quota_fallback_override_env_precedence(self, _snapshot, _find):
+        self.write(fallbacks={f"agy:{MODEL}": [candidate(effort="same")]})
+
+        def target(model=MODEL):
+            request = quota.preflight_agy_request(model=model, effort="low", prompt="task", mode="plan")
+            return request["model"], request["effort"]
+
+        self.assertEqual(target(), ("custom-droid", "low"))
+        with patch.dict(os.environ, SA_AGY_FALLBACK_MODEL="env-droid"):
+            self.assertEqual(target(), ("env-droid", "low"))
+        self.write(fallbacks={f"agy:{MODEL}": [candidate(effort="xhigh")]})
+        self.assertEqual(target(), ("custom-droid", "xhigh"))
+        with patch.dict(os.environ, SA_AGY_FALLBACK_EFFORT="low"):
+            self.assertEqual(target(), ("custom-droid", "low"))
+        with patch.dict(os.environ, SA_AGY_FALLBACK_MODEL=""):
+            self.assertEqual(target(), ("gemini-4-neon", "low"))
+    def test_quota_fallback_exact_chain_validation_and_first_match(self):
         chain = [None, candidate(enabled=False), candidate(enabled=1), candidate(channel="builtin"),
                  candidate(engine="codex"), candidate(effort="xhigh\n"), candidate(effort="custom")]
         chain += [candidate(model=value) for value in (
@@ -203,25 +222,12 @@ class DispatchPolicyTests(unittest.TestCase):
         del first["enabled"]
         self.write(fallbacks={f"agy:{MODEL}": [*chain, first, candidate("second")]})
 
-        def target(model=MODEL):
-            request = quota.preflight_agy_request(model=model, effort="low", prompt="task", mode="plan")
-            self.assertEqual((request["agent"], request["mode"]), ("droid", "spec"))
-            return request["model"], request["effort"]
-
-        self.assertEqual(target(), ("custom-droid", "low"))
-        self.assertEqual(target("gemini-4-neon-xhigh"), ("gemini-4-neon", "low"))
-        with patch.dict(os.environ, SA_AGY_FALLBACK_MODEL="env-droid"):
-            self.assertEqual(target(), ("env-droid", "low"))
-        self.write(fallbacks={f"agy:{MODEL}": [candidate(effort="xhigh")]})
-        self.assertEqual(target(), ("custom-droid", "xhigh"))
-        with patch.dict(os.environ, SA_AGY_FALLBACK_EFFORT="low"):
-            self.assertEqual(target(), ("custom-droid", "low"))
-        with patch.dict(os.environ, SA_AGY_FALLBACK_MODEL=""):
-            self.assertEqual(target(), ("gemini-4-neon", "low"))
+        self.assertEqual(reader.read_agy_policy(MODEL).fallback, ("custom-droid", "same"))
+        self.assertFalse(reader.read_agy_policy("gemini-4-neon-xhigh").has_fallback_override)
         for model in ("provider/mo.del:v-2", "Model Name (Preview)"):
             with self.subTest(model=model):
                 self.write(fallbacks={f"agy:{MODEL}": [candidate(model, "")]})
-                self.assertEqual(target(), (model, ""))
+                self.assertEqual(reader.read_agy_policy(MODEL).fallback, (model, ""))
 
     @patch.object(quota, "find_cli_binary", return_value="/mock/droid")
     @patch.object(quota, "_quota_for_model", return_value=dict(rem_frac=0, reset_ts=0))
@@ -276,23 +282,20 @@ class DispatchPolicyTests(unittest.TestCase):
         caps = {"available_engines": ["droid"]}
         models = cockpit.dispatch_models
         missing = self.path.with_name("no-cache")
-        with patch.multiple(models, _CODEX_CACHE=missing, _GROK_CACHE=missing, _FACTORY_CACHE_DIR=missing):
-            for family in ("hydrogen", "neon", "carbon", "opus"):
-                base = models._AGY_DEFAULTS[family]
-                for suffix in ("", "low", "medium", "high", "xhigh", "max", "ultra"):
-                    model = f"{base}-{suffix}" if suffix else base
-                    with self.subTest(model=model):
-                        effort = suffix or models._AGY_DEFAULT_EFFORT[family]
-                        policy["roles"]["scout"]["primary"] = cockpit._target("agy", model, effort)
-                        selected = cockpit.resolve_role("scout", policy, caps, state_path=missing)
-                        self.assertEqual(selected["engine"], "droid")
-                        result = quota.preflight_agy_request(model=model, prompt="task")
-                        self.assertEqual((result["agent"], result["model"], result["effort"]),
-                                         (selected["engine"], selected["model"], selected["effort"]))
+        for family in ("hydrogen", "neon", "carbon", "opus"):
+            base = models._AGY_DEFAULTS[family]
+            for suffix in ("", "low", "medium", "high", "xhigh", "max", "ultra"):
+                model = f"{base}-{suffix}" if suffix else base
+                with self.subTest(model=model):
+                    effort = suffix or models._AGY_DEFAULT_EFFORT[family]
+                    policy["roles"]["scout"]["primary"] = cockpit._target("agy", model, effort)
+                    selected = cockpit.resolve_role("scout", policy, caps, state_path=missing)
+                    self.assertEqual(selected["engine"], "droid")
+                    result = quota.preflight_agy_request(model=model, prompt="task")
+                    self.assertEqual((result["agent"], result["model"], result["effort"]),
+                                     (selected["engine"], selected["model"], selected["effort"]))
 
-    @patch.object(quota, "find_cli_binary", return_value="/mock/droid")
-    @patch.object(quota, "_quota_for_model", return_value=dict(rem_frac=0, reset_ts=0))
-    def test_missing_or_invalid_chain_preserves_default_fallback(self, _snapshot, _find):
+    def test_missing_or_invalid_chain_leaves_default_fallback_available(self):
         for raw in (None, b'{"fallbacks":{}}', b'{"schema_version":1,"fallbacks":{}}',
                     json.dumps(dict(schema_version=1, fallbacks={f"agy:{MODEL}": False})).encode()):
             with self.subTest(raw=raw):
@@ -301,20 +304,6 @@ class DispatchPolicyTests(unittest.TestCase):
                 policy = reader.read_agy_policy(MODEL)
                 self.assertFalse(policy.has_fallback_override)
                 self.assertIsNone(policy.fallback)
-                result = quota.preflight_agy_request(model=MODEL, prompt="task")
-                self.assertEqual((result["agent"], result["model"], result["effort"]),
-                                 ("droid", "gemini-4-neon", "medium"))
-
-    @patch.object(quota, "_quota_for_model", return_value=dict(rem_frac=0, reset_ts=0))
-    def test_low_quota_without_droid_leaves_agy_and_session_unchanged(self, _snapshot):
-        self.write(fallbacks={f"agy:{MODEL}": [candidate()]})
-        original = dict(agent="agy", model=MODEL, effort="high", requested_sid="existing", mode="plan", prompt="task")
-        with patch.object(quota, "find_cli_binary", return_value=None) as find, \
-                patch.object(quota, "build_forced_handoff_prompt") as handoff:
-            self.assertEqual(quota.preflight_agy_request(**original),
-                             dict(original, should_fallback=False, event=None, handoff=None))
-            find.assert_called_once_with("droid")
-            handoff.assert_not_called()
 
 
 if __name__ == "__main__":

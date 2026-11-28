@@ -1,13 +1,15 @@
 """Unit and end-to-end tests for normal-mode AGY ACP delayed auto-approval."""
+from contextlib import contextmanager
 import json
+from math import isclose
 import os
 from pathlib import Path
 import sys
-import tempfile
 import threading
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from _runtime_fixture import TIMEOUT, write_rpc_server
+from _runtime_fixture import TIMEOUT, isolated_runtime, write_rpc_server
 from agent_runtime import acp_approvals
 from agent_runtime.acp_approvals import (
     AUTO_APPROVE_DELAY_RANGE,
@@ -15,8 +17,7 @@ from agent_runtime.acp_approvals import (
     pick_auto_allow_option,
     resolve_agy_mode,
 )
-from agent_runtime.acp_stream import AgyAcpStream, DroidAcpStream, agy_server_command
-from agent_runtime.proc_utils import DEFAULT_AGY_APP_DATA_DIR
+from agent_runtime.acp_stream import AgyAcpStream, DroidAcpStream
 from agent_runtime.resident import ResidentServer
 
 
@@ -32,7 +33,6 @@ session_info = {
 }
 events_log = []
 pending = {}
-sent_times = {}
 perm_seq = 1000
 
 def record(entry):
@@ -44,7 +44,6 @@ def option(id, kind):
     return {"optionId": id, "kind": kind, "name": id}
 
 def request_permission(rid, sid, tool_id, title, options, *, prompt_id=None, remaining=False):
-    sent_times[rid] = time.monotonic()
     if prompt_id is not None:
         pending[rid] = (prompt_id, sid, remaining)
     send({"jsonrpc": "2.0", "id": rid, "method": "session/request_permission", "params": {
@@ -80,8 +79,6 @@ def override(method, rid, params, message):
         return False
     result = message.get("result")
     entry = {"type": "perm_reply", "perm_id": rid, "result": result}
-    if rid in sent_times:
-        entry["elapsed"] = time.monotonic() - sent_times[rid]
     record(entry)  # Record duplicates even after the first response consumed the pending entry.
     info = pending.pop(rid, None)
     if info is None:
@@ -103,201 +100,177 @@ def override(method, rid, params, message):
 '''
 
 
+@contextmanager
+def virtual_approval_timer(gate=None):
+    """Advance only the approval worker's clock; optionally block at its first wait."""
+    clock = threading.local()
+    samples, selected_at = [], []
+    approve = acp_approvals.AcpAutoApprover._approve_after_delay
+
+    def monotonic():
+        return clock.now
+
+    def uniform(lo, hi):
+        samples.append((lo, hi))
+        return (lo + hi) / 2
+
+    def worker(approver, record):
+        clock.now = 0.0
+        send = approver._write
+        done = record["done"]
+
+        def advance(seconds):
+            assert seconds > 0
+            if gate is not None:
+                entered, release, _ = gate
+                entered.set()
+                assert release.wait(TIMEOUT)
+            if not done.is_set():
+                clock.now += seconds
+            return done.is_set()
+
+        def observe(frame):
+            if frame["result"]["outcome"]["outcome"] == "selected":
+                selected_at.append(clock.now)
+            send(frame)
+
+        try:
+            with patch.object(done, "wait", side_effect=advance), patch.object(approver, "_write", side_effect=observe):
+                approve(approver, record)
+        finally:
+            if gate is not None:
+                gate[2].set()
+
+    with (
+        patch.object(acp_approvals, "time", SimpleNamespace(monotonic=monotonic)),
+        patch.object(acp_approvals, "random", SimpleNamespace(uniform=uniform)),
+        patch.object(acp_approvals.AcpAutoApprover, "_approve_after_delay", worker),
+    ):
+        yield samples, selected_at
+
+
 def acp_approval_cases():
-    # 1. Command builder never injects --dangerously-skip-permissions & default delay matches zomi-bot
     assert AUTO_APPROVE_DELAY_RANGE == (1.0, 5.0), AUTO_APPROVE_DELAY_RANGE
-    prev_app_dir = os.environ.get("SA_AGY_APP_DATA_DIR")
-    try:
-        os.environ.pop("SA_AGY_APP_DATA_DIR", None)
-        cmd = agy_server_command(["agy"])
-        assert cmd == ["agy", "acp", "--app-data-dir", DEFAULT_AGY_APP_DATA_DIR], cmd
-        assert "--dangerously-skip-permissions" not in cmd
-        os.environ["SA_AGY_APP_DATA_DIR"] = ""
-        assert agy_server_command(["agy"]) == ["agy", "acp"]
-    finally:
-        if prev_app_dir is None:
-            os.environ.pop("SA_AGY_APP_DATA_DIR", None)
-        else:
-            os.environ["SA_AGY_APP_DATA_DIR"] = prev_app_dir
+    def modes(*ids):
+        return {"modes": {"availableModes": [{"id": mode} for mode in ids]}}
 
-    # 2. Pure helpers: mode resolution & option selection
-    session_with_auto = {"modes": {"availableModes": [{"id": "default"}, {"id": "accept-edits"}, {"id": "auto"}, {"id": "plan"}]}}
-    session_without_auto = {"modes": {"availableModes": [{"id": "default"}, {"id": "accept-edits"}, {"id": "plan"}]}}
-    assert resolve_agy_mode({}, session_with_auto) == "auto"
-    assert resolve_agy_mode({"mode": "turbo"}, session_with_auto) == "auto"
-    assert resolve_agy_mode({"mode": "plan"}, session_with_auto) == "plan"
-    assert resolve_agy_mode({"mode": "accept-edits"}, session_with_auto) == "accept-edits"
-    assert resolve_agy_mode({}, session_without_auto) == "accept-edits"
+    with_auto = modes("default", "accept-edits", "auto", "plan")
+    for mode, expected in (("", "auto"), ("turbo", "auto"), ("plan", "plan"), ("accept-edits", "accept-edits")):
+        assert resolve_agy_mode({"mode": mode} if mode else {}, with_auto) == expected
+    assert resolve_agy_mode({}, modes("default", "accept-edits", "plan")) == "accept-edits"
 
-    assert pick_auto_allow_option([
-        {"optionId": "a2", "kind": "allow_always"},
-        {"optionId": "a1", "kind": "allow_once"},
-    ])["optionId"] == "a1"
-    assert pick_auto_allow_option([
-        {"optionId": "a2", "kind": "allow_always"},
-        {"optionId": "r1", "kind": "reject_once"},
-    ]) is None
-    assert pick_auto_allow_option([{"optionId": "a2", "kind": "allow_always"}]) is None
-    assert pick_auto_allow_option([{"optionId": "r1", "kind": "reject_once"}]) is None
-    assert pick_auto_allow_option([
-        {"optionId": "dup", "kind": "allow_once"},
-        {"optionId": "dup", "kind": "reject_once"},
-    ]) is None
+    always, once, reject = (dict(optionId=key, kind=kind) for key, kind in (
+        ("a2", "allow_always"), ("a1", "allow_once"), ("r1", "reject_once"),
+    ))
+    assert pick_auto_allow_option([always, once]) == once
+    for options in ([always, reject], [always], [reject], [once, dict(reject, optionId="a1")]):
+        assert pick_auto_allow_option(options) is None
 
-    # 3. End-to-end AgyAcpStream auto-approval with ResidentServer
-    orig_range = acp_approvals.AUTO_APPROVE_DELAY_RANGE
-    prev_markers = os.environ.get("ZOMI_SUBAGENT_SESSIONS_DIR")
-    try:
-        acp_approvals.AUTO_APPROVE_DELAY_RANGE = (0.12, 0.20)
-        with tempfile.TemporaryDirectory() as td:
-            tmp = Path(td)
-            os.environ["ZOMI_SUBAGENT_SESSIONS_DIR"] = str(tmp / "markers")
-            server = write_rpc_server(tmp, "fake_agy_perm.py", setup=PERMISSION_SCRIPT)
-            env = os.environ.copy()
+    with isolated_runtime() as tmp:
+        server = write_rpc_server(tmp, "fake_agy_perm.py", setup=PERMISSION_SCRIPT)
+        env = os.environ.copy()
 
-            # 3a. Two one-time approvals keep the ResidentServer healthy
-            log1 = tmp / "log1.json"
-            cmd1 = [sys.executable, str(server), str(log1)]
-            host = ResidentServer(cmd1, cwd=str(tmp), env=env, agent="agy")
+        @contextmanager
+        def peer(name, agent="agy"):
+            log = tmp / f"{name}.json"
+            cmd = [sys.executable, str(server), str(log)]
+            host = ResidentServer(cmd, cwd=str(tmp), env=env, agent=agent)
             try:
-                turn = AgyAcpStream(
-                    cmd1, cwd=str(tmp), env=env,
-                    bot={"model": "gemini-4-hydrogen-high"},
-                    prompt="MULTI_PERM",
-                    resident=host, is_subagent=True,
-                )
-                evs = [json.loads(line) for line in turn]
-                turn.close()
-                assert any(e.get("delta") == "approved:second-once-id" for e in evs), evs
-                assert not host.closed and not host.retire_after_turn and host.process.poll() is None
-
-                entries = json.loads(log1.read_text(encoding="utf-8"))
-                modes = [e["modeId"] for e in entries if e["type"] == "set_mode"]
-                assert modes == ["auto"], modes
-                replies = [e for e in entries if e["type"] == "perm_reply"]
-                assert len(replies) == 2, replies
-                assert replies[0]["result"] == {"outcome": {"outcome": "selected", "optionId": "allow-once-id"}}
-                assert replies[0]["elapsed"] >= 0.10, replies[0]
-                assert replies[1]["result"] == {"outcome": {"outcome": "selected", "optionId": "second-once-id"}}
-                assert replies[1]["elapsed"] >= 0.10, replies[1]
-
-                # 3b. interaction_* still emits native_question and is NEVER auto-approved
-                turn_q = AgyAcpStream(
-                    cmd1, cwd=str(tmp), env=env,
-                    bot={"model": "gemini-4-hydrogen-high"},
-                    prompt="INTERACTION_QUESTION",
-                    resident=host, is_subagent=True,
-                )
-                saw_question = False
-                for raw in turn_q:
-                    ev = json.loads(raw)
-                    if ev.get("type") == "native_question":
-                        saw_question = True
-                        break
-                turn_q.cancel()
-                turn_q.close()
-                assert saw_question, "interaction_* must still surface as native_question"
+                yield host, cmd, log
             finally:
                 host.shutdown()
 
-            # 3c. Cancelling during the delay window sends cancelled and NEVER sends selected
-            log2 = tmp / "log2.json"
-            cmd2 = [sys.executable, str(server), str(log2)]
-            entered, release, finished = threading.Event(), threading.Event(), threading.Event()
-            approve = acp_approvals.AcpAutoApprover._approve_after_delay
+        def turn(host, cmd, prompt, **kwargs):
+            cls, model = ((AgyAcpStream, "gemini-4-hydrogen-high") if host.agent == "agy"
+                          else (DroidAcpStream, "gpt-6.2-astra"))
+            return cls(cmd, cwd=str(tmp), env=env, bot={"model": model}, prompt=prompt,
+                       resident=host, is_subagent=True, **kwargs)
 
-            def gated_approval(self, record):
+        def permission_replies(log):
+            return [entry for entry in json.loads(log.read_text(encoding="utf-8")) if entry["type"] == "perm_reply"]
+
+        # 3a. Two one-time approvals keep the ResidentServer healthy
+        with peer("multi") as (host, cmd, log):
+            with virtual_approval_timer() as (samples, selected_at):
+                multi = turn(host, cmd, "MULTI_PERM")
                 try:
-                    entered.set()
-                    if release.wait(TIMEOUT):
-                        approve(self, record)
+                    evs = [json.loads(line) for line in multi]
                 finally:
-                    finished.set()
+                    multi.close()
+            assert samples == [(1.0, 5.0)] * 2, samples
+            assert len(selected_at) == 2 and all(isclose(t, 3.0) for t in selected_at), selected_at
+            assert any(e.get("delta") == "approved:second-once-id" for e in evs), evs
+            assert not host.closed and not host.retire_after_turn and host.process.poll() is None
 
-            host2 = ResidentServer(cmd2, cwd=str(tmp), env=env, agent="agy")
-            try:
-                with patch.object(acp_approvals.AcpAutoApprover, "_approve_after_delay", gated_approval):
-                    turn_c = AgyAcpStream(
-                        cmd2, cwd=str(tmp), env=env,
-                        bot={"model": "gemini-4-hydrogen-high"},
-                        prompt="SINGLE_PERM",
-                        resident=host2, is_subagent=True, rpc_timeout=TIMEOUT,
-                    )
-                    try:
-                        assert entered.wait(TIMEOUT) and turn_c.approvals.waiting(), "Expected pending approval"
-                        turn_c.cancel()
-                    finally:
-                        release.set()
-                    assert finished.wait(TIMEOUT) and turn_c._protocol_done.wait(TIMEOUT)
-                    try:
-                        # A wire round trip after the approval worker exits drains
-                        # every earlier reply, even if the prompt already ended.
-                        entries2 = turn_c._rpc("test/drain", {})["events"]
-                    finally:
-                        turn_c.close()
-                replies2 = [e for e in entries2 if e["type"] == "perm_reply"]
-                assert len(replies2) == 1, replies2
-                assert replies2[0]["result"] == CANCELLED, replies2
-            finally:
-                host2.shutdown()
+            entries = json.loads(log.read_text(encoding="utf-8"))
+            modes = [e["modeId"] for e in entries if e["type"] == "set_mode"]
+            assert modes == ["auto"], modes
+            replies = [e for e in entries if e["type"] == "perm_reply"]
+            assert len(replies) == 2, replies
+            assert replies[0]["result"] == {"outcome": {"outcome": "selected", "optionId": "allow-once-id"}}
+            assert replies[1]["result"] == {"outcome": {"outcome": "selected", "optionId": "second-once-id"}}
 
-            # 3d. A permanent-only or reject-only request is cancelled and reports an error
-            acp_approvals.AUTO_APPROVE_DELAY_RANGE = (0.05, 0.08)
-            for prompt in ("NO_ALLOW_OPTION", "ALWAYS_ONLY"):
-                log3 = tmp / f"{prompt}.json"
-                cmd3 = [sys.executable, str(server), str(log3)]
-                host3 = ResidentServer(cmd3, cwd=str(tmp), env=env, agent="agy")
+            # 3b. interaction_* still emits native_question and is NEVER auto-approved
+            turn_q = turn(host, cmd, "INTERACTION_QUESTION")
+            saw_question = False
+            for raw in turn_q:
+                ev = json.loads(raw)
+                if ev.get("type") == "native_question":
+                    saw_question = True
+                    break
+            turn_q.cancel()
+            turn_q.close()
+            assert saw_question, "interaction_* must still surface as native_question"
+
+        # Cancelling during the delay window sends cancelled and never sends selected.
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        with peer("cancel") as (host, cmd, _):
+            with virtual_approval_timer((entered, release, finished)) as (samples, selected_at):
+                turn_c = turn(host, cmd, "SINGLE_PERM", rpc_timeout=TIMEOUT)
                 try:
-                    turn_bad = AgyAcpStream(
-                        cmd3, cwd=str(tmp), env=env,
-                        bot={"model": "gemini-4-hydrogen-high"},
-                        prompt=prompt,
-                        resident=host3, is_subagent=True,
-                    )
-                    raised = ""
-                    try:
-                        list(turn_bad)
-                    except RuntimeError as exc:
-                        raised = str(exc)
-                    finally:
-                        done = turn_bad._protocol_done.wait(2)
-                        turn_bad.close()
-                    assert "未提供可自动批准的权限选项" in raised, (prompt, raised)
-                    assert done, f"No prompt reply after permission cancellation: {prompt}"
-                    entries3 = json.loads(log3.read_text(encoding="utf-8"))
-                    replies3 = [e for e in entries3 if e["type"] == "perm_reply"]
-                    assert len(replies3) == 1 and replies3[0]["result"] == CANCELLED, (prompt, replies3)
+                    assert entered.wait(TIMEOUT) and turn_c.approvals.waiting(), "Expected pending approval"
+                    turn_c.cancel()
                 finally:
-                    host3.shutdown()
+                    release.set()
+                assert finished.wait(TIMEOUT) and turn_c._protocol_done.wait(TIMEOUT)
+                try:
+                    # A wire round trip after the approval worker exits drains
+                    # every earlier reply, even if the prompt already ended.
+                    entries2 = turn_c._rpc("test/drain", {})["events"]
+                finally:
+                    turn_c.close()
+            assert samples == [(1.0, 5.0)] and not selected_at
+            replies2 = [e for e in entries2 if e["type"] == "perm_reply"]
+            assert len(replies2) == 1, replies2
+            assert replies2[0]["result"] == CANCELLED, replies2
 
-            # 3e. Non-AGY ACP agents (e.g. droid) still fail closed on unexpected permission requests
-            log4 = tmp / "log4.json"
-            cmd4 = [sys.executable, str(server), str(log4)]
-            host4 = ResidentServer(cmd4, cwd=str(tmp), env=env, agent="droid")
-            try:
-                turn_d = DroidAcpStream(
-                    cmd4, cwd=str(tmp), env=env,
-                    bot={"model": "gpt-6.2-astra"},
-                    prompt="SINGLE_PERM",
-                    resident=host4, is_subagent=True,
-                )
+        for prompt in ("NO_ALLOW_OPTION", "ALWAYS_ONLY"):
+            with peer(prompt) as (host, cmd, log):
+                turn_bad = turn(host, cmd, prompt)
                 raised = ""
                 try:
-                    list(turn_d)
+                    list(turn_bad)
                 except RuntimeError as exc:
                     raised = str(exc)
                 finally:
-                    turn_d.close()
-                assert "请求了额外权限" in raised, raised
-            finally:
-                host4.shutdown()
-    finally:
-        acp_approvals.AUTO_APPROVE_DELAY_RANGE = orig_range
-        if prev_markers is None:
-            os.environ.pop("ZOMI_SUBAGENT_SESSIONS_DIR", None)
-        else:
-            os.environ["ZOMI_SUBAGENT_SESSIONS_DIR"] = prev_markers
+                    done = turn_bad._protocol_done.wait(TIMEOUT)
+                    turn_bad.close()
+                assert "未提供可自动批准的权限选项" in raised, (prompt, raised)
+                assert done, f"No prompt reply after permission cancellation: {prompt}"
+                replies = permission_replies(log)
+                assert len(replies) == 1 and replies[0]["result"] == CANCELLED, (prompt, replies)
 
+        # Other ACP agents fail closed on unexpected permission requests.
+        with peer("droid", "droid") as (host, cmd, _):
+            turn_d = turn(host, cmd, "SINGLE_PERM")
+            raised = ""
+            try:
+                list(turn_d)
+            except RuntimeError as exc:
+                raised = str(exc)
+            finally:
+                turn_d.close()
+            assert "请求了额外权限" in raised, raised
     print("PASS: acp_approval_cases")
 
 

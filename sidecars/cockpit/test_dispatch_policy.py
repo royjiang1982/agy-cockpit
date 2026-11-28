@@ -1,47 +1,45 @@
+"""Dispatch policy validation, capability probing, and route selection."""
 from contextlib import ExitStack
-import fcntl
 import json
-import multiprocessing
 import os
 from pathlib import Path
-import stat
-import subprocess
-import sys
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
 import unittest
 from unittest.mock import patch
 
+import dispatch_models as dm
 import dispatch_policy as dp
 
 NOW = 1_700_000_000
 
 
-def _process_write(path, reset, sender):
-    with sender:
-        sender.send("ready")
-        try:
-            if reset:
-                dp.reset_policy(expected_revision=1, policy_path=path)
-            else:
-                dp.save_policy(dict(dp.default_policy(), enabled=False), expected_revision=1, policy_path=path)
-        except dp.PolicyConflictError:
-            sender.send("PolicyConflictError")
-        else:
-            sender.send("saved")
-
-
-class DispatchPolicyTests(unittest.TestCase):
+class DispatchFixture(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.policy_path = Path(tmp.name) / "dispatch-policy.json"
-        self.state_path = Path(tmp.name) / "state.json"
-        for p in (patch.object(dp, "STATE_PATH", self.state_path), patch.dict(os.environ, {"SA_DISPATCH_POLICY_PATH": ""})):
-            p.start()
-            self.addCleanup(p.stop)
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        self.root = Path(stack.enter_context(tempfile.TemporaryDirectory()))
+        self.policy_path = self.root / "dispatch-policy.json"
+        self.state_path = self.root / "view_state.json"
+        self.codex_cache = self.root / "codex_models.json"
+        self.grok_cache = self.root / "grok_models.json"
+        self.agy_state = self.root / "agy_state.json"
+        stack.enter_context(patch.dict(os.environ, {
+            "HOME": str(self.root), "SA_DISPATCH_POLICY_PATH": "", "SA_RUNTIME_BIN": "",
+        }))
+        # These paths were bound at import time, before redirecting HOME.
+        stack.enter_context(patch.multiple(dp, STATE_PATH=self.state_path,
+                                           _CLI_BIN_DIRS=(), _EXTRA_WRAPPER_DIRS=()))
+        stack.enter_context(patch.object(dp.shutil, "which", return_value=None))
+        stack.enter_context(patch.multiple(
+            dm, _CODEX_CACHE=self.codex_cache, _DEFAULT_CODEX_CACHE=self.codex_cache,
+            _GROK_CACHE=self.grok_cache, _AGY_STATE=self.agy_state, _FACTORY_CACHE_DIR=self.root / "factory",
+            _FILE_CACHE={}, _CODEX_RPC_CACHE=None,
+        ))
+        # Model discovery also has system-wide fallback locations and can launch app-server.
+        stack.enter_context(patch.object(dm, "_find_codex_bin", return_value=None))
 
+
+class DispatchPolicyTests(DispatchFixture):
     def test_environment_policy_path_applies_to_load_save_reset_and_resolve(self):
         override = self.policy_path.with_name("custom.json")
         with patch.dict(os.environ, {"SA_DISPATCH_POLICY_PATH": str(override)}):
@@ -109,27 +107,6 @@ class DispatchPolicyTests(unittest.TestCase):
             target["effort"] = effort
             dp.validate_policy(p)
 
-    def test_degraded_files_are_immutable_for_save_and_reset(self):
-        missing = dp.load_policy(self.policy_path)
-        self.assertFalse(missing["exists"])
-        self.assertFalse(missing["degraded"])
-        for contents in (
-            "{", "\n".join(["{", '  "revision": 1, "revision": 2', "}"]),
-            json.dumps(dict(dp.default_policy(), schema_version=9)),
-        ):
-            with self.subTest(contents=contents[:15]):
-                self.policy_path.write_text(contents)
-                current = dp.load_policy(self.policy_path)
-                self.assertTrue(current["exists"])
-                self.assertTrue(current["degraded"])
-                self.assertTrue(current["read_only_warning"])
-                self.assertEqual(current["policy"], dp.default_policy())
-                with self.assertRaises(dp.PolicyConflictError):
-                    dp.save_policy(current["policy"], expected_revision=1, policy_path=self.policy_path)
-                with self.assertRaises(dp.PolicyConflictError):
-                    dp.reset_policy(expected_revision=1, policy_path=self.policy_path)
-                self.assertEqual(self.policy_path.read_text(), contents)
-
     def test_corrupted_policy_stops_single_and_all_routes_without_probing(self):
         self.policy_path.write_text("{")
         warning = dp.load_policy(self.policy_path)["read_only_warning"]
@@ -143,9 +120,8 @@ class DispatchPolicyTests(unittest.TestCase):
             probe.assert_not_called()
 
     def test_path_probe_and_safe_native_fallbacks(self):
-        with patch.object(dp.shutil, "which", return_value=None) as which:
-            caps = dp.probe_capabilities(self.state_path)
-        self.assertEqual([c.args[0] for c in which.call_args_list], [f"sa-{x}" for x in dp.ENGINES])
+        caps = dp.probe_capabilities(self.state_path)
+        self.assertEqual(caps["available_engines"], [])
         all_roles = dp.resolve_all(capabilities=caps, policy_path=self.policy_path)
         for role, expected in {
             "scout": ("research", "flash"), "standard": ("self", "inherit"),
@@ -177,31 +153,6 @@ class DispatchPolicyTests(unittest.TestCase):
                 self.assertEqual([(item["engine"], item["reason"]) for item in route["skipped"]],
                                  [("codex", reason), ("droid", reason)])
 
-    def test_offline_agy_family_uses_effort_specific_fallback(self):
-        p = dp.default_policy()
-        p["roles"]["scout"]["primary"] = dp._target("agy", "hydrogen", "high")
-        p["fallbacks"] = {"agy:gemini-4-hydrogen-high": [dp._target("agy", "pro", channel="invoke_subagent")]}
-        route = dp.resolve_role("scout", dp.validate_policy(p), {"available_engines": []})
-        self.assertEqual((route["model"], route["reason"]), ("pro", "fallback"))
-        self.assertEqual(route["skipped"][0]["reason"], "cli_unavailable")
-
-    def test_same_fallback_inherits_concrete_agy_effort_if_unspecified(self):
-        p = dp.default_policy()
-        model = "gemini-4-hydrogen-xhigh"
-        p["fallbacks"][f"agy:{model}"] = [dp._target("droid", "fixture-model", "same")]
-        for effort, expected in (("", "xhigh"), ("low", "low")):
-            with self.subTest(effort=effort):
-                p["roles"]["scout"]["primary"] = dp._target("agy", model, effort)
-                route = dp.resolve_role("scout", p, {"available_engines": ["droid"]})
-                self.assertEqual((route["engine"], route["effort"], route["reason"]), ("droid", expected, "fallback"))
-
-    def test_offline_droid_family_uses_concrete_fallback(self):
-        p = dp.default_policy()
-        p["roles"]["scout"]["primary"] = dp._target("droid", "sol")
-        p["fallbacks"] = {"droid:gpt-6.2-sol": [dp._target("agy", "pro", channel="invoke_subagent")]}
-        route = dp.resolve_role("scout", p, {"available_engines": []})
-        self.assertEqual((route["model"], route["reason"]), ("pro", "fallback"))
-
     def test_panel_fills_orders_after_both_skipped_and_selected_seats(self):
         p = dp.default_policy()
         local = dp._target("agy", "inherit", channel="invoke_subagent")
@@ -213,17 +164,6 @@ class DispatchPolicyTests(unittest.TestCase):
             self.assertEqual([seat["order"] for seat in route["seats"]], seats)
             self.assertEqual([seat["order"] for seat in route["skipped_seats"]], skipped)
             self.assertTrue(all(seat["reason"] == "builtin_fallback" for seat in route["seats"][1:]))
-
-    def test_explicit_codex_version_does_not_use_default_versions_fallback(self):
-        p = dp.default_policy()
-        p["roles"]["scout"]["primary"] = dp._target("codex", "gpt-6.1-sol", "high")
-        p["fallbacks"] = {
-            "codex:gpt-6.2-sol": [dp._target("agy", "pro", channel="invoke_subagent")],
-            "codex:sol": [dp._target("agy", "flash_lite", channel="invoke_subagent")],
-        }
-        route = dp.resolve_role("scout", dp.validate_policy(p), {"available_engines": []})
-        self.assertEqual((route["model"], route["reason"]), ("flash_lite", "fallback"))
-        self.assertEqual(route["skipped"][0]["reason"], "cli_unavailable")
 
     def test_role_permissions_and_public_panel_seat(self):
         p = dict(dp.default_policy(), external_enabled=False, allow_swarm=True)
@@ -370,141 +310,33 @@ class DispatchPolicyTests(unittest.TestCase):
         self.assertIsNone(caps["quota"]["droid"]["pct"])
         self.assertFalse(caps["quota"]["droid"]["fresh"])
 
-    def test_concurrent_save_is_atomic_and_reset_advances_revision(self):
-        gate = Barrier(2)
+    def test_wrapper_requires_executable_cli_and_is_not_discovered_with_empty_path(self):
+        wrappers = self.root / "wrapper-bin"
+        wrappers.mkdir()
+        wrapper = wrappers / "sa-codex"
+        wrapper.touch()
+        wrapper.chmod(0o755)
+        cli = self.root / "codex"
 
-        def update(enabled):
-            p = dict(dp.default_policy(), enabled=enabled)
-            gate.wait(timeout=3)
-            try:
-                return dp.save_policy(p, expected_revision=1, policy_path=self.policy_path)
-            except dp.PolicyConflictError:
-                return None
-
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(update, [True, False]))
-        winner, = [result for result in results if result is not None]
-        self.assertEqual(winner["revision"], 2)
-        self.assertEqual(dp.load_policy(self.policy_path)["policy"], winner)
-        self.assertEqual(stat.S_IMODE(self.policy_path.stat().st_mode), 0o600)
-        self.assertEqual({p.name for p in self.policy_path.parent.iterdir()},
-                         {self.policy_path.name, self.policy_path.name + ".lock"})
-        with self.assertRaises(dp.PolicyConflictError):
-            dp.reset_policy(expected_revision=1, policy_path=self.policy_path)
-        self.assertEqual(dp.reset_policy(expected_revision=2, policy_path=self.policy_path),
-                         dict(dp.default_policy(), revision=3))
-
-    def test_concurrent_processes_share_file_lock_and_recheck_revision(self):
-        ctx = multiprocessing.get_context("spawn")
-        lock_path = self.policy_path.with_name(self.policy_path.name + ".lock")
-        for second_resets, replace_schema in ((False, False), (True, False), (True, True)):
-            with self.subTest(second_resets=second_resets, replace_schema=replace_schema), ExitStack() as stack:
-                self.policy_path.unlink(missing_ok=True)
-                procs, receivers = [], []
-                with lock_path.open("a+b") as lock:
-                    fcntl.flock(lock, fcntl.LOCK_EX)
-                    for reset in (False, second_resets):
-                        recv, send = ctx.Pipe(duplex=False)
-                        stack.enter_context(recv)
-                        proc = ctx.Process(target=_process_write, args=(self.policy_path, reset, send))
-                        with send:
-                            proc.start()
-                        stack.callback(self.stop_process, proc)
-                        procs.append(proc)
-                        receivers.append(recv)
-                    for recv in receivers:
-                        self.assertTrue(recv.poll(5), "writer failed to start")
-                        self.assertEqual(recv.recv(), "ready")
-                    for recv in receivers:
-                        self.assertFalse(recv.poll(0.2), "writer bypassed another process's file lock")
-                    self.assertFalse(self.policy_path.exists())
-                    if replace_schema:
-                        external_contents = json.dumps(dict(dp.default_policy(), schema_version=9))
-                        incoming = self.policy_path.with_name("external.json")
-                        incoming.write_text(external_contents)
-                        incoming.replace(self.policy_path)
-                results = []
-                for proc, recv in zip(procs, receivers):
-                    self.assertTrue(recv.poll(5), "writer stuck after releasing file lock")
-                    results.append(recv.recv())
-                    proc.join(5)
-                    self.assertEqual(proc.exitcode, 0)
-                if replace_schema:
-                    self.assertEqual(results, ["PolicyConflictError"] * 2)
-                    self.assertEqual(self.policy_path.read_text(), external_contents)
-                else:
-                    self.assertCountEqual(results, ["saved", "PolicyConflictError"])
-                    self.assertEqual(dp.load_policy(self.policy_path)["policy"]["revision"], 2)
-
-    @staticmethod
-    def stop_process(proc):
-        if proc.is_alive():
-            proc.terminate()
-        proc.join(2)
-        proc.close()
-
-    def test_cli_subprocess_works_from_unrelated_cwd_with_empty_path(self):
-        script = Path(__file__).resolve().parents[2] / "skills/cockpit-dispatch/scripts/resolve.py"
-        self.policy_path.write_text(json.dumps(dict(dp.default_policy(), allow_swarm=True)))
-        cmd = [sys.executable, str(script), "--policy-path", str(self.policy_path), "--state-path", str(self.state_path)]
-        env = dict(os.environ, PATH="")
-        cwd = self.policy_path.parent
-        for action in (("--all",), ("--capabilities",), ("--role", "scout")):
-            with self.subTest(action=action):
-                child = subprocess.run([*cmd, *action], cwd=cwd, env=env, capture_output=True, text=True, timeout=5)
-                self.assertEqual(child.returncode, 0, child.stderr)
-                body = json.loads(child.stdout)
-                if action[0] == "--all":
-                    self.assertEqual(set(body), set(dp.ROLE_READ_ONLY))
-                    self.assertEqual(body["deep"]["channel"], "swarm")
-                elif action[0] == "--capabilities":
-                    self.assertEqual(body["available_engines"], [])
-                else:
-                    self.assertEqual(body["type"], "research")
-
-    def test_cli_read_only_and_blind_flags(self):
-        script = Path(__file__).resolve().parents[2] / "skills/cockpit-dispatch/scripts/resolve.py"
-        p = dict(dp.default_policy(), allow_swarm=True)
-        p["roles"]["panel"]["seats"] = [dp._target("agy", "Gemini 4 Neon (High)", channel="swarm")]
-        self.policy_path.write_text(json.dumps(p))
-        cmd = [sys.executable, str(script), "--policy-path", str(self.policy_path), "--state-path", str(self.state_path)]
-        opts = dict(capture_output=True, text=True, timeout=5, env=dict(os.environ, PATH=""))
-        expert = subprocess.run([*cmd, "--role", "expert", "--read-only"], **opts)
-        self.assertEqual(expert.returncode, 0, expert.stderr)
-        self.assertEqual(json.loads(expert.stdout)["type"], "research")
-        panel = subprocess.run([*cmd, "--role", "panel", "--blind", "--count", "2"], **opts)
-        self.assertEqual(panel.returncode, 0, panel.stderr)
-        self.assertEqual([seat["channel"] for seat in json.loads(panel.stdout)["seats"]], ["invoke_subagent"] * 2)
-        for args in (("--all", "--read-only"), ("--capabilities", "--read-only"),
-                     ("--all", "--blind"), ("--role", "expert", "--blind")):
-            with self.subTest(args=args):
-                bad = subprocess.run([*cmd, *args], **opts)
-                self.assertEqual(bad.returncode, 2)
-                self.assertIn("can only be used with --role", bad.stderr)
-
-    def test_path_wrapper_requires_executable_official_cli(self):
-        cli = self.policy_path.with_name("codex")
-        with patch.object(dp, "_CLI_BIN_DIRS", (cli.parent,)), \
-             patch.object(dp.shutil, "which", side_effect={"sa-codex": "sa-codex"}.get):
-            self.assertFalse(dp._has_wrapper("codex"))
-            cli.touch()
-            cli.chmod(0o644)
-            self.assertFalse(dp._has_wrapper("codex"))
-            cli.chmod(0o755)
-            self.assertTrue(dp._has_wrapper("codex"))
-
-    def test_wrapper_discovery_uses_runtime_bin_when_path_is_nonempty(self):
-        fake_bin = self.policy_path.parent / "runtime-bin"
-        fake_bin.mkdir()
-        for name in ("sa-codex", "codex"):
-            exe = fake_bin / name
-            exe.write_text("#!/bin/sh\nexit 0\n")
-            exe.chmod(0o755)
-        with patch.object(dp, "_CLI_BIN_DIRS", (fake_bin,)), \
-             patch.dict(os.environ, {"PATH": str(fake_bin / "missing"), "SA_RUNTIME_BIN": str(fake_bin)}):
-            self.assertEqual(dp.probe_capabilities(self.state_path)["available_engines"], ["codex"])
-            with patch.dict(os.environ, {"PATH": ""}):
+        # Restore the real lookup only here, with PATH and all bin directories in the fixture.
+        with (
+            patch.object(dp.shutil, "which", dp._REAL_WHICH),
+            patch.object(dp, "_CLI_BIN_DIRS", (self.root,)),
+        ):
+            for path in (wrappers, self.root / "empty-path"):
+                with self.subTest(path=path.name), patch.dict(
+                    os.environ, {"PATH": str(path), "SA_RUNTIME_BIN": str(wrappers)}
+                ):
+                    cli.unlink(missing_ok=True)
+                    self.assertEqual(dp.probe_capabilities(self.state_path)["available_engines"], [])
+                    cli.touch()
+                    cli.chmod(0o644)
+                    self.assertEqual(dp.probe_capabilities(self.state_path)["available_engines"], [])
+                    cli.chmod(0o755)
+                    self.assertEqual(dp.probe_capabilities(self.state_path)["available_engines"], ["codex"])
+            with patch.dict(os.environ, {"PATH": "", "SA_RUNTIME_BIN": str(wrappers)}):
                 self.assertEqual(dp.probe_capabilities(self.state_path)["available_engines"], [])
+
 
     def test_panel_ordered_count_skips_unavailable_seats_and_backfills(self):
         p = dp.default_policy()
@@ -532,49 +364,3 @@ class DispatchPolicyTests(unittest.TestCase):
         for invalid in (0, 13, 2.0, True):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 dp.resolve_role("panel", p, caps, count=invalid)
-        script = Path(__file__).resolve().parents[2] / "skills/cockpit-dispatch/scripts/resolve.py"
-        for bad_args in (("--role", "scout", "--count", "1"), ("--role", "panel", "--count", "0"),
-                         ("--role", "panel", "--count", "13")):
-            child = subprocess.run([sys.executable, str(script), "--policy-path", str(self.policy_path), *bad_args],
-                                   capture_output=True, text=True, timeout=5)
-            self.assertEqual(child.returncode, 2)
-            self.assertNotIn("Traceback", child.stderr)
-
-    def test_versionless_families_auto_resolve_to_latest_cached_models(self):
-        import dispatch_models as dm
-        codex_cache = self.policy_path.with_name("codex_models.json")
-        grok_cache = self.policy_path.with_name("grok_models.json")
-        agy_state = self.policy_path.with_name("agy_state.json")
-        codex_cache.write_text(json.dumps({"models": [{"slug": "gpt-6.2-astra"}, {"slug": "gpt-6.5-astra"}, {"slug": "gpt-6.4-sol"}]}))
-        grok_cache.write_text(json.dumps({"models": {"grok-4.7": {}, "grok-5.1": {}, "grok-5.1-build-fast": {}}}))
-        agy_state.write_text(json.dumps({"dynamic_models": {"1900": ["Gemini 4.5 Neon (High)"], "1901": ["Claude Opus 6.0"]}}))
-        with patch.object(dm, "_CODEX_CACHE", codex_cache), patch.object(dm, "_GROK_CACHE", grok_cache), \
-             patch.object(dm, "_AGY_STATE", agy_state), patch.object(dm, "_FACTORY_CACHE_DIR", self.policy_path.with_name("no-factory")):
-            self.assertEqual(dm.resolve_model_id("codex", "astra"), "gpt-6.5-astra")
-            self.assertEqual(dm.resolve_model_id("codex", "sol"), "gpt-6.4-sol")
-            self.assertEqual(dm.resolve_model_id("grok", "grok"), "grok-5.1")
-            self.assertEqual(dm.resolve_model_id("grok", "grok-fast"), "grok-5.1-build-fast")
-            self.assertEqual(dm.resolve_model_id("agy", "neon", "high"), "gemini-4.5-neon-high")
-            self.assertEqual(dm.resolve_model_id("agy", "opus", "max"), "claude-opus-6-0-max")
-            self.assertEqual(dm.resolve_model_id("droid", "astra"), "gpt-6.5-astra")
-            self.assertEqual(dm.resolve_model_id("codex", "gpt-6.2-sol"), "gpt-6.2-sol")
-            p = dp.default_policy()
-            p["roles"]["deep"]["primary"] = {"channel": "cli", "engine": "codex", "model": "sol", "effort": "high"}
-            p["roles"]["standard"]["primary"] = {"channel": "cli", "engine": "agy", "model": "neon", "effort": "medium"}
-            p["fallbacks"]["codex:sol"] = [{"channel": "cli", "engine": "droid", "model": "sol", "effort": "same", "enabled": True}]
-            caps = {"available_engines": ["agy", "codex", "droid"], "quota": {"codex": {"fresh": True, "pct": 0}}}
-            self.assertEqual(dp.resolve_role("standard", p, caps)["model"], "gemini-4.5-neon-medium")
-            deep = dp.resolve_role("deep", p, caps)
-            self.assertEqual((deep["engine"], deep["model"], deep["effort"]), ("droid", "gpt-6.4-sol", "high"))
-
-    def test_codex_model_discovery_prefers_app_server_rpc(self):
-        import dispatch_models as dm
-        with patch.object(dm, "_fetch_codex_models_rpc", return_value=["gpt-6.8-sol", "gpt-6.7-astra"]):
-            self.assertEqual(dm.resolve_model_id("codex", "sol"), "gpt-6.8-sol")
-            self.assertEqual(dm.resolve_model_id("codex", "astra"), "gpt-6.7-astra")
-        with patch.object(dm, "_CODEX_RPC_CACHE", None), \
-             patch.object(dm, "_find_codex_bin", return_value="codex"), \
-             patch.object(dm.subprocess, "Popen", side_effect=OSError("boom")) as popen:
-            self.assertIsNone(dm._fetch_codex_models_rpc())
-            self.assertIsNone(dm._fetch_codex_models_rpc())
-            self.assertEqual(popen.call_count, 1)

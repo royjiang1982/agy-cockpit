@@ -5,31 +5,25 @@ import os
 from pathlib import Path
 import socket
 import subprocess
-import tempfile
 from threading import Thread
-import unittest
 from unittest.mock import patch
 
 import dispatch_api
 import dispatch_policy
 import server
+from test_dispatch_policy import DispatchFixture
 
 
-class DispatchAPITests(unittest.TestCase):
+class DispatchAPITests(DispatchFixture):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        self.path = self.root / "dispatch-policy.json"
-        self.state = self.root / "view_state.json"
+        super().setUp()
         html = self.root / "index.html"
         html.write_bytes(b"<meta content='__CSRF_TOKEN__'><span>__UI_VERSION__</span>")
         patches = (
-            patch.object(server, "STATE_FILE", self.state), patch.object(server, "INDEX_HTML_FILE", html),
+            patch.object(server, "STATE_FILE", self.state_path), patch.object(server, "INDEX_HTML_FILE", html),
             patch.object(server, "_HTML_CACHE", None), patch.object(server, "_touch_ui_activity"),
             patch.object(dispatch_api, "_STATIC_DIR", self.root),
             patch.object(dispatch_policy.shutil, "which", side_effect=lambda exe: exe if exe in ("sa-agy", "agy", "sa-codex", "codex") else None),
-            patch.dict(os.environ, {"SA_DISPATCH_POLICY_PATH": ""}),
         )
         for context in patches:
             context.start()
@@ -67,7 +61,7 @@ class DispatchAPITests(unittest.TestCase):
             client.close()
 
     def test_get_resolved_policy_capabilities_and_token_injection(self):
-        self.state.write_text(json.dumps({"quota_cache": {"codex-5h": {"pct": 42}}}))
+        self.state_path.write_text(json.dumps({"quota_cache": {"codex-5h": {"pct": 42}}}))
         status, capabilities, _ = self.request("GET", "/api/dispatch-capabilities")
         self.assertEqual(status, 200)
         self.assertEqual(capabilities["available_engines"], ["agy", "codex"])
@@ -91,7 +85,7 @@ class DispatchAPITests(unittest.TestCase):
         status, body, _ = self.request("POST", "/api/dispatch-policy", p, self.headers)
         self.assertEqual(status, 200)
         self.assertEqual(body["policy"], dict(p, revision=2))
-        self.assertEqual(json.loads(self.path.read_text()), body["policy"])
+        self.assertEqual(json.loads(self.policy_path.read_text()), body["policy"])
         self.assertEqual(self.request("POST", "/api/dispatch-policy", p, self.headers)[0], 409)
         self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 1}, self.headers)[0], 409)
         self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 2},
@@ -140,10 +134,10 @@ class DispatchAPITests(unittest.TestCase):
             self.assertTrue(target.is_file())
             self.assertEqual(self.request("GET", route)[1]["policy"]["revision"], 2)
             self.assertEqual(self.request("POST", route + "/reset", {"revision": 2}, self.headers)[0], 200)
-        self.assertFalse(self.path.exists())
+        self.assertFalse(self.policy_path.exists())
 
     def test_degraded_disk_is_gettable_but_not_writable(self):
-        self.path.write_text('{"schema_version": 2}')
+        self.policy_path.write_text('{"schema_version": 2}')
         status, body, _ = self.request("GET", "/api/dispatch-policy?resolve=1")
         self.assertEqual(status, 200)
         self.assertTrue(body["degraded"])
@@ -153,23 +147,23 @@ class DispatchAPITests(unittest.TestCase):
             self.assertEqual(item["reason"], "policy_corrupted", role)
         for path, payload in (("/api/dispatch-policy", body["policy"]), ("/api/dispatch-policy/reset", {"revision": 1})):
             self.assertEqual(self.request("POST", path, payload, self.headers)[0], 409)
-        self.assertEqual(self.path.read_text(), '{"schema_version": 2}')
+        self.assertEqual(self.policy_path.read_text(), '{"schema_version": 2}')
 
     def test_resolved_policy_uses_single_degraded_snapshot_after_disk_recovers(self):
-        self.path.write_text("{")
+        self.policy_path.write_text("{")
         load_policy = dispatch_policy.load_policy
 
         def load_then_recover(path):
             snapshot = load_policy(path)
-            self.path.write_text(json.dumps(dispatch_policy.default_policy()))
+            self.policy_path.write_text(json.dumps(dispatch_policy.default_policy()))
             return snapshot
 
         with patch.object(dispatch_policy, "load_policy", side_effect=load_then_recover) as load:
             status, body, _ = self.request("GET", "/api/dispatch-policy?resolve=1")
-        load.assert_called_once_with(self.path)
+        load.assert_called_once_with(self.policy_path)
         self.assertEqual(status, 200)
         self.assertTrue(body["degraded"])
-        self.assertFalse(load_policy(self.path)["degraded"])
+        self.assertFalse(load_policy(self.policy_path)["degraded"])
         self.assertEqual(body["resolved"], {
             role: dict(mode="degraded", channel="direct", read_only=read_only, degraded=True,
                        reason="policy_corrupted", warning=body["read_only_warning"])
@@ -193,7 +187,7 @@ class DispatchAPITests(unittest.TestCase):
                     headers[key] = value
                 for path in ("/api/dispatch-policy", "/api/dispatch-policy/reset"):
                     self.assertEqual(self.request("POST", path, {"revision": 1}, headers)[0], 403)
-        self.assertFalse(self.path.exists())
+        self.assertFalse(self.policy_path.exists())
 
     def test_allows_exact_ipv4_ipv6_and_localhost(self):
         for revision, name in enumerate(("127.0.0.1", "[::1]", "localhost"), start=1):
@@ -239,7 +233,7 @@ class DispatchAPITests(unittest.TestCase):
             with self.subTest(origin=origin):
                 self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 1},
                                               dict(self.headers, Host=host, Origin=origin))[0], 403)
-        self.assertFalse(self.path.exists())
+        self.assertFalse(self.policy_path.exists())
 
     def test_rejects_invalid_or_duplicate_host_even_for_webview(self):
         route = "/api/dispatch-policy/reset"
@@ -253,7 +247,7 @@ class DispatchAPITests(unittest.TestCase):
         del headers["Host"]
         self.assertEqual(self.request("POST", route, b'{"revision":1}', headers,
                                       extra_headers=[("Accept", "*/*")])[0], 403)
-        self.assertFalse(self.path.exists())
+        self.assertFalse(self.policy_path.exists())
 
     def test_rejects_non_json_duplicate_keys_and_illegal_policy(self):
         original = dispatch_policy.default_policy()
@@ -267,7 +261,7 @@ class DispatchAPITests(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertIn("invalid JSON constant", reply["error"])
         self.assertEqual(self.request("POST", "/api/dispatch-policy/reset", {"revision": 1, "unknown": 1}, self.headers)[0], 400)
-        self.assertFalse(self.path.exists())
+        self.assertFalse(self.policy_path.exists())
 
     def test_rejects_invalid_framing_before_read(self):
         for overrides in ({"Content-Type": "application/json; charset=utf-8"}, {"Content-Length": "0"},
@@ -310,5 +304,8 @@ class DispatchAPITests(unittest.TestCase):
                 self.assertEqual(content_type, mime + "; charset=utf-8")
                 self.assertEqual(body, (assets / name).read_bytes())
         for js in ("dispatch_drawer.catalog.js", "dispatch_drawer.js"):
-            result = subprocess.run(["node", "--check", str(assets / js)], capture_output=True, text=True)
+            result = subprocess.run(
+                ["node", "--check", str(assets / js)], cwd=self.root,
+                env=dict(os.environ, NODE_OPTIONS=""), capture_output=True, text=True, timeout=10,
+            )
             self.assertEqual(result.returncode, 0, result.stderr)
