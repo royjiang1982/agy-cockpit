@@ -12,6 +12,7 @@ SUITES = (
     "test_review_regressions.py",
     "verify_agy_quota.py",
     "verify_agent_runtime.py",
+    "test_sa_run_view.py",
 )
 
 

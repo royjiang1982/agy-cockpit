@@ -59,7 +59,7 @@ python3 ~/.gemini/config/plugins/agy-cockpit/skills/cockpit-dispatch/scripts/res
 ### 1. `channel == "cli"`（插件内置常驻引擎，已装对应官方 CLI 时首选）
 插件自包含常驻子代理运行时（`~/.gemini/config/plugins/agy-cockpit/runtime/bin/`），通过 `sa-subagentd`（Unix Socket `/tmp/dev-subagentd-$UID/daemon.sock`）复用常驻连接。不得用 `agy -p` 执行任务；该限制不含运行时内部的配额探测。
 
-**统一执行格式**：`sa-run.sh` 是前台包装器，打印进度，每次截断覆盖同名 `.jsonl`；续接须换新日志文件名。后台与超时兜底由宿主工具负责（轻侦察 `120s` / 慢轨 `270s`），同回合先向用户简述分工，再切后台等待唤醒。
+**统一执行格式**：`sa-run.sh` 是前台包装器，只显示极简工具心跳和最终结论（正文不超过 8,000 字节时完整显示），每次截断覆盖同名 `.jsonl`；续接须换新日志文件名。后台与超时兜底由宿主工具负责（轻侦察 `120s` / 慢轨 `270s`），同回合先向用户简述分工，再切后台等待唤醒。
 
 `.jsonl` 日志文件名建议使用不超过 10 字的核心任务名，方便在 Cockpit 面板辨认。
 
@@ -76,7 +76,7 @@ PLUGIN_BIN=~/.gemini/config/plugins/agy-cockpit/runtime/bin
 - `sa-pi`：`-m <model>:<effort>`（无 `effort` 时仅 `-m <model>`）。
 
 **会话续接与守护运维**（同一工作线最多续接 ~3 轮，上下文膨胀后新开）：
-- 从 `.jsonl` 最终 `event: "result"` 记录读取 `agent`（实际的 `effective_agent`）与 `conversation_id`（Codex 用 `thread_id`）。低配额触发引擎切换后，按该记录的实际引擎选续接包装器，不用最初派发的包装器或旧会话 ID。最终报告取 `result.response`（或 Codex 最后一条非 delta 的 `agent_message`）。
+- 从 `.jsonl` 最终 `event: "result"` 记录读取 `agent`（实际的 `effective_agent`）与 `conversation_id`（Codex 用 `thread_id`）。低配额触发引擎切换后，按该记录的实际引擎选续接包装器，不用最初派发的包装器或旧会话 ID。最终报告取 `result.response`（或 Codex 最后一条非 delta 的 `agent_message`）。终端末尾若出现 `完整报告：<路径>.md`，直接用 `read_file` 读取该文件。
 - 续接参数：`sa-agy --conversation <id>`、`sa-codex resume <id>`、`sa-grok -r <id>`、`sa-droid -s <id>`、`sa-pi --session <session_file>`。Pi 必须传实际存在的会话文件路径（优先取该会话 `init` 记录的非空 `session_file`，或确认最终 `conversation_id` 为存在的文件路径；无文件路径则不可续接）。
 - 守护进程管理：`"$PLUGIN_BIN/sa-subagentd" status|restart|stop`。
 
