@@ -97,9 +97,10 @@ def _check_jq(home):
             {}, {"message": None}, {"message": "bypass-hook-trust notice"}, {"message": "visible warning"},
         )] + [dict(type="turn.completed")]
         view = Path(__file__).resolve().parents[1] / "bin/sa-view.jq"
-        output = subprocess.run([jq, "-Rrf", str(view)], text=True, capture_output=True, check=True, timeout=10,
+        output = subprocess.run([jq, "-nRrf", str(view), "--arg", "raw", "tmp/test.jsonl"],
+                                text=True, capture_output=True, check=True, timeout=10,
                                 env=isolated_env(home), input="".join(json.dumps(frame) + "\n" for frame in frames))
-        assert output.stdout.splitlines() == ["⚠ null", "⚠ null", "⚠ visible warning", "■ 完成"], output
+        assert output.stdout.splitlines() == ["⚠ ", "⚠ visible warning", "■ 完成"], output
         assert not output.stderr
     else:
         print("SKIP: sa-view.jq stream regression (jq not installed)")

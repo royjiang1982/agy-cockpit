@@ -16,6 +16,7 @@ SUITES = (
     "test_agy_quota.py",
     "test_agy_quota_e2e.py",
     "verify_agent_runtime.py",
+    "test_sa_run_view.py",
 )
 
 
